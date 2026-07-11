@@ -1,0 +1,243 @@
+/* ============================================================
+   Placeholder Dashboard Screens
+   ============================================================ */
+
+.dashboard {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+}
+
+.dashboard__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
+  box-shadow: var(--shadow-soft);
+}
+
+.dashboard__brand {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: var(--font-headline);
+  font-size: 1.1rem;
+  letter-spacing: 0.04em;
+}
+
+.dashboard__brand-narcos {
+  color: var(--text-primary);
+}
+
+.dashboard__brand-tacos {
+  color: var(--red);
+}
+
+.dashboard__user-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.dashboard__user-name {
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.dashboard__user-role {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--red);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: var(--red-light);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+}
+
+.dashboard__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.dashboard__btn {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.dashboard__btn:active {
+  transform: scale(0.96);
+}
+
+.dashboard__btn--settings {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+
+.dashboard__btn--settings:hover {
+  background: var(--border-color);
+}
+
+.dashboard__btn--logout {
+  background: var(--red-light);
+  color: var(--red);
+}
+
+.dashboard__btn--logout:hover {
+  background: var(--red);
+  color: #FFFFFF;
+}
+
+.dashboard__body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+}
+
+.dashboard__placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  animation: fadeIn 0.5s ease-out;
+}
+
+.dashboard__placeholder-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--red-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+.dashboard__placeholder-icon svg {
+  width: 28px;
+  height: 28px;
+  color: var(--red);
+}
+
+.dashboard__placeholder-title {
+  font-family: var(--font-headline);
+  font-size: 1.4rem;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.dashboard__placeholder-subtitle {
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+/* ---------- Settings Panel ---------- */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.settings-panel {
+  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  padding: 28px 32px;
+  width: 100%;
+  max-width: 360px;
+  box-shadow: var(--shadow-medium);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.settings-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-panel__title {
+  font-family: var(--font-headline);
+  font-size: 1.1rem;
+  color: var(--text-primary);
+}
+
+.settings-panel__close {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  transition: background-color 0.15s ease;
+}
+
+.settings-panel__close:hover {
+  background: var(--bg-surface-hover);
+}
+
+.settings-panel__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-top: 1px solid var(--border-color);
+}
+
+.settings-panel__label {
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* Toggle switch */
+.toggle {
+  position: relative;
+  width: 48px;
+  height: 28px;
+  border-radius: var(--radius-full);
+  background: var(--border-color);
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.toggle--active {
+  background: var(--red);
+}
+
+.toggle__knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #FFFFFF;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  transition: transform 0.2s ease;
+}
+
+.toggle--active .toggle__knob {
+  transform: translateX(20px);
+}
