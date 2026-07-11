@@ -29,6 +29,17 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
+// Menu items
+app.get("/api/menu", async (req, res) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM menu_items ORDER BY sort_order, name");
+    res.json(rows);
+  } catch (err) {
+    console.error("Failed to fetch menu items:", err.message);
+    res.status(500).json({ error: "Failed to fetch menu items" });
+  }
+});
+
 // --------------- Start server ---------------
 app.listen(PORT, () => {
   console.log(`Narcos Tacos POS API running on http://localhost:${PORT}`);
