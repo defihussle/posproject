@@ -77,7 +77,7 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
-// Menu items
+// Menu items (flat — kept for backward compatibility)
 app.get("/api/menu", async (req, res) => {
   try {
     const { rows } = await pool.query("SELECT * FROM menu_items ORDER BY sort_order, name");
@@ -85,6 +85,107 @@ app.get("/api/menu", async (req, res) => {
   } catch (err) {
     console.error("Failed to fetch menu items:", err.message);
     res.status(500).json({ error: "Failed to fetch menu items" });
+  }
+});
+
+// Full menu structure — categories → items → variants / modifiers / addons
+app.get("/api/menu/full", async (req, res) => {
+  try {
+    // 1. Categories
+    const { rows: categories } = await pool.query(
+      "SELECT id, name, sort_order FROM menu_categories WHERE active = true ORDER BY sort_order"
+    );
+
+    // 2. Items
+    const { rows: items } = await pool.query(
+      "SELECT id, category_id, name, description, base_price, image_url, sort_order FROM menu_items WHERE active = true ORDER BY sort_order, name"
+    );
+
+    // 3. Variants
+    const { rows: variants } = await pool.query(
+      "SELECT id, item_id, name, price, sku, sort_order FROM item_variants WHERE active = true ORDER BY sort_order"
+    );
+
+    // 4. Modifier groups linked to items (join table + group details)
+    const { rows: itemModGroups } = await pool.query(`
+      SELECT img.item_id, img.sort_order AS link_sort,
+             mg.id, mg.name, mg.min_select, mg.max_select, mg.required
+      FROM item_modifier_groups img
+      JOIN modifier_groups mg ON mg.id = img.modifier_group_id
+      ORDER BY img.sort_order
+    `);
+
+    // 5. Modifier options
+    const { rows: modOptions } = await pool.query(
+      "SELECT id, group_id, name, price_delta, sort_order FROM modifier_options WHERE active = true ORDER BY sort_order"
+    );
+
+    // 6. Item addons
+    const { rows: addons } = await pool.query(`
+      SELECT ia.id, ia.item_id, ia.addon_item_id, ia.included_quantity,
+             ia.extra_price, ia.sort_order,
+             mi.name AS addon_name, mi.base_price AS addon_base_price
+      FROM item_addons ia
+      JOIN menu_items mi ON mi.id = ia.addon_item_id
+      ORDER BY ia.sort_order
+    `);
+
+    // ---------- Assemble in memory ----------
+
+    // Index modifier options by group_id
+    const optionsByGroup = {};
+    for (const opt of modOptions) {
+      (optionsByGroup[opt.group_id] ||= []).push(opt);
+    }
+
+    // Index modifier groups by item_id (attach options inline)
+    const modGroupsByItem = {};
+    for (const mg of itemModGroups) {
+      const group = {
+        id: mg.id,
+        name: mg.name,
+        min_select: mg.min_select,
+        max_select: mg.max_select,
+        required: mg.required,
+        options: optionsByGroup[mg.id] || [],
+      };
+      (modGroupsByItem[mg.item_id] ||= []).push(group);
+    }
+
+    // Index variants by item_id
+    const variantsByItem = {};
+    for (const v of variants) {
+      (variantsByItem[v.item_id] ||= []).push(v);
+    }
+
+    // Index addons by item_id
+    const addonsByItem = {};
+    for (const a of addons) {
+      (addonsByItem[a.item_id] ||= []).push(a);
+    }
+
+    // Index items by category_id, enriching each with nested data
+    const itemsByCat = {};
+    for (const item of items) {
+      const enriched = {
+        ...item,
+        variants: variantsByItem[item.id] || [],
+        modifier_groups: modGroupsByItem[item.id] || [],
+        addons: addonsByItem[item.id] || [],
+      };
+      (itemsByCat[item.category_id] ||= []).push(enriched);
+    }
+
+    // Build final response
+    const result = categories.map((cat) => ({
+      ...cat,
+      items: itemsByCat[cat.id] || [],
+    }));
+
+    res.json(result);
+  } catch (err) {
+    console.error("Failed to fetch full menu:", err.message);
+    res.status(500).json({ error: "Failed to fetch full menu" });
   }
 });
 

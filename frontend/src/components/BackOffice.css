@@ -1,0 +1,149 @@
+/* ============================================================
+   Back Office Shell
+   ============================================================ */
+
+.backoffice {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+}
+
+.backoffice__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
+  box-shadow: var(--shadow-soft);
+}
+
+.backoffice__brand {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: var(--font-headline);
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+}
+
+.backoffice__label {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-left: 12px;
+}
+
+.backoffice__right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.backoffice__user {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.backoffice__btn {
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--red-light);
+  color: var(--red);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.backoffice__btn:hover {
+  background: var(--red);
+  color: #fff;
+}
+
+/* Tabs */
+.backoffice__tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  padding: 0 24px;
+}
+
+.backoffice__tab {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 14px 24px;
+  color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s ease;
+}
+
+.backoffice__tab:hover {
+  color: var(--text-primary);
+}
+
+.backoffice__tab--active {
+  color: var(--red);
+  border-bottom-color: var(--red);
+}
+
+/* Body */
+.backoffice__body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+}
+
+.backoffice__placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  animation: fadeIn 0.3s ease-out;
+}
+
+.backoffice__placeholder-title {
+  font-family: var(--font-headline);
+  font-size: 1.2rem;
+  color: var(--text-primary);
+}
+
+.backoffice__placeholder-sub {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+/* Access denied */
+.backoffice__denied {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: var(--bg-primary);
+  animation: fadeIn 0.3s ease-out;
+}
+
+.backoffice__denied-title {
+  font-family: var(--font-headline);
+  font-size: 1.2rem;
+  color: var(--red);
+}
+
+.backoffice__denied-msg {
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}

@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import PinLogin from "./components/PinLogin";
+import OrderEntry from "./components/OrderEntry";
 import Dashboard from "./components/Dashboard";
+import BackOffice from "./components/BackOffice";
 
 const STORAGE_KEY_STAFF = "narcos_pos_staff";
 const STORAGE_KEY_THEME = "narcos_pos_theme";
@@ -25,15 +27,14 @@ function getStoredTheme() {
 
 function roleToPath(role) {
   switch (role) {
+    case "kitchen":
+      return "/kds";
     case "owner":
     case "admin":
-      return "/dashboard";
-    case "kitchen":
-      return "/kitchen";
     case "manager":
     case "cashier":
     default:
-      return "/orders";
+      return "/order-entry";
   }
 }
 
@@ -76,13 +77,25 @@ export default function App() {
           }
         />
 
-        {/* Owner / Admin Dashboard */}
+        {/* Order Entry — owner, admin, manager, cashier */}
         <Route
-          path="/dashboard"
+          path="/order-entry"
+          element={
+            staff ? (
+              <OrderEntry staff={staff} onLogout={handleLogout} />
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
+        />
+
+        {/* Kitchen Display — placeholder */}
+        <Route
+          path="/kds"
           element={
             staff ? (
               <Dashboard
-                staff={staff}
+                staff={{ ...staff, role: "kitchen" }}
                 theme={theme}
                 onToggleTheme={handleToggleTheme}
                 onLogout={handleLogout}
@@ -93,39 +106,8 @@ export default function App() {
           }
         />
 
-        {/* Order Entry (Manager / Cashier) */}
-        <Route
-          path="/orders"
-          element={
-            staff ? (
-              <Dashboard
-                staff={staff}
-                theme={theme}
-                onToggleTheme={handleToggleTheme}
-                onLogout={handleLogout}
-              />
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          }
-        />
-
-        {/* Kitchen Display */}
-        <Route
-          path="/kitchen"
-          element={
-            staff ? (
-              <Dashboard
-                staff={staff}
-                theme={theme}
-                onToggleTheme={handleToggleTheme}
-                onLogout={handleLogout}
-              />
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          }
-        />
+        {/* Back Office — has its own PIN login + role gate */}
+        <Route path="/backoffice" element={<BackOffice />} />
 
         {/* Catch-all */}
         <Route
