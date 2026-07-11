@@ -8,7 +8,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto; -- for gen_random_uuid()
 -- ============================================================
 -- ENUMS
 -- ============================================================
-CREATE TYPE staff_role AS ENUM ('owner', 'manager', 'cashier', 'kitchen');
+CREATE TYPE staff_role AS ENUM ('owner', 'admin', 'manager', 'cashier', 'kitchen');
 CREATE TYPE order_status AS ENUM ('open', 'preparing', 'ready', 'completed', 'cancelled');
 CREATE TYPE order_item_status AS ENUM ('pending', 'preparing', 'ready', 'served');
 CREATE TYPE fulfillment_type AS ENUM ('pickup', 'delivery'); -- room to grow beyond counter-only
