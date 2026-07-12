@@ -24,41 +24,15 @@
 /* ---------- Brand Logo ---------- */
 .brand-logo {
   display: flex;
-  flex-direction: column;
+  justify-content: center;
   align-items: center;
-  gap: 8px;
+  width: 100%;
 }
 
-.brand-logo__text {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-family: var(--font-headline);
-  font-size: 2rem;
-  letter-spacing: 0.04em;
-  line-height: 1;
-}
-
-.brand-logo__narcos {
-  color: var(--text-primary);
-}
-
-.brand-logo__tacos {
-  color: var(--red);
-}
-
-.brand-logo__pill {
-  display: inline-block;
-  background: var(--red);
-  color: #FFFFFF;
-  font-family: var(--font-body);
-  font-size: 0.55rem;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  padding: 3px 12px;
-  border-radius: var(--radius-full);
-  line-height: 1.4;
+.brand-logo__img {
+  max-width: 160px;
+  height: auto;
+  display: block;
 }
 
 /* ---------- PIN Dots ---------- */

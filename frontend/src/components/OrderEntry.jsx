@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import ItemModal from "./ItemModal";
+import logoImg from "../assets/narcos-tacos-logo.png";
 import "./OrderEntry.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -119,8 +120,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
       {/* Top Bar */}
       <div className="oe-topbar">
         <div className="oe-topbar__brand">
-          <span className="dashboard__brand-narcos">NARCOS</span>
-          <span className="dashboard__brand-tacos">TACOS</span>
+          <img src={logoImg} alt="NARCOS TACOS" className="oe-topbar__logo" />
         </div>
         <div className="oe-topbar__right">
           <span className="oe-topbar__staff">{staff.name}</span>

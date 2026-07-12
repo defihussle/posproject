@@ -23,11 +23,13 @@
 
 .oe-topbar__brand {
   display: flex;
-  align-items: baseline;
-  gap: 4px;
-  font-family: var(--font-headline);
-  font-size: 1rem;
-  letter-spacing: 0.04em;
+  align-items: center;
+}
+
+.oe-topbar__logo {
+  height: 38px;
+  width: auto;
+  display: block;
 }
 
 .oe-topbar__right {

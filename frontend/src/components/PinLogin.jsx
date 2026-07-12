@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import logoImg from "../assets/narcos-tacos-logo.png";
 import "./PinLogin.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -157,11 +158,7 @@ export default function PinLogin({ onLogin }) {
       <div className="login-card">
         {/* Brand Logo */}
         <div className="brand-logo">
-          <div className="brand-logo__text">
-            <span className="brand-logo__narcos">NARCOS</span>
-            <span className="brand-logo__tacos">TACOS</span>
-          </div>
-          <span className="brand-logo__pill">MEXICAN STREETFOOD</span>
+          <img src={logoImg} alt="NARCOS TACOS" className="brand-logo__img" />
         </div>
 
         {/* PIN Dots */}
