@@ -9,8 +9,7 @@ const SCREEN_CONFIG = {
   kitchen: { title: "Kitchen Display", subtitle: "Coming Soon", showSettings: false },
 };
 
-export default function Dashboard({ staff, theme, onToggleTheme, onLogout }) {
-  const [settingsOpen, setSettingsOpen] = useState(false);
+export default function Dashboard({ staff, onLogout }) {
   const config = SCREEN_CONFIG[staff.role] || SCREEN_CONFIG.cashier;
 
   return (
@@ -27,15 +26,6 @@ export default function Dashboard({ staff, theme, onToggleTheme, onLogout }) {
           <span className="dashboard__user-role">{staff.role}</span>
 
           <div className="dashboard__actions">
-            {config.showSettings && (
-              <button
-                id="btn-owner-settings"
-                className="dashboard__btn dashboard__btn--settings"
-                onClick={() => setSettingsOpen(true)}
-              >
-                ⚙ Owner Settings
-              </button>
-            )}
             <button
               id="btn-logout"
               className="dashboard__btn dashboard__btn--logout"
@@ -57,40 +47,6 @@ export default function Dashboard({ staff, theme, onToggleTheme, onLogout }) {
           <p className="dashboard__placeholder-subtitle">{config.subtitle}</p>
         </div>
       </main>
-
-      {/* Settings Modal */}
-      {settingsOpen && (
-        <div className="settings-overlay" onClick={() => setSettingsOpen(false)}>
-          <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
-            <div className="settings-panel__header">
-              <h2 className="settings-panel__title">Owner Settings</h2>
-              <button
-                className="settings-panel__close"
-                onClick={() => setSettingsOpen(false)}
-                aria-label="Close settings"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 6L6 18M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="settings-panel__row">
-              <span className="settings-panel__label">Dark Mode</span>
-              <button
-                id="toggle-theme"
-                className={`toggle${theme === "dark" ? " toggle--active" : ""}`}
-                onClick={onToggleTheme}
-                role="switch"
-                aria-checked={theme === "dark"}
-                aria-label="Toggle dark mode"
-              >
-                <span className="toggle__knob" />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

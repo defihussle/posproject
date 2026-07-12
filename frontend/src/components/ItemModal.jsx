@@ -273,25 +273,25 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
                   const isStepper = maxQty > 1;
 
                   if (isStepper) {
-                    // ---- Stepper UI ----
+                    // ---- Stepper UI (Pill-shaped, no checkbox) ----
                     return (
                       <div
                         key={opt.id}
                         className={`item-modal__option${isSelected ? " item-modal__option--selected" : ""}`}
+                        style={{ cursor: "default" }}
                       >
-                        <div className={`item-modal__indicator item-modal__indicator--checkbox${isSelected ? " item-modal__indicator--selected" : ""}`} />
                         <span className="item-modal__option-name">{opt.name}</span>
-                        <div className="item-modal__stepper">
+                        <div className="item-modal__stepper-pill">
                           <button
-                            className="item-modal__stepper-btn"
+                            className="item-modal__stepper-pill-btn"
                             onClick={() => adjustModQty(group, opt.id, -1, maxQty)}
                             disabled={qty === 0}
                           >
                             −
                           </button>
-                          <span className="item-modal__stepper-qty">{qty}</span>
+                          <span className="item-modal__stepper-pill-qty">{qty}</span>
                           <button
-                            className="item-modal__stepper-btn"
+                            className="item-modal__stepper-pill-btn"
                             onClick={() => adjustModQty(group, opt.id, 1, maxQty)}
                             disabled={qty >= maxQty}
                           >
@@ -300,10 +300,8 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
                         </div>
                         <span className={`item-modal__option-price${delta === 0 ? " item-modal__option-price--free" : ""}`}>
                           {delta === 0
-                            ? "Free"
-                            : qty > 1
-                              ? `${qty}× +$${delta.toFixed(2)} = +$${(delta * qty).toFixed(2)}`
-                              : `+$${delta.toFixed(2)}`}
+                            ? "Included"
+                            : `+$${(delta * Math.max(1, qty)).toFixed(2)}`}
                         </span>
                       </div>
                     );

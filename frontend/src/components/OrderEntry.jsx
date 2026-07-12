@@ -4,13 +4,28 @@ import "./OrderEntry.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
-export default function OrderEntry({ staff, onLogout }) {
+export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [menu, setMenu] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeCatId, setActiveCatId] = useState(null);
   const [modalItem, setModalItem] = useState(null);
   const [modalVariant, setModalVariant] = useState(null);
   const [cart, setCart] = useState([]);
+  const [cartCollapsed, setCartCollapsed] = useState(true);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+
+  // Total cart items count
+  const cartItemsCount = useMemo(
+    () => cart.reduce((sum, item) => sum + item.quantity, 0),
+    [cart]
+  );
+
+  // Auto-collapse when cart is empty
+  useEffect(() => {
+    if (cart.length === 0) {
+      setCartCollapsed(true);
+    }
+  }, [cart.length]);
 
   // Helper to format variant + item name (e.g., Pollo Tacos)
   const getFormattedVariantItemName = (itemName, variantName) => {
@@ -53,6 +68,7 @@ export default function OrderEntry({ staff, onLogout }) {
     setCart((prev) => [...prev, { ...cartItem, cartLineId: Date.now() + Math.random() }]);
     setModalItem(null);
     setModalVariant(null);
+    setCartCollapsed(false); // auto-expand
   }, []);
 
   // Adjust quantity
@@ -108,9 +124,46 @@ export default function OrderEntry({ staff, onLogout }) {
         </div>
         <div className="oe-topbar__right">
           <span className="oe-topbar__staff">{staff.name}</span>
-          <button className="oe-topbar__btn" onClick={onLogout}>
-            Log Out
-          </button>
+          <div className="oe-account-menu-container">
+            <button 
+              className="oe-account-menu-btn" 
+              onClick={() => setAccountMenuOpen(prev => !prev)}
+              aria-label="Account menu"
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="12" x2="21" y2="12"></line>
+                <line x1="3" y1="6" x2="21" y2="6"></line>
+                <line x1="3" y1="18" x2="21" y2="18"></line>
+              </svg>
+            </button>
+            {accountMenuOpen && (
+              <>
+                <div className="oe-account-menu-backdrop" onClick={() => setAccountMenuOpen(false)} />
+                <div className="oe-account-menu-dropdown">
+                  {staff.role === "owner" && (
+                    <div className="oe-account-menu-row">
+                      <span>Dark Mode</span>
+                      <label className="oe-switch">
+                        <input 
+                          type="checkbox" 
+                          checked={theme === "dark"} 
+                          onChange={onToggleTheme} 
+                        />
+                        <span className="oe-switch-slider"></span>
+                      </label>
+                    </div>
+                  )}
+                  {staff.role === "owner" && <div className="oe-account-menu-divider" />}
+                  <button 
+                    className="oe-account-menu-logout" 
+                    onClick={() => { setAccountMenuOpen(false); onLogout(); }}
+                  >
+                    Log Out
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -185,79 +238,99 @@ export default function OrderEntry({ staff, onLogout }) {
         </div>
 
         {/* Cart */}
-        <div className="oe-cart">
-          <div className="oe-cart__header">
-            <h2 className="oe-cart__title">Current Order</h2>
-          </div>
-
-          <div className="oe-cart__items">
-            {cart.length === 0 ? (
-              <div className="oe-cart__empty">
-                <span>No items yet</span>
-                <span style={{ fontSize: "0.75rem" }}>Tap a menu item to add it</span>
+        <div className={`oe-cart${cartCollapsed ? " oe-cart--collapsed" : ""}`}>
+          {cartCollapsed ? (
+            <div className="oe-cart__collapsed-view" onClick={() => setCartCollapsed(false)}>
+              <div className="oe-cart__collapsed-icon">🛒</div>
+              <div className="oe-cart__collapsed-badge">{cartItemsCount}</div>
+            </div>
+          ) : (
+            <>
+              <div className="oe-cart__header">
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
+                  <h2 className="oe-cart__title">Current Order</h2>
+                  <button 
+                    className="oe-cart__collapse-btn" 
+                    onClick={() => setCartCollapsed(true)}
+                    title="Collapse Cart"
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="9 18 15 12 9 6"></polyline>
+                    </svg>
+                  </button>
+                </div>
               </div>
-            ) : (
-              cart.map((line) => (
-                <div key={line.cartLineId} className="oe-cart-line">
-                  <div className="oe-cart-line__top">
-                    <div className="oe-cart-line__info">
-                      <div className="oe-cart-line__name">{line.itemName}</div>
-                      {line.variant && (
-                        <div className="oe-cart-line__variant">{line.variant.name}</div>
-                      )}
-                      {line.modifiers.length > 0 && (
-                        <div className="oe-cart-line__mods">
-                          {line.modifiers.map((m) => m.quantity > 1 ? `${m.quantity}× ${m.optionName}` : m.optionName).join(", ")}
-                        </div>
-                      )}
-                      {line.addons.filter((a) => a.includedQty > 0 || a.extraQty > 0).length > 0 && (
-                        <div className="oe-cart-line__mods">
-                          {line.addons.map((a) => {
-                            const parts = [];
-                            if (a.includedQty > 0) parts.push(`${a.addonName} (included)`);
-                            if (a.extraQty > 0) parts.push(`+${a.extraQty} extra ${a.addonName}`);
-                            return parts.join(", ");
-                          }).join("; ")}
-                        </div>
-                      )}
-                    </div>
-                    <div className="oe-cart-line__price">
-                      ${(line.unitPrice * line.quantity).toFixed(2)}
-                    </div>
+
+              <div className="oe-cart__items">
+                {cart.length === 0 ? (
+                  <div className="oe-cart__empty">
+                    <span>No items yet</span>
+                    <span style={{ fontSize: "0.75rem" }}>Tap a menu item to add it</span>
                   </div>
-                  <div className="oe-cart-line__controls">
-                    <button
-                      className="oe-cart-line__qty-btn"
-                      onClick={() => adjustQty(line.cartLineId, -1)}
-                    >
-                      −
-                    </button>
-                    <span className="oe-cart-line__qty">{line.quantity}</span>
-                    <button
-                      className="oe-cart-line__qty-btn"
-                      onClick={() => adjustQty(line.cartLineId, 1)}
-                    >
-                      +
-                    </button>
-                    <button
-                      className="oe-cart-line__remove"
-                      onClick={() => removeItem(line.cartLineId)}
-                    >
-                      Remove
-                    </button>
+                ) : (
+                  cart.map((line) => (
+                    <div key={line.cartLineId} className="oe-cart-line">
+                      <div className="oe-cart-line__top">
+                        <div className="oe-cart-line__info">
+                          <div className="oe-cart-line__name">{line.itemName}</div>
+                          {line.variant && (
+                            <div className="oe-cart-line__variant">{line.variant.name}</div>
+                          )}
+                          {line.modifiers.length > 0 && (
+                            <div className="oe-cart-line__mods">
+                              {line.modifiers.map((m) => m.quantity > 1 ? `${m.quantity}× ${m.optionName}` : m.optionName).join(", ")}
+                            </div>
+                          )}
+                          {line.addons.filter((a) => a.includedQty > 0 || a.extraQty > 0).length > 0 && (
+                            <div className="oe-cart-line__mods">
+                              {line.addons.map((a) => {
+                                const parts = [];
+                                if (a.includedQty > 0) parts.push(`${a.addonName} (included)`);
+                                if (a.extraQty > 0) parts.push(`+${a.extraQty} extra ${a.addonName}`);
+                                return parts.join(", ");
+                              }).join("; ")}
+                            </div>
+                          )}
+                        </div>
+                        <div className="oe-cart-line__price">
+                          ${(line.unitPrice * line.quantity).toFixed(2)}
+                        </div>
+                      </div>
+                      <div className="oe-cart-line__controls">
+                        <button
+                          className="oe-cart-line__qty-btn"
+                          onClick={() => adjustQty(line.cartLineId, -1)}
+                        >
+                          −
+                        </button>
+                        <span className="oe-cart-line__qty">{line.quantity}</span>
+                        <button
+                          className="oe-cart-line__qty-btn"
+                          onClick={() => adjustQty(line.cartLineId, 1)}
+                        >
+                          +
+                        </button>
+                        <button
+                          className="oe-cart-line__remove"
+                          onClick={() => removeItem(line.cartLineId)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {cart.length > 0 && (
+                <div className="oe-cart__footer">
+                  <div className="oe-cart__subtotal">
+                    <span className="oe-cart__subtotal-label">Subtotal</span>
+                    <span className="oe-cart__subtotal-amount">${subtotal.toFixed(2)}</span>
                   </div>
                 </div>
-              ))
-            )}
-          </div>
-
-          {cart.length > 0 && (
-            <div className="oe-cart__footer">
-              <div className="oe-cart__subtotal">
-                <span className="oe-cart__subtotal-label">Subtotal</span>
-                <span className="oe-cart__subtotal-amount">${subtotal.toFixed(2)}</span>
-              </div>
-            </div>
+              )}
+            </>
           )}
         </div>
       </div>

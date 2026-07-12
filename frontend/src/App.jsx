@@ -82,7 +82,12 @@ export default function App() {
           path="/order-entry"
           element={
             staff ? (
-              <OrderEntry staff={staff} onLogout={handleLogout} />
+              <OrderEntry
+                staff={staff}
+                theme={theme}
+                onToggleTheme={handleToggleTheme}
+                onLogout={handleLogout}
+              />
             ) : (
               <Navigate to="/login" replace />
             )
@@ -96,8 +101,6 @@ export default function App() {
             staff ? (
               <Dashboard
                 staff={{ ...staff, role: "kitchen" }}
-                theme={theme}
-                onToggleTheme={handleToggleTheme}
                 onLogout={handleLogout}
               />
             ) : (
