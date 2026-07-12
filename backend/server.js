@@ -561,6 +561,270 @@ app.post("/api/orders", async (req, res) => {
   }
 });
 
+// --------------- Kitchen Display System (KDS) ---------------
+// These two routes are additive and intentionally price/customer-free.
+// KDS is a no-auth "open book" screen, so neither route has auth middleware.
+
+// Fetch orders (by id) in the nested shape the KDS renders. Deliberately
+// omits ALL prices + customer/payment fields — the kitchen never sees those.
+// Orders come back oldest created_at first (FIFO) — a planned elapsed-time
+// UI depends on this ordering, so do not change it without flagging.
+//
+// Per item we resolve the item's default modifier set (options configured as
+// default_selected in the menu) and diff it against what's actually on the
+// order line, producing three arrays:
+//   - removed_ingredients[]: default options with NO matching order row
+//     (the "NO onions" cases) — name only
+//   - added_modifiers[]: non-default options present on the line — name +
+//     quantity, no price
+//   - addons[]: name, quantity, is_complimentary — no price
+// Kept defaults (default AND present) are the normal build and appear in none
+// of these.
+async function fetchKdsOrders(client, orderIds) {
+  if (orderIds.length === 0) return [];
+
+  const { rows: orders } = await client.query(
+    `SELECT id, order_number, status, fulfillment_type, created_at
+       FROM orders
+      WHERE id = ANY($1::uuid[])
+      ORDER BY created_at ASC`, // FIFO — oldest first (see note above)
+    [orderIds]
+  );
+
+  const { rows: items } = await client.query(
+    `SELECT oi.id, oi.order_id, oi.item_id, oi.quantity, oi.notes, oi.status,
+            mi.name AS item_name, iv.name AS variant_name
+       FROM order_items oi
+       JOIN menu_items mi ON mi.id = oi.item_id
+       LEFT JOIN item_variants iv ON iv.id = oi.variant_id
+      WHERE oi.order_id = ANY($1::uuid[])
+      ORDER BY oi.created_at ASC`,
+    [orderIds]
+  );
+
+  const itemIds = items.map((i) => i.id);
+  const menuItemIds = [...new Set(items.map((i) => i.item_id))];
+
+  // Modifiers actually on each order line, tagged with whether they're a
+  // default (standard) ingredient or a customer addition.
+  const { rows: mods } = itemIds.length
+    ? await client.query(
+        `SELECT oim.order_item_id, oim.modifier_option_id,
+                mo.name AS option_name, mo.default_selected, oim.quantity
+           FROM order_item_modifiers oim
+           JOIN modifier_options mo ON mo.id = oim.modifier_option_id
+          WHERE oim.order_item_id = ANY($1::uuid[])
+          ORDER BY mo.sort_order`,
+        [itemIds]
+      )
+    : { rows: [] };
+
+  // The default modifier set for each menu item (config, not order-specific):
+  // every option flagged default_selected in a group linked to that item.
+  const { rows: defaults } = menuItemIds.length
+    ? await client.query(
+        `SELECT img.item_id, mo.id AS option_id, mo.name AS option_name
+           FROM item_modifier_groups img
+           JOIN modifier_options mo ON mo.group_id = img.modifier_group_id
+          WHERE img.item_id = ANY($1::uuid[])
+            AND mo.default_selected = true
+            AND mo.active = true
+          ORDER BY mo.sort_order`,
+        [menuItemIds]
+      )
+    : { rows: [] };
+
+  const { rows: addons } = itemIds.length
+    ? await client.query(
+        `SELECT oa.order_item_id, mi.name AS addon_name,
+                oa.quantity, oa.is_complimentary
+           FROM order_item_addons oa
+           JOIN menu_items mi ON mi.id = oa.addon_item_id
+          WHERE oa.order_item_id = ANY($1::uuid[])
+          ORDER BY oa.is_complimentary DESC`,
+        [itemIds]
+      )
+    : { rows: [] };
+
+  // Per order line: the set of option ids present, and the added (non-default)
+  // modifiers.
+  const presentOptByItem = {}; // order_item_id -> Set(option_id)
+  const addedByItem = {}; // order_item_id -> [{ name, quantity }]
+  for (const m of mods) {
+    (presentOptByItem[m.order_item_id] ||= new Set()).add(m.modifier_option_id);
+    if (!m.default_selected) {
+      (addedByItem[m.order_item_id] ||= []).push({
+        name: m.option_name,
+        quantity: m.quantity,
+      });
+    }
+  }
+
+  // Per menu item: its full default option set (for the removed-ingredient diff).
+  const defaultsByMenuItem = {}; // item_id -> [{ option_id, name }]
+  for (const d of defaults) {
+    (defaultsByMenuItem[d.item_id] ||= []).push({
+      option_id: d.option_id,
+      name: d.option_name,
+    });
+  }
+
+  const addonsByItem = {};
+  for (const a of addons) {
+    (addonsByItem[a.order_item_id] ||= []).push({
+      name: a.addon_name,
+      quantity: a.quantity,
+      is_complimentary: a.is_complimentary,
+    });
+  }
+
+  const itemsByOrder = {};
+  for (const it of items) {
+    const present = presentOptByItem[it.id] || new Set();
+    const itemDefaults = defaultsByMenuItem[it.item_id] || [];
+    const removed_ingredients = itemDefaults
+      .filter((d) => !present.has(d.option_id))
+      .map((d) => d.name);
+
+    (itemsByOrder[it.order_id] ||= []).push({
+      id: it.id,
+      name: it.item_name,
+      variant: it.variant_name, // null when the item has no variant
+      quantity: it.quantity,
+      notes: it.notes,
+      status: it.status,
+      removed_ingredients,
+      added_modifiers: addedByItem[it.id] || [],
+      addons: addonsByItem[it.id] || [],
+    });
+  }
+
+  return orders.map((o) => ({
+    id: o.id,
+    order_number: o.order_number,
+    status: o.status,
+    fulfillment_type: o.fulfillment_type,
+    created_at: o.created_at,
+    items: itemsByOrder[o.id] || [],
+  }));
+}
+
+const KDS_ALLOWED_STATUSES = ["open", "preparing", "ready", "completed", "cancelled"];
+
+// GET /api/orders?status=open,preparing  (defaults to open,preparing)
+app.get("/api/orders", async (req, res) => {
+  const statusParam = (req.query.status ?? "open,preparing").toString();
+  const statuses = statusParam
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const invalid = statuses.filter((s) => !KDS_ALLOWED_STATUSES.includes(s));
+  if (statuses.length === 0 || invalid.length > 0) {
+    return res.status(400).json({
+      error:
+        invalid.length > 0
+          ? `Invalid status value(s): ${invalid.join(", ")}`
+          : "No status values provided",
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    // KDS is per-location; today there is a single active location.
+    const { rows: locRows } = await client.query(
+      "SELECT id FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
+    );
+    if (locRows.length === 0) {
+      return res.status(500).json({ error: "No active location" });
+    }
+    const locationId = locRows[0].id;
+
+    const { rows: idRows } = await client.query(
+      `SELECT id FROM orders
+        WHERE location_id = $1 AND status::text = ANY($2::text[])
+        ORDER BY created_at ASC`, // FIFO oldest-first
+      [locationId, statuses]
+    );
+
+    const orders = await fetchKdsOrders(client, idRows.map((r) => r.id));
+    res.json(orders);
+  } catch (err) {
+    console.error("KDS list failed:", err.message);
+    res.status(500).json({ error: "Failed to fetch orders" });
+  } finally {
+    client.release();
+  }
+});
+
+// PATCH /api/orders/:id/status   body: { status: "preparing" | "ready" }
+// Advances the whole order one step and keeps order_items.status in lockstep,
+// all inside one transaction so the two can never drift out of sync.
+app.patch("/api/orders/:id/status", async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body || {};
+
+  if (status !== "preparing" && status !== "ready") {
+    return res.status(400).json({ error: "status must be 'preparing' or 'ready'" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // Lock the order row for the duration of the transition
+    const { rows } = await client.query(
+      "SELECT status FROM orders WHERE id = $1 FOR UPDATE",
+      [id]
+    );
+    if (rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    const current = rows[0].status;
+    // Only forward, one step at a time: open→preparing, preparing→ready
+    const allowed =
+      (current === "open" && status === "preparing") ||
+      (current === "preparing" && status === "ready");
+    if (!allowed) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: `Cannot transition order from '${current}' to '${status}'`,
+      });
+    }
+
+    // Update the order. 'ready' is treated as complete → stamp completed_at.
+    if (status === "ready") {
+      await client.query(
+        "UPDATE orders SET status = $1, completed_at = now() WHERE id = $2",
+        [status, id]
+      );
+    } else {
+      await client.query("UPDATE orders SET status = $1 WHERE id = $2", [status, id]);
+    }
+
+    // Cascade the same status to every line (no per-item status in this UI —
+    // order_items.status must always match orders.status after this call).
+    // Mapping is 1:1: preparing→preparing, ready→ready.
+    await client.query("UPDATE order_items SET status = $1 WHERE order_id = $2", [
+      status,
+      id,
+    ]);
+
+    await client.query("COMMIT");
+
+    const [order] = await fetchKdsOrders(client, [id]);
+    res.json(order);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("KDS status update failed:", err.message);
+    res.status(500).json({ error: "Failed to update order status" });
+  } finally {
+    client.release();
+  }
+});
+
 // --------------- Start server ---------------
 app.listen(PORT, () => {
   console.log(`Narcos Tacos POS API running on http://localhost:${PORT}`);
