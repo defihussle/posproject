@@ -567,8 +567,12 @@ app.post("/api/orders", async (req, res) => {
 
 // Fetch orders (by id) in the nested shape the KDS renders. Deliberately
 // omits ALL prices + customer/payment fields — the kitchen never sees those.
-// Orders come back oldest created_at first (FIFO) — a planned elapsed-time
-// UI depends on this ordering, so do not change it without flagging.
+// Orders are returned in the SAME order as `orderIds` — the caller decides
+// sort (the live queue passes FIFO oldest-first; history passes most-recent
+// -first). A planned elapsed-time UI depends on the live queue's ordering, so
+// don't change the caller's sort there without flagging.
+// Pass { includeCompletedAt: true } to add completed_at to each order (used by
+// history); the live queue omits it to keep its response unchanged.
 //
 // Per item we split the modifiers into distinct buckets:
 //   - selected_options[]: choices from REQUIRED groups (Format=Burrito/Bowl,
@@ -582,14 +586,13 @@ app.post("/api/orders", async (req, res) => {
 //   - addons[]: name, quantity, is_complimentary — no price
 // Kept defaults (default AND present) are the normal build and appear in none
 // of these. All output is price-free.
-async function fetchKdsOrders(client, orderIds) {
+async function fetchKdsOrders(client, orderIds, { includeCompletedAt = false } = {}) {
   if (orderIds.length === 0) return [];
 
   const { rows: orders } = await client.query(
-    `SELECT id, order_number, status, fulfillment_type, created_at
+    `SELECT id, order_number, status, fulfillment_type, created_at, completed_at
        FROM orders
-      WHERE id = ANY($1::uuid[])
-      ORDER BY created_at ASC`, // FIFO — oldest first (see note above)
+      WHERE id = ANY($1::uuid[])`,
     [orderIds]
   );
 
@@ -717,14 +720,20 @@ async function fetchKdsOrders(client, orderIds) {
     });
   }
 
-  return orders.map((o) => ({
-    id: o.id,
-    order_number: o.order_number,
-    status: o.status,
-    fulfillment_type: o.fulfillment_type,
-    created_at: o.created_at,
-    items: itemsByOrder[o.id] || [],
-  }));
+  // Build a lookup, then emit in the caller's requested order (order of orderIds).
+  const byId = {};
+  for (const o of orders) {
+    byId[o.id] = {
+      id: o.id,
+      order_number: o.order_number,
+      status: o.status,
+      fulfillment_type: o.fulfillment_type,
+      created_at: o.created_at,
+      ...(includeCompletedAt ? { completed_at: o.completed_at } : {}),
+      items: itemsByOrder[o.id] || [],
+    };
+  }
+  return orderIds.map((id) => byId[id]).filter(Boolean);
 }
 
 const KDS_ALLOWED_STATUSES = ["open", "preparing", "ready", "completed", "cancelled"];
@@ -770,6 +779,48 @@ app.get("/api/orders", async (req, res) => {
   } catch (err) {
     console.error("KDS list failed:", err.message);
     res.status(500).json({ error: "Failed to fetch orders" });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/orders/history?sinceHours=4  (default 4)
+// Recently-completed (status='ready') orders whose completed_at falls within
+// the last N hours, MOST-RECENT-FIRST (opposite of the live queue). Same nested
+// price-free shape, plus created_at + completed_at so the frontend can compute
+// prep time (placed → ready). No auth, single active location.
+app.get("/api/orders/history", async (req, res) => {
+  const sinceHours = req.query.sinceHours === undefined ? 4 : Number(req.query.sinceHours);
+  if (!Number.isFinite(sinceHours) || sinceHours <= 0) {
+    return res.status(400).json({ error: "sinceHours must be a positive number" });
+  }
+
+  const client = await pool.connect();
+  try {
+    const { rows: locRows } = await client.query(
+      "SELECT id FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
+    );
+    if (locRows.length === 0) {
+      return res.status(500).json({ error: "No active location" });
+    }
+    const locationId = locRows[0].id;
+
+    const { rows: idRows } = await client.query(
+      `SELECT id FROM orders
+        WHERE location_id = $1
+          AND status = 'ready'
+          AND completed_at >= now() - ($2::numeric * interval '1 hour')
+        ORDER BY completed_at DESC`, // most-recent-first
+      [locationId, sinceHours]
+    );
+
+    const orders = await fetchKdsOrders(client, idRows.map((r) => r.id), {
+      includeCompletedAt: true,
+    });
+    res.json(orders);
+  } catch (err) {
+    console.error("KDS history failed:", err.message);
+    res.status(500).json({ error: "Failed to fetch order history" });
   } finally {
     client.release();
   }
