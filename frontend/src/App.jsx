@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import PinLogin from "./components/PinLogin";
 import OrderEntry from "./components/OrderEntry";
-import Dashboard from "./components/Dashboard";
+import KitchenDisplay from "./components/KitchenDisplay";
 import BackOffice from "./components/BackOffice";
 
 const STORAGE_KEY_STAFF = "narcos_pos_staff";
@@ -25,17 +25,10 @@ function getStoredTheme() {
   }
 }
 
-function roleToPath(role) {
-  switch (role) {
-    case "kitchen":
-      return "/kds";
-    case "owner":
-    case "admin":
-    case "manager":
-    case "cashier":
-    default:
-      return "/order-entry";
-  }
+// Kitchen staff never log in (the KDS is a no-auth screen at a fixed URL), so
+// every login role routes to Order Entry.
+function roleToPath() {
+  return "/order-entry";
 }
 
 export default function App() {
@@ -70,7 +63,7 @@ export default function App() {
           path="/login"
           element={
             staff ? (
-              <Navigate to={roleToPath(staff.role)} replace />
+              <Navigate to={roleToPath()} replace />
             ) : (
               <PinLogin onLogin={handleLogin} />
             )
@@ -94,20 +87,9 @@ export default function App() {
           }
         />
 
-        {/* Kitchen Display — placeholder */}
-        <Route
-          path="/kds"
-          element={
-            staff ? (
-              <Dashboard
-                staff={{ ...staff, role: "kitchen" }}
-                onLogout={handleLogout}
-              />
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          }
-        />
+        {/* Kitchen Display — no auth, no session, reachable directly by URL.
+            Opened once on a kitchen device and left running. */}
+        <Route path="/kds/lawrence-east-4471" element={<KitchenDisplay />} />
 
         {/* Back Office — has its own PIN login + role gate */}
         <Route path="/backoffice" element={<BackOffice />} />
@@ -116,7 +98,7 @@ export default function App() {
         <Route
           path="*"
           element={
-            <Navigate to={staff ? roleToPath(staff.role) : "/login"} replace />
+            <Navigate to={staff ? roleToPath() : "/login"} replace />
           }
         />
       </Routes>
