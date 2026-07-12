@@ -69,6 +69,30 @@
   justify-content: center;
 }
 
+.kds__past-btn {
+  margin-left: 8px;
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 700;
+  color: #1A1A1A;
+  background: #FFFFFF;
+  border: 2px solid #1A1A1A;
+  border-radius: 9999px;
+  height: 44px;
+  padding: 0 20px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.kds__past-btn:hover {
+  background: #1A1A1A;
+  color: #FFFFFF;
+}
+
+.kds__past-btn:active {
+  transform: scale(0.97);
+}
+
 .kds__error {
   background: rgba(232, 68, 46, 0.10);
   color: #E8442E;
@@ -128,14 +152,19 @@
   font-weight: 500;
 }
 
-/* ---------- Order card ---------- */
+/* ---------- Order card ----------
+   Two independent border signals:
+   - the thick LEFT border = status (open red / preparing green) — the
+     existing open/preparing distinction, unchanged;
+   - the thin surrounding border = elapsed-time tier (green/yellow/red),
+     set by the .kds-card--t-* classes below. */
 .kds-card {
   display: flex;
   flex-direction: column;
   background: #FFFFFF;
   border-radius: 16px;
-  border: 2px solid #E5E5E5;
-  border-left-width: 10px;
+  border: 3px solid #E5E5E5;
+  border-left: 10px solid #E5E5E5;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.07);
   overflow: hidden;
   cursor: pointer;
@@ -157,17 +186,33 @@
   outline-offset: 2px;
 }
 
-/* Open = not started yet → red accent, white surface (needs attention) */
+/* Open = not started yet → red left accent, white surface (needs attention) */
 .kds-card--open {
-  border-color: #E8442E;
   border-left-color: #E8442E;
 }
 
-/* Preparing = in progress → green accent + faint green wash */
+/* Preparing = in progress → green left accent + faint green wash */
 .kds-card--preparing {
-  border-color: #34A853;
   border-left-color: #34A853;
   background: #F3FBF5;
+}
+
+/* Elapsed-time escalation → thin surrounding border color (leaves the thick
+   left status accent untouched). Thresholds live in KitchenDisplay.jsx. */
+.kds-card--t-green {
+  border-top-color: #34A853;
+  border-right-color: #34A853;
+  border-bottom-color: #34A853;
+}
+.kds-card--t-yellow {
+  border-top-color: #E8A32E;
+  border-right-color: #E8A32E;
+  border-bottom-color: #E8A32E;
+}
+.kds-card--t-red {
+  border-top-color: #E8442E;
+  border-right-color: #E8442E;
+  border-bottom-color: #E8442E;
 }
 
 /* Busy = PATCH in flight → dim + non-interactive */
@@ -227,6 +272,38 @@
 .kds-card--preparing .kds-card__status {
   background: rgba(52, 168, 83, 0.14);
   color: #2A8C45;
+}
+
+/* Meta cluster (elapsed timer + status pill) on the right of the card head */
+.kds-card__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+/* Live elapsed timer — IBM Plex Mono, color-coded by elapsed-time tier */
+.kds-card__timer {
+  font-family: var(--font-mono);
+  font-size: 1.7rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  padding: 4px 12px;
+  border-radius: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.kds-card__timer--green {
+  color: #2A8C45;
+  background: rgba(52, 168, 83, 0.14);
+}
+.kds-card__timer--yellow {
+  color: #8A5A00;
+  background: rgba(232, 163, 46, 0.20);
+}
+.kds-card__timer--red {
+  color: #E8442E;
+  background: rgba(232, 68, 46, 0.14);
 }
 
 /* ---------- Items ---------- */
@@ -392,4 +469,226 @@
 .kds-card--preparing .kds-card__cta {
   color: #2A8C45;
   background: rgba(52, 168, 83, 0.08);
+}
+
+/* ============================================================
+   Past Orders — read-only history overlay
+   ============================================================ */
+.kds-past {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: #FAFAF9;
+  display: flex;
+  flex-direction: column;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.kds-past__header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 28px;
+  background: #FFFFFF;
+  border-bottom: 2px solid #E5E5E5;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.kds-past__back {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 700;
+  color: #1A1A1A;
+  background: #FFFFFF;
+  border: 2px solid #1A1A1A;
+  border-radius: 9999px;
+  height: 44px;
+  padding: 0 20px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.kds-past__back:hover {
+  background: #1A1A1A;
+  color: #FFFFFF;
+}
+
+.kds-past__title {
+  font-family: var(--font-headline);
+  font-size: 1.5rem;
+  color: #1A1A1A;
+}
+
+.kds-past__sub {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: #6B6B6B;
+}
+
+.kds-past__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 28px 48px;
+}
+
+.kds-past__list {
+  list-style: none;
+  max-width: 820px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kds-past-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 130px 1fr 160px 24px;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  background: #FFFFFF;
+  border: 2px solid #E5E5E5;
+  border-radius: 12px;
+  padding: 18px 20px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.1s ease;
+}
+
+.kds-past-row:hover {
+  border-color: #1A1A1A;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+}
+
+.kds-past-row:active {
+  transform: scale(0.995);
+}
+
+/* Column header row — not interactive */
+.kds-past-row--head {
+  background: transparent;
+  border: none;
+  padding: 0 20px;
+  cursor: default;
+}
+
+.kds-past-row--head span {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #A3A3A3;
+}
+
+.kds-past-row__num {
+  font-family: var(--font-mono);
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #1A1A1A;
+}
+
+.kds-past-row__time {
+  font-family: var(--font-body);
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: #6B6B6B;
+}
+
+.kds-past-row__prep {
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #1A1A1A;
+  text-align: right;
+}
+
+.kds-past-row__chev {
+  font-family: var(--font-mono);
+  font-size: 1.6rem;
+  color: #A3A3A3;
+  text-align: right;
+}
+
+/* ---------- Past order detail popup ---------- */
+.kds-detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.kds-detail {
+  width: 100%;
+  max-width: 480px;
+  max-height: 88vh;
+  overflow-y: auto;
+  background: #FFFFFF;
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  animation: fadeIn 0.18s ease-out;
+}
+
+.kds-detail__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px 12px;
+  border-bottom: 1px solid #EFEFEF;
+}
+
+.kds-detail__num {
+  font-family: var(--font-mono);
+  font-size: 2.2rem;
+  font-weight: 700;
+  color: #1A1A1A;
+}
+
+.kds-detail__close {
+  background: transparent;
+  border: none;
+  color: #6B6B6B;
+  cursor: pointer;
+  display: flex;
+  padding: 6px;
+  border-radius: 50%;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.kds-detail__close:hover {
+  background: #F5F5F4;
+  color: #1A1A1A;
+}
+
+.kds-detail__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 22px;
+  background: #FAFAF9;
+  border-bottom: 1px solid #EFEFEF;
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 600;
+  color: #6B6B6B;
+}
+
+.kds-detail__prep {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: #1A1A1A;
+}
+
+.kds-detail__items {
+  padding: 6px 22px 20px;
 }

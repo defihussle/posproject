@@ -6,10 +6,50 @@ const POLL_MS = 5000;
 const KDS_STATUSES = "open,preparing";
 const FAIL_FLASH_MS = 2500; // how long a card shows its "update failed" state
 
+// --- Elapsed-time escalation thresholds (minutes) — tune here as needed ---
+const ELAPSED_YELLOW_MIN = 5; // green → yellow at/after this many minutes
+const ELAPSED_RED_MIN = 10; //   yellow → red at/after this many minutes
+
+// --- Past Orders window ---
+const HISTORY_SINCE_HOURS = 4;
+
 // One forward step per tap: open → preparing → ready.
 const NEXT_STATUS = { open: "preparing", preparing: "ready" };
 const STATUS_LABEL = { open: "NEW", preparing: "IN PROGRESS" };
 const TAP_HINT = { open: "TAP TO START", preparing: "TAP WHEN READY" };
+
+// ---- Time helpers ----
+function elapsedSeconds(iso, nowMs) {
+  return Math.max(0, Math.floor((nowMs - new Date(iso).getTime()) / 1000));
+}
+
+// "4:32" (M:SS, minutes uncapped so a 72-minute order still reads correctly)
+function formatMMSS(totalSec) {
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function elapsedTier(totalSec) {
+  const min = totalSec / 60;
+  if (min >= ELAPSED_RED_MIN) return "red";
+  if (min >= ELAPSED_YELLOW_MIN) return "yellow";
+  return "green";
+}
+
+// Duration between two ISO timestamps → "6m 42s"
+function formatDuration(fromIso, toIso) {
+  const ms = new Date(toIso).getTime() - new Date(fromIso).getTime();
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
+// Wall-clock time an order completed → "2:14 PM"
+function formatClock(iso) {
+  return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
 
 /**
  * Kitchen Display System — live order queue.
@@ -27,6 +67,10 @@ export default function KitchenDisplay() {
   // a cook a few feet away notices the tap didn't take. Auto-clears.
   const [failedIds, setFailedIds] = useState(() => new Set());
   const failTimers = useRef(new Map()); // orderId -> timeout id
+  // Ticks once a second so elapsed timers update smoothly between the 5s polls.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  // Past Orders overlay toggle.
+  const [pastOpen, setPastOpen] = useState(false);
 
   const markFailed = useCallback((orderId) => {
     setFailedIds((prev) => new Set(prev).add(orderId));
@@ -66,6 +110,13 @@ export default function KitchenDisplay() {
       for (const t of timers.values()) clearTimeout(t);
       timers.clear();
     };
+  }, []);
+
+  // 1s clock tick — drives the elapsed timers client-side, independent of the
+  // 5s data poll, so counters advance smoothly and never stutter on refetch.
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
   }, []);
 
   const fetchOrders = useCallback(async () => {
@@ -155,6 +206,9 @@ export default function KitchenDisplay() {
         <div className="kds__header-right">
           <span className="kds__title">KITCHEN</span>
           <span className="kds__count">{orders.length}</span>
+          <button className="kds__past-btn" onClick={() => setPastOpen(true)}>
+            Past Orders
+          </button>
         </div>
       </header>
 
@@ -174,6 +228,7 @@ export default function KitchenDisplay() {
             <OrderCard
               key={order.id}
               order={order}
+              nowMs={nowMs}
               busy={patchingIds.has(order.id)}
               failed={failedIds.has(order.id)}
               onAdvance={() => advanceOrder(order)}
@@ -181,11 +236,16 @@ export default function KitchenDisplay() {
           ))
         )}
       </main>
+
+      {pastOpen && <PastOrdersOverlay onClose={() => setPastOpen(false)} />}
     </div>
   );
 }
 
-function OrderCard({ order, busy, failed, onAdvance }) {
+function OrderCard({ order, nowMs, busy, failed, onAdvance }) {
+  const sec = elapsedSeconds(order.created_at, nowMs);
+  const tier = elapsedTier(sec);
+
   const handleKey = (e) => {
     if ((e.key === "Enter" || e.key === " ") && !busy) {
       e.preventDefault();
@@ -195,9 +255,9 @@ function OrderCard({ order, busy, failed, onAdvance }) {
 
   return (
     <div
-      className={`kds-card kds-card--${order.status}${busy ? " kds-card--busy" : ""}${
-        failed ? " kds-card--failed" : ""
-      }`}
+      className={`kds-card kds-card--${order.status} kds-card--t-${tier}${
+        busy ? " kds-card--busy" : ""
+      }${failed ? " kds-card--failed" : ""}`}
       role="button"
       tabIndex={0}
       aria-disabled={busy}
@@ -206,9 +266,14 @@ function OrderCard({ order, busy, failed, onAdvance }) {
     >
       <div className="kds-card__top">
         <span className="kds-card__number">#{order.order_number}</span>
-        <span className="kds-card__status">
-          {STATUS_LABEL[order.status] || order.status}
-        </span>
+        <div className="kds-card__meta">
+          <span className={`kds-card__timer kds-card__timer--${tier}`}>
+            {formatMMSS(sec)}
+          </span>
+          <span className="kds-card__status">
+            {STATUS_LABEL[order.status] || order.status}
+          </span>
+        </div>
       </div>
 
       <div className="kds-card__items">
@@ -289,6 +354,116 @@ function ItemBlock({ item }) {
       )}
 
       {item.notes && <div className="kds-item__notes">Note: {item.notes}</div>}
+    </div>
+  );
+}
+
+// ---- Past Orders (read-only history) ----
+function PastOrdersOverlay({ onClose }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [detail, setDetail] = useState(null); // selected past order
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `${API_URL}/api/orders/history?sinceHours=${HISTORY_SINCE_HOURS}`
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelled) {
+          setRows(data); // backend returns most-recent-first — preserve
+          setError(null);
+        }
+      } catch {
+        if (!cancelled) setError("Couldn't load past orders.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <div className="kds-past">
+      <header className="kds-past__header">
+        <button className="kds-past__back" onClick={onClose}>
+          ‹ Back to Queue
+        </button>
+        <h2 className="kds-past__title">Past Orders</h2>
+        <span className="kds-past__sub">last {HISTORY_SINCE_HOURS}h</span>
+      </header>
+
+      <div className="kds-past__body">
+        {loading ? (
+          <div className="kds__empty">Loading…</div>
+        ) : error ? (
+          <div className="kds__empty">{error}</div>
+        ) : rows.length === 0 ? (
+          <div className="kds__empty">
+            <div className="kds__empty-title">No completed orders</div>
+            <div className="kds__empty-sub">in the last {HISTORY_SINCE_HOURS} hours</div>
+          </div>
+        ) : (
+          <ul className="kds-past__list">
+            <li className="kds-past-row kds-past-row--head" aria-hidden="true">
+              <span className="kds-past-row__num">Order</span>
+              <span className="kds-past-row__time">Completed</span>
+              <span className="kds-past-row__prep">Prep time</span>
+              <span className="kds-past-row__chev" />
+            </li>
+            {rows.map((o) => (
+              <li key={o.id}>
+                <button className="kds-past-row" onClick={() => setDetail(o)}>
+                  <span className="kds-past-row__num">#{o.order_number}</span>
+                  <span className="kds-past-row__time">{formatClock(o.completed_at)}</span>
+                  <span className="kds-past-row__prep">
+                    {formatDuration(o.created_at, o.completed_at)}
+                  </span>
+                  <span className="kds-past-row__chev">›</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {detail && <PastOrderDetail order={detail} onClose={() => setDetail(null)} />}
+    </div>
+  );
+}
+
+function PastOrderDetail({ order, onClose }) {
+  return (
+    <div className="kds-detail-overlay" onClick={onClose}>
+      <div className="kds-detail" onClick={(e) => e.stopPropagation()}>
+        <div className="kds-detail__top">
+          <span className="kds-detail__num">#{order.order_number}</span>
+          <button className="kds-detail__close" onClick={onClose} aria-label="Close">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="kds-detail__meta">
+          <span className="kds-detail__meta-item">Completed {formatClock(order.completed_at)}</span>
+          <span className="kds-detail__prep">
+            Prep {formatDuration(order.created_at, order.completed_at)}
+          </span>
+        </div>
+
+        <div className="kds-detail__items">
+          {order.items.map((item) => (
+            <ItemBlock key={item.id} item={item} />
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
