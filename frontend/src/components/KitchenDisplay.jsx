@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import "./KitchenDisplay.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const POLL_MS = 5000;
 const KDS_STATUSES = "open,preparing";
+const FAIL_FLASH_MS = 2500; // how long a card shows its "update failed" state
 
 // One forward step per tap: open → preparing → ready.
 const NEXT_STATUS = { open: "preparing", preparing: "ready" };
@@ -22,6 +23,50 @@ export default function KitchenDisplay() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [patchingIds, setPatchingIds] = useState(() => new Set());
+  // Cards whose last status update failed — shown as a brief inline state so
+  // a cook a few feet away notices the tap didn't take. Auto-clears.
+  const [failedIds, setFailedIds] = useState(() => new Set());
+  const failTimers = useRef(new Map()); // orderId -> timeout id
+
+  const markFailed = useCallback((orderId) => {
+    setFailedIds((prev) => new Set(prev).add(orderId));
+    const timers = failTimers.current;
+    if (timers.has(orderId)) clearTimeout(timers.get(orderId));
+    timers.set(
+      orderId,
+      setTimeout(() => {
+        setFailedIds((prev) => {
+          const s = new Set(prev);
+          s.delete(orderId);
+          return s;
+        });
+        failTimers.current.delete(orderId);
+      }, FAIL_FLASH_MS)
+    );
+  }, []);
+
+  const clearFailed = useCallback((orderId) => {
+    const timers = failTimers.current;
+    if (timers.has(orderId)) {
+      clearTimeout(timers.get(orderId));
+      timers.delete(orderId);
+    }
+    setFailedIds((prev) => {
+      if (!prev.has(orderId)) return prev;
+      const s = new Set(prev);
+      s.delete(orderId);
+      return s;
+    });
+  }, []);
+
+  // Clear any pending fail-flash timers on unmount.
+  useEffect(() => {
+    const timers = failTimers.current;
+    return () => {
+      for (const t of timers.values()) clearTimeout(t);
+      timers.clear();
+    };
+  }, []);
 
   const fetchOrders = useCallback(async () => {
     try {
@@ -64,6 +109,9 @@ export default function KitchenDisplay() {
       });
       if (blocked) return;
 
+      // A fresh attempt clears any lingering "failed" flash on this card.
+      clearFailed(order.id);
+
       try {
         const res = await fetch(`${API_URL}/api/orders/${order.id}/status`, {
           method: "PATCH",
@@ -80,9 +128,11 @@ export default function KitchenDisplay() {
             .map((o) => (o.id === updated.id ? updated : o))
             .filter((o) => o.status === "open" || o.status === "preparing")
         );
-        setError(null);
       } catch (err) {
-        setError("Couldn't update an order — try again.");
+        // Show the failure ON the card itself. (A top banner here got wiped
+        // instantly by the resync below, so staff never saw it.) The inline
+        // flash is independent of the resync and holds for FAIL_FLASH_MS.
+        markFailed(order.id);
         // Resync to the real backend state so the card isn't left stale.
         fetchOrders();
       } finally {
@@ -93,7 +143,7 @@ export default function KitchenDisplay() {
         });
       }
     },
-    [fetchOrders]
+    [fetchOrders, clearFailed, markFailed]
   );
 
   return (
@@ -125,6 +175,7 @@ export default function KitchenDisplay() {
               key={order.id}
               order={order}
               busy={patchingIds.has(order.id)}
+              failed={failedIds.has(order.id)}
               onAdvance={() => advanceOrder(order)}
             />
           ))
@@ -134,7 +185,7 @@ export default function KitchenDisplay() {
   );
 }
 
-function OrderCard({ order, busy, onAdvance }) {
+function OrderCard({ order, busy, failed, onAdvance }) {
   const handleKey = (e) => {
     if ((e.key === "Enter" || e.key === " ") && !busy) {
       e.preventDefault();
@@ -144,7 +195,9 @@ function OrderCard({ order, busy, onAdvance }) {
 
   return (
     <div
-      className={`kds-card kds-card--${order.status}${busy ? " kds-card--busy" : ""}`}
+      className={`kds-card kds-card--${order.status}${busy ? " kds-card--busy" : ""}${
+        failed ? " kds-card--failed" : ""
+      }`}
       role="button"
       tabIndex={0}
       aria-disabled={busy}
@@ -165,7 +218,11 @@ function OrderCard({ order, busy, onAdvance }) {
       </div>
 
       <div className="kds-card__cta">
-        {busy ? "SENDING…" : TAP_HINT[order.status] || ""}
+        {busy
+          ? "SENDING…"
+          : failed
+          ? "UPDATE FAILED · TAP TO RETRY"
+          : TAP_HINT[order.status] || ""}
       </div>
     </div>
   );

@@ -176,6 +176,24 @@
   pointer-events: none;
 }
 
+/* Failed = last status update didn't go through → loud red ring + flash so a
+   cook a few feet away notices; still tappable to retry. Auto-clears. */
+@keyframes kdsCardFail {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(232, 68, 46, 0.45), 0 6px 20px rgba(0, 0, 0, 0.12); }
+  50% { box-shadow: 0 0 0 8px rgba(232, 68, 46, 0.55), 0 6px 20px rgba(0, 0, 0, 0.12); }
+}
+
+.kds-card--failed {
+  border-color: #E8442E;
+  box-shadow: 0 0 0 4px rgba(232, 68, 46, 0.45), 0 6px 20px rgba(0, 0, 0, 0.12);
+  animation: kdsCardFail 0.5s ease-in-out 3;
+}
+
+.kds-card--failed .kds-card__cta {
+  background: #E8442E;
+  color: #FFFFFF;
+}
+
 .kds-card__top {
   display: flex;
   align-items: center;
