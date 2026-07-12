@@ -570,16 +570,18 @@ app.post("/api/orders", async (req, res) => {
 // Orders come back oldest created_at first (FIFO) — a planned elapsed-time
 // UI depends on this ordering, so do not change it without flagging.
 //
-// Per item we resolve the item's default modifier set (options configured as
-// default_selected in the menu) and diff it against what's actually on the
-// order line, producing three arrays:
-//   - removed_ingredients[]: default options with NO matching order row
-//     (the "NO onions" cases) — name only
-//   - added_modifiers[]: non-default options present on the line — name +
-//     quantity, no price
+// Per item we split the modifiers into distinct buckets:
+//   - selected_options[]: choices from REQUIRED groups (Format=Burrito/Bowl,
+//     Base=Nachos/Fries, Protein, Choose 3 Proteins, ...) — these define what
+//     the item fundamentally IS, so they get { group, choice } and are never
+//     run through the optional add/remove diff. One entry per choice made.
+//   - removed_ingredients[]: default options from NON-required groups with NO
+//     matching order row (the "NO onions" cases) — name only
+//   - added_modifiers[]: non-default options from NON-required groups present
+//     on the line — name + quantity, no price
 //   - addons[]: name, quantity, is_complimentary — no price
 // Kept defaults (default AND present) are the normal build and appear in none
-// of these.
+// of these. All output is price-free.
 async function fetchKdsOrders(client, orderIds) {
   if (orderIds.length === 0) return [];
 
@@ -605,14 +607,17 @@ async function fetchKdsOrders(client, orderIds) {
   const itemIds = items.map((i) => i.id);
   const menuItemIds = [...new Set(items.map((i) => i.item_id))];
 
-  // Modifiers actually on each order line, tagged with whether they're a
+  // Modifiers actually on each order line, tagged with their group's name +
+  // required flag (to split required choices out) and whether they're a
   // default (standard) ingredient or a customer addition.
   const { rows: mods } = itemIds.length
     ? await client.query(
         `SELECT oim.order_item_id, oim.modifier_option_id,
-                mo.name AS option_name, mo.default_selected, oim.quantity
+                mo.name AS option_name, mo.default_selected, oim.quantity,
+                mg.name AS group_name, mg.required AS group_required
            FROM order_item_modifiers oim
            JOIN modifier_options mo ON mo.id = oim.modifier_option_id
+           JOIN modifier_groups mg ON mg.id = mo.group_id
           WHERE oim.order_item_id = ANY($1::uuid[])
           ORDER BY mo.sort_order`,
         [itemIds]
@@ -620,13 +625,17 @@ async function fetchKdsOrders(client, orderIds) {
     : { rows: [] };
 
   // The default modifier set for each menu item (config, not order-specific):
-  // every option flagged default_selected in a group linked to that item.
+  // every option flagged default_selected in a NON-required group linked to
+  // that item. Required groups are excluded here so a mutually-exclusive
+  // choice can never be reported as a "removed" ingredient.
   const { rows: defaults } = menuItemIds.length
     ? await client.query(
         `SELECT img.item_id, mo.id AS option_id, mo.name AS option_name
            FROM item_modifier_groups img
-           JOIN modifier_options mo ON mo.group_id = img.modifier_group_id
+           JOIN modifier_groups mg ON mg.id = img.modifier_group_id
+           JOIN modifier_options mo ON mo.group_id = mg.id
           WHERE img.item_id = ANY($1::uuid[])
+            AND mg.required = false
             AND mo.default_selected = true
             AND mo.active = true
           ORDER BY mo.sort_order`,
@@ -646,13 +655,21 @@ async function fetchKdsOrders(client, orderIds) {
       )
     : { rows: [] };
 
-  // Per order line: the set of option ids present, and the added (non-default)
-  // modifiers.
+  // Per order line: option ids present, required-group choices, and the added
+  // (non-default, non-required) modifiers.
   const presentOptByItem = {}; // order_item_id -> Set(option_id)
+  const selectedByItem = {}; // order_item_id -> [{ group, choice }]
   const addedByItem = {}; // order_item_id -> [{ name, quantity }]
   for (const m of mods) {
     (presentOptByItem[m.order_item_id] ||= new Set()).add(m.modifier_option_id);
-    if (!m.default_selected) {
+    if (m.group_required) {
+      // Required choice — defines what the item IS. Surfaced on its own; never
+      // an optional add and never a removal. One entry per choice made.
+      (selectedByItem[m.order_item_id] ||= []).push({
+        group: m.group_name,
+        choice: m.option_name,
+      });
+    } else if (!m.default_selected) {
       (addedByItem[m.order_item_id] ||= []).push({
         name: m.option_name,
         quantity: m.quantity,
@@ -693,6 +710,7 @@ async function fetchKdsOrders(client, orderIds) {
       quantity: it.quantity,
       notes: it.notes,
       status: it.status,
+      selected_options: selectedByItem[it.id] || [],
       removed_ingredients,
       added_modifiers: addedByItem[it.id] || [],
       addons: addonsByItem[it.id] || [],
