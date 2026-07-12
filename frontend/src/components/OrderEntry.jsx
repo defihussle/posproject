@@ -4,6 +4,8 @@ import logoImg from "../assets/narcos-tacos-logo.png";
 import "./OrderEntry.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const TAX_RATE = 0.13; // Ontario HST — display only; the server is the source of truth
+const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
 export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [menu, setMenu] = useState([]);
@@ -14,6 +16,12 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [cart, setCart] = useState([]);
   const [cartCollapsed, setCartCollapsed] = useState(true);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+
+  // Checkout flow state
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [checkoutError, setCheckoutError] = useState(null);
+  const [confirmation, setConfirmation] = useState(null); // { orderNumber }
 
   // Total cart items count
   const cartItemsCount = useMemo(
@@ -94,6 +102,79 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const subtotal = useMemo(
     () => cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0),
     [cart]
+  );
+
+  // Tax + total for the checkout screen (display only — server recomputes)
+  const tax = useMemo(() => round2(subtotal * TAX_RATE), [subtotal]);
+  const total = useMemo(() => round2(subtotal + tax), [subtotal, tax]);
+
+  // Map the cart into the /api/orders payload. Only sends WHAT was selected
+  // (ids + quantities) — never prices; the server recomputes those.
+  const buildOrderPayload = useCallback(
+    (method) => ({
+      staffId: staff.id,
+      paymentMethod: method,
+      items: cart.map((line) => ({
+        itemId: line.itemId,
+        variantId: line.variant ? line.variant.id : null,
+        quantity: line.quantity,
+        notes: line.notes || null,
+        modifiers: line.modifiers.map((m) => ({
+          optionId: m.optionId,
+          quantity: m.quantity,
+        })),
+        addons: line.addons.map((a) => ({
+          addonId: a.addonId,
+          extraQty: a.extraQty,
+        })),
+      })),
+    }),
+    [cart, staff.id]
+  );
+
+  const openCheckout = useCallback(() => {
+    setCheckoutError(null);
+    setConfirmation(null);
+    setCheckoutOpen(true);
+  }, []);
+
+  const closeCheckout = useCallback(() => {
+    if (submitting) return; // don't allow closing mid-submit
+    setCheckoutOpen(false);
+    setCheckoutError(null);
+  }, [submitting]);
+
+  // Submit the order with the chosen payment method
+  const handleCheckout = useCallback(
+    async (method) => {
+      if (submitting) return;
+      setSubmitting(true);
+      setCheckoutError(null);
+      try {
+        const res = await fetch(`${API_URL}/api/orders`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(buildOrderPayload(method)),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || "Something went wrong. Please try again.");
+        }
+        // Success — clear the cart, show a brief confirmation, auto-dismiss
+        setConfirmation({ orderNumber: data.order_number });
+        setCart([]);
+        setTimeout(() => {
+          setConfirmation(null);
+          setCheckoutOpen(false);
+          setSubmitting(false);
+        }, 2000);
+      } catch (err) {
+        // Failure — keep the cart intact so nothing is lost, let staff retry
+        setCheckoutError(err.message || "Network error. Please try again.");
+        setSubmitting(false);
+      }
+    },
+    [submitting, buildOrderPayload]
   );
 
   // Price display helper for items
@@ -328,6 +409,9 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                     <span className="oe-cart__subtotal-label">Subtotal</span>
                     <span className="oe-cart__subtotal-amount">${subtotal.toFixed(2)}</span>
                   </div>
+                  <button className="oe-cart__checkout-btn" onClick={openCheckout}>
+                    Checkout · ${total.toFixed(2)}
+                  </button>
                 </div>
               )}
             </>
@@ -346,6 +430,88 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
             setModalVariant(null);
           }}
         />
+      )}
+
+      {/* Checkout Modal */}
+      {checkoutOpen && (
+        <div
+          className="oe-checkout-overlay"
+          onClick={confirmation ? undefined : closeCheckout}
+        >
+          <div className="oe-checkout" onClick={(e) => e.stopPropagation()}>
+            {confirmation ? (
+              <div className="oe-checkout__success">
+                <div className="oe-checkout__success-check">
+                  <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                </div>
+                <div className="oe-checkout__success-title">
+                  Order #{confirmation.orderNumber}
+                </div>
+                <div className="oe-checkout__success-sub">sent to kitchen</div>
+              </div>
+            ) : (
+              <>
+                <div className="oe-checkout__header">
+                  <h2 className="oe-checkout__title">Payment</h2>
+                  <button
+                    className="oe-checkout__close"
+                    onClick={closeCheckout}
+                    disabled={submitting}
+                    aria-label="Close"
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+
+                <div className="oe-checkout__summary">
+                  <div className="oe-checkout__row">
+                    <span>Subtotal</span>
+                    <span>${subtotal.toFixed(2)}</span>
+                  </div>
+                  <div className="oe-checkout__row">
+                    <span>Tax (13%)</span>
+                    <span>${tax.toFixed(2)}</span>
+                  </div>
+                  <div className="oe-checkout__row oe-checkout__row--total">
+                    <span>Total</span>
+                    <span>${total.toFixed(2)}</span>
+                  </div>
+                </div>
+
+                {checkoutError && (
+                  <div className="oe-checkout__error">{checkoutError}</div>
+                )}
+
+                <div className="oe-checkout__methods">
+                  <button
+                    className="oe-checkout__method"
+                    onClick={() => handleCheckout("cash")}
+                    disabled={submitting}
+                  >
+                    <span className="oe-checkout__method-icon">💵</span>
+                    <span>Cash</span>
+                  </button>
+                  <button
+                    className="oe-checkout__method"
+                    onClick={() => handleCheckout("card")}
+                    disabled={submitting}
+                  >
+                    <span className="oe-checkout__method-icon">💳</span>
+                    <span>Card</span>
+                  </button>
+                </div>
+
+                {submitting && (
+                  <div className="oe-checkout__processing">Processing…</div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

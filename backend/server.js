@@ -17,6 +17,15 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
+// Small helper for throwing HTTP-status-carrying validation errors from
+// deep inside the order transaction, caught centrally to roll back + reply.
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
 // --------------- Rate limiter (PIN-guessing protection) ---------------
 // Tracks failed login attempts per IP. After 5 failures within 60s,
 // the IP is blocked for 30s before it can try again.
@@ -238,6 +247,317 @@ app.post("/api/auth/login", async (req, res) => {
   } catch (err) {
     console.error("Login error:", err.message);
     return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// --------------- Checkout: create an order ---------------
+// POST /api/orders
+// Body: {
+//   staffId, paymentMethod ("cash" | "card"),
+//   items: [{ itemId, variantId|null, quantity, notes|null,
+//             modifiers: [{ optionId, quantity }],
+//             addons:    [{ addonId, extraQty }] }]
+// }
+//
+// SECURITY: prices are ALWAYS recomputed from the live database. The
+// payload only tells us WHAT was selected, never what it costs — so a
+// tampered client can't change the total. The entire write runs inside
+// a single transaction; any validation failure rolls the whole thing back.
+
+const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+app.post("/api/orders", async (req, res) => {
+  const { staffId, paymentMethod, items } = req.body || {};
+
+  // ---- Shape validation (cheap checks before touching the DB) ----
+  if (!staffId || typeof staffId !== "string") {
+    return res.status(400).json({ error: "staffId is required" });
+  }
+  if (paymentMethod !== "cash" && paymentMethod !== "card") {
+    return res.status(400).json({ error: "paymentMethod must be 'cash' or 'card'" });
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: "Order must contain at least one item" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // ---- Resolve staff + location (source of the tax rate) ----
+    const { rows: staffRows } = await client.query(
+      "SELECT id, location_id FROM staff WHERE id = $1 AND active = true",
+      [staffId]
+    );
+    if (staffRows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Unknown or inactive staff member" });
+    }
+    const staff = staffRows[0];
+
+    // Owners have location_id = NULL (all locations) — fall back to the
+    // single active location for a concrete order/tax context.
+    const locResult = staff.location_id
+      ? await client.query("SELECT id, tax_rate FROM locations WHERE id = $1", [staff.location_id])
+      : await client.query(
+          "SELECT id, tax_rate FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
+        );
+    if (locResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "No location available for this order" });
+    }
+    const location = locResult.rows[0];
+    const taxRate = parseFloat(location.tax_rate);
+
+    // ---- Recompute every line from the database ----
+    // We build a fully-priced structure first (validating as we go), then
+    // do the inserts. Nothing is written until all lines pass validation.
+    const pricedLines = [];
+    let subtotal = 0;
+
+    for (let i = 0; i < items.length; i++) {
+      const line = items[i] || {};
+      const { itemId, variantId, modifiers, addons, notes } = line;
+      const quantity = Number(line.quantity);
+
+      if (!itemId || typeof itemId !== "string") {
+        throw new HttpError(400, `Line ${i + 1}: itemId is required`);
+      }
+      if (!Number.isInteger(quantity) || quantity < 1) {
+        throw new HttpError(400, `Line ${i + 1}: quantity must be a positive integer`);
+      }
+
+      // Menu item (authoritative base price)
+      const { rows: itemRows } = await client.query(
+        "SELECT id, name, base_price FROM menu_items WHERE id = $1 AND active = true",
+        [itemId]
+      );
+      if (itemRows.length === 0) {
+        throw new HttpError(400, `Line ${i + 1}: menu item not found or unavailable`);
+      }
+      const menuItem = itemRows[0];
+
+      // Base unit price = variant price (if any) else item base_price
+      let unitPrice = parseFloat(menuItem.base_price);
+
+      // Does this item have active variants? If so, a variant is required.
+      const { rows: itemVariants } = await client.query(
+        "SELECT id, price FROM item_variants WHERE item_id = $1 AND active = true",
+        [itemId]
+      );
+      let resolvedVariantId = null;
+      if (itemVariants.length > 0) {
+        if (!variantId) {
+          throw new HttpError(400, `Line ${i + 1}: "${menuItem.name}" requires a variant selection`);
+        }
+        const variant = itemVariants.find((v) => v.id === variantId);
+        if (!variant) {
+          throw new HttpError(400, `Line ${i + 1}: invalid variant for "${menuItem.name}"`);
+        }
+        unitPrice = parseFloat(variant.price);
+        resolvedVariantId = variant.id;
+      } else if (variantId) {
+        throw new HttpError(400, `Line ${i + 1}: "${menuItem.name}" has no variants`);
+      }
+
+      // ---- Modifiers ----
+      // Which modifier groups are valid for this item?
+      const { rows: itemGroups } = await client.query(
+        `SELECT mg.id, mg.name, mg.min_select, mg.max_select, mg.required
+           FROM item_modifier_groups img
+           JOIN modifier_groups mg ON mg.id = img.modifier_group_id
+          WHERE img.item_id = $1`,
+        [itemId]
+      );
+      const groupById = new Map(itemGroups.map((g) => [g.id, g]));
+      const selectedPerGroup = new Map(); // groupId -> count of distinct selected options
+
+      const pricedModifiers = [];
+      const submittedMods = Array.isArray(modifiers) ? modifiers : [];
+      for (const mod of submittedMods) {
+        const optionId = mod?.optionId;
+        const modQty = Number(mod?.quantity);
+        if (!optionId || typeof optionId !== "string") {
+          throw new HttpError(400, `Line ${i + 1}: modifier optionId is required`);
+        }
+        if (!Number.isInteger(modQty) || modQty < 1) {
+          throw new HttpError(400, `Line ${i + 1}: modifier quantity must be a positive integer`);
+        }
+
+        const { rows: optRows } = await client.query(
+          "SELECT id, group_id, price_delta, max_quantity FROM modifier_options WHERE id = $1 AND active = true",
+          [optionId]
+        );
+        if (optRows.length === 0) {
+          throw new HttpError(400, `Line ${i + 1}: modifier option not found`);
+        }
+        const opt = optRows[0];
+
+        // The option's group must actually apply to this item
+        if (!groupById.has(opt.group_id)) {
+          throw new HttpError(400, `Line ${i + 1}: modifier does not belong to "${menuItem.name}"`);
+        }
+        const maxQ = opt.max_quantity || 1;
+        if (modQty > maxQ) {
+          throw new HttpError(400, `Line ${i + 1}: modifier quantity exceeds its limit`);
+        }
+
+        selectedPerGroup.set(opt.group_id, (selectedPerGroup.get(opt.group_id) || 0) + 1);
+        const priceDelta = parseFloat(opt.price_delta);
+        unitPrice += priceDelta * modQty;
+        pricedModifiers.push({ optionId: opt.id, priceDelta, quantity: modQty });
+      }
+
+      // Enforce each group's min/max selection rules
+      for (const g of itemGroups) {
+        const count = selectedPerGroup.get(g.id) || 0;
+        if (g.required && count < g.min_select) {
+          throw new HttpError(
+            400,
+            `Line ${i + 1}: "${g.name}" requires at least ${g.min_select} selection${g.min_select > 1 ? "s" : ""}`
+          );
+        }
+        if (count > g.max_select) {
+          throw new HttpError(400, `Line ${i + 1}: "${g.name}" allows at most ${g.max_select}`);
+        }
+      }
+
+      // ---- Add-ons ----
+      // Driven by the item's actual add-ons in the DB (authoritative), so
+      // complimentary items are always recorded even if the client omits them.
+      // Paid extras come from the extraQty the client submitted per add-on.
+      const { rows: itemAddons } = await client.query(
+        `SELECT ia.id, ia.addon_item_id, ia.included_quantity, ia.extra_price,
+                mi.base_price AS addon_base_price
+           FROM item_addons ia
+           JOIN menu_items mi ON mi.id = ia.addon_item_id
+          WHERE ia.item_id = $1`,
+        [itemId]
+      );
+      const submittedAddons = Array.isArray(addons) ? addons : [];
+      const extraByAddonId = new Map();
+      for (const a of submittedAddons) {
+        if (!a || typeof a.addonId !== "string") continue;
+        const extraQty = Number(a.extraQty) || 0;
+        if (!Number.isInteger(extraQty) || extraQty < 0) {
+          throw new HttpError(400, `Line ${i + 1}: addon extraQty must be a non-negative integer`);
+        }
+        // Reject add-ons that don't belong to this item
+        if (!itemAddons.some((ia) => ia.id === a.addonId)) {
+          throw new HttpError(400, `Line ${i + 1}: addon does not belong to "${menuItem.name}"`);
+        }
+        extraByAddonId.set(a.addonId, extraQty);
+      }
+
+      const pricedAddons = [];
+      for (const ia of itemAddons) {
+        const extraUnitPrice =
+          ia.extra_price != null ? parseFloat(ia.extra_price) : parseFloat(ia.addon_base_price);
+        const includedQty = ia.included_quantity;
+        const extraQty = extraByAddonId.get(ia.id) || 0;
+
+        // Complimentary portion (free, recorded for the kitchen)
+        if (includedQty > 0) {
+          pricedAddons.push({
+            addonItemId: ia.addon_item_id,
+            quantity: includedQty,
+            unitPrice: 0,
+            isComplimentary: true,
+          });
+        }
+        // Paid extras beyond the included quantity
+        if (extraQty > 0) {
+          unitPrice += extraUnitPrice * extraQty;
+          pricedAddons.push({
+            addonItemId: ia.addon_item_id,
+            quantity: extraQty,
+            unitPrice: round2(extraUnitPrice),
+            isComplimentary: false,
+          });
+        }
+      }
+
+      unitPrice = round2(unitPrice);
+      subtotal += unitPrice * quantity;
+
+      pricedLines.push({
+        itemId: menuItem.id,
+        variantId: resolvedVariantId,
+        quantity,
+        unitPrice,
+        notes: typeof notes === "string" && notes.trim() ? notes.trim() : null,
+        modifiers: pricedModifiers,
+        addons: pricedAddons,
+      });
+    }
+
+    // ---- Totals ----
+    subtotal = round2(subtotal);
+    const tax = round2(subtotal * taxRate);
+    const tip = 0;
+    const total = round2(subtotal + tax + tip);
+
+    // ---- Insert order ----
+    const { rows: orderRows } = await client.query(
+      `INSERT INTO orders (location_id, staff_id, status, subtotal, tax, tip, total)
+       VALUES ($1, $2, 'open', $3, $4, $5, $6)
+       RETURNING id, order_number`,
+      [location.id, staff.id, subtotal, tax, tip, total]
+    );
+    const order = orderRows[0];
+
+    // ---- Insert lines, modifiers, addons ----
+    for (const line of pricedLines) {
+      const { rows: oiRows } = await client.query(
+        `INSERT INTO order_items (order_id, item_id, variant_id, quantity, unit_price, notes)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id`,
+        [order.id, line.itemId, line.variantId, line.quantity, line.unitPrice, line.notes]
+      );
+      const orderItemId = oiRows[0].id;
+
+      for (const mod of line.modifiers) {
+        await client.query(
+          `INSERT INTO order_item_modifiers (order_item_id, modifier_option_id, price_delta, quantity)
+           VALUES ($1, $2, $3, $4)`,
+          [orderItemId, mod.optionId, mod.priceDelta, mod.quantity]
+        );
+      }
+
+      for (const addon of line.addons) {
+        await client.query(
+          `INSERT INTO order_item_addons (order_item_id, addon_item_id, quantity, unit_price, is_complimentary)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [orderItemId, addon.addonItemId, addon.quantity, addon.unitPrice, addon.isComplimentary]
+        );
+      }
+    }
+
+    // ---- Insert payment (mocked — captured immediately, no processor) ----
+    await client.query(
+      `INSERT INTO payments (order_id, method, amount, status)
+       VALUES ($1, $2, $3, 'captured')`,
+      [order.id, paymentMethod, total]
+    );
+
+    await client.query("COMMIT");
+    return res.status(201).json({
+      id: order.id,
+      order_number: order.order_number,
+      subtotal,
+      tax,
+      tip,
+      total,
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    if (err instanceof HttpError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    console.error("Order creation failed:", err);
+    return res.status(500).json({ error: "Failed to create order" });
+  } finally {
+    client.release();
   }
 });
 
