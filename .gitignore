@@ -21,3 +21,10 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Exports & Dumps
+/backend/exports/
+/backend/reports/
+*.csv
+*.dump
+*.sql.gz
