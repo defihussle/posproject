@@ -7,7 +7,7 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
   const hasVariants = item.variants.length > 0;
   const hideVariantSelector = !!initialVariant;
 
-  // Helper to format variant + item name (e.g., Pollo Tacos)
+  // Helper to format variant + item name (e.g., Chicken (Pollo) Tacos)
   const getFormattedVariantItemName = (itemName, variantName) => {
     let cleanItemName = itemName;
     if (cleanItemName.endsWith(" (3pc)")) {
@@ -20,14 +20,61 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
   };
 
   // --- Modifier selections keyed by group id ---
-  // { [groupId]: Set of selected option ids }
+  // { [groupId]: Map<optionId, quantity> }
+  // quantity=0 means unselected, quantity>=1 means selected
   const [modSelections, setModSelections] = useState(() => {
     const init = {};
     for (const g of item.modifier_groups) {
-      init[g.id] = new Set();
+      const optMap = new Map();
+      for (const opt of g.options) {
+        // Pre-check options that have default_selected = true
+        optMap.set(opt.id, opt.default_selected ? 1 : 0);
+      }
+      init[g.id] = optMap;
     }
     return init;
   });
+
+  // --- Toggle modifier option (for simple on/off, max_quantity === 1) ---
+  const toggleModOption = (group, optionId) => {
+    setModSelections((prev) => {
+      const optMap = new Map(prev[group.id]);
+      const currentQty = optMap.get(optionId) || 0;
+
+      if (currentQty > 0) {
+        // Turn off
+        optMap.set(optionId, 0);
+      } else {
+        // If max_select is 1, clear others first (radio behavior)
+        if (group.max_select === 1) {
+          for (const [key] of optMap) {
+            optMap.set(key, 0);
+          }
+        }
+        // Count currently selected
+        let selectedCount = 0;
+        for (const [, qty] of optMap) {
+          if (qty > 0) selectedCount++;
+        }
+        // Only add if under max
+        if (selectedCount < group.max_select) {
+          optMap.set(optionId, 1);
+        }
+      }
+      return { ...prev, [group.id]: optMap };
+    });
+  };
+
+  // --- Adjust stepper quantity (for max_quantity > 1) ---
+  const adjustModQty = (group, optionId, delta, maxQty) => {
+    setModSelections((prev) => {
+      const optMap = new Map(prev[group.id]);
+      const currentQty = optMap.get(optionId) || 0;
+      const newQty = Math.max(0, Math.min(maxQty, currentQty + delta));
+      optMap.set(optionId, newQty);
+      return { ...prev, [group.id]: optMap };
+    });
+  };
 
   // --- Addon extra quantities (beyond included) ---
   // { [addonId]: extra qty }
@@ -39,32 +86,23 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
     return init;
   });
 
-  // --- Toggle modifier option ---
-  const toggleModOption = (group, optionId) => {
-    setModSelections((prev) => {
-      const sel = new Set(prev[group.id]);
-      if (sel.has(optionId)) {
-        sel.delete(optionId);
-      } else {
-        // If max_select is 1, replace (radio behavior)
-        if (group.max_select === 1) {
-          sel.clear();
-        }
-        // If at max, don't add more
-        if (sel.size < group.max_select) {
-          sel.add(optionId);
-        }
-      }
-      return { ...prev, [group.id]: sel };
-    });
-  };
-
   // --- Addon quantity ---
   const adjustAddonQty = (addonId, delta) => {
     setAddonExtras((prev) => ({
       ...prev,
       [addonId]: Math.max(0, (prev[addonId] || 0) + delta),
     }));
+  };
+
+  // Helper: count selected options in a group
+  const getSelectedCount = (groupId) => {
+    const optMap = modSelections[groupId];
+    if (!optMap) return 0;
+    let count = 0;
+    for (const [, qty] of optMap) {
+      if (qty > 0) count++;
+    }
+    return count;
   };
 
   // --- Validation ---
@@ -74,7 +112,7 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
       errors.push("Please select a variant");
     }
     for (const g of item.modifier_groups) {
-      const count = modSelections[g.id]?.size || 0;
+      const count = getSelectedCount(g.id);
       if (g.required && count < g.min_select) {
         errors.push(`"${g.name}" requires at least ${g.min_select} selection${g.min_select > 1 ? "s" : ""}`);
       }
@@ -90,11 +128,12 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
       ? parseFloat(selectedVariant.price)
       : parseFloat(item.base_price);
 
-    // Add modifier deltas
+    // Add modifier deltas (multiply by quantity)
     for (const g of item.modifier_groups) {
       for (const opt of g.options) {
-        if (modSelections[g.id]?.has(opt.id)) {
-          price += parseFloat(opt.price_delta);
+        const qty = modSelections[g.id]?.get(opt.id) || 0;
+        if (qty > 0) {
+          price += parseFloat(opt.price_delta) * qty;
         }
       }
     }
@@ -117,16 +156,18 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
   const handleAdd = () => {
     if (!canAdd) return;
 
-    // Build selected modifiers list
+    // Build selected modifiers list (include quantity)
     const selectedModifiers = [];
     for (const g of item.modifier_groups) {
       for (const opt of g.options) {
-        if (modSelections[g.id]?.has(opt.id)) {
+        const qty = modSelections[g.id]?.get(opt.id) || 0;
+        if (qty > 0) {
           selectedModifiers.push({
             groupName: g.name,
             optionId: opt.id,
             optionName: opt.name,
             priceDelta: parseFloat(opt.price_delta),
+            quantity: qty,
           });
         }
       }
@@ -209,7 +250,7 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
           {/* Modifier Groups */}
           {item.modifier_groups.map((group) => {
             const isRadio = group.max_select === 1;
-            const sel = modSelections[group.id] || new Set();
+            const selectedCount = getSelectedCount(group.id);
 
             return (
               <div key={group.id} className="item-modal__section">
@@ -220,13 +261,55 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
                   </span>
                   {group.max_select > 1 && (
                     <span className="item-modal__section-hint">
-                      {sel.size}/{group.max_select}
+                      {selectedCount}/{group.max_select}
                     </span>
                   )}
                 </div>
                 {group.options.map((opt) => {
-                  const isSelected = sel.has(opt.id);
+                  const qty = modSelections[group.id]?.get(opt.id) || 0;
+                  const isSelected = qty > 0;
                   const delta = parseFloat(opt.price_delta);
+                  const maxQty = opt.max_quantity || 1;
+                  const isStepper = maxQty > 1;
+
+                  if (isStepper) {
+                    // ---- Stepper UI ----
+                    return (
+                      <div
+                        key={opt.id}
+                        className={`item-modal__option${isSelected ? " item-modal__option--selected" : ""}`}
+                      >
+                        <div className={`item-modal__indicator item-modal__indicator--checkbox${isSelected ? " item-modal__indicator--selected" : ""}`} />
+                        <span className="item-modal__option-name">{opt.name}</span>
+                        <div className="item-modal__stepper">
+                          <button
+                            className="item-modal__stepper-btn"
+                            onClick={() => adjustModQty(group, opt.id, -1, maxQty)}
+                            disabled={qty === 0}
+                          >
+                            −
+                          </button>
+                          <span className="item-modal__stepper-qty">{qty}</span>
+                          <button
+                            className="item-modal__stepper-btn"
+                            onClick={() => adjustModQty(group, opt.id, 1, maxQty)}
+                            disabled={qty >= maxQty}
+                          >
+                            +
+                          </button>
+                        </div>
+                        <span className={`item-modal__option-price${delta === 0 ? " item-modal__option-price--free" : ""}`}>
+                          {delta === 0
+                            ? "Free"
+                            : qty > 1
+                              ? `${qty}× +$${delta.toFixed(2)} = +$${(delta * qty).toFixed(2)}`
+                              : `+$${delta.toFixed(2)}`}
+                        </span>
+                      </div>
+                    );
+                  }
+
+                  // ---- Standard toggle/radio UI ----
                   return (
                     <div
                       key={opt.id}
@@ -236,7 +319,7 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
                       <div className={`item-modal__indicator${isRadio ? "" : " item-modal__indicator--checkbox"}${isSelected ? " item-modal__indicator--selected" : ""}`} />
                       <span className="item-modal__option-name">{opt.name}</span>
                       <span className={`item-modal__option-price${delta === 0 ? " item-modal__option-price--free" : ""}`}>
-                        {delta === 0 ? "Free" : `+$${delta.toFixed(2)}`}
+                        {delta === 0 ? "Included" : `+$${delta.toFixed(2)}`}
                       </span>
                     </div>
                   );

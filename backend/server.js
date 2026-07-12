@@ -117,7 +117,7 @@ app.get("/api/menu/full", async (req, res) => {
 
     // 5. Modifier options
     const { rows: modOptions } = await pool.query(
-      "SELECT id, group_id, name, price_delta, sort_order FROM modifier_options WHERE active = true ORDER BY sort_order"
+      "SELECT id, group_id, name, price_delta, sort_order, max_quantity, default_selected FROM modifier_options WHERE active = true ORDER BY sort_order"
     );
 
     // 6. Item addons

@@ -223,7 +223,7 @@ export default function OrderEntry({ staff, onLogout }) {
                       )}
                       {line.modifiers.length > 0 && (
                         <div className="oe-cart-line__mods">
-                          {line.modifiers.map((m) => m.optionName).join(", ")}
+                          {line.modifiers.map((m) => m.quantity > 1 ? `${m.quantity}× ${m.optionName}` : m.optionName).join(", ")}
                         </div>
                       )}
                       {line.addons.filter((a) => a.includedQty > 0 || a.extraQty > 0).length > 0 && (
