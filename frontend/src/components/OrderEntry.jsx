@@ -44,24 +44,8 @@ export default function OrderEntry({ staff, onLogout }) {
 
   // Handle item card click
   const handleItemClick = useCallback((item, variant = null) => {
-    const hasModifiersOrAddons = item.modifier_groups.length > 0 || item.addons.length > 0;
-    if (variant || hasModifiersOrAddons) {
-      setModalItem(item);
-      setModalVariant(variant);
-    } else {
-      // Simple item or variant item with no modifiers/addons
-      addToCart({
-        itemId: item.id,
-        itemName: variant ? getFormattedVariantItemName(item.name, variant.name) : item.name,
-        variant: variant
-          ? { id: variant.id, name: variant.name, price: parseFloat(variant.price) }
-          : null,
-        modifiers: [],
-        addons: [],
-        unitPrice: variant ? parseFloat(variant.price) : parseFloat(item.base_price),
-        quantity: 1,
-      });
-    }
+    setModalItem(item);
+    setModalVariant(variant);
   }, []);
 
   // Add to cart
