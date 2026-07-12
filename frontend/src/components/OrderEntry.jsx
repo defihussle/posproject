@@ -9,7 +9,20 @@ export default function OrderEntry({ staff, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [activeCatId, setActiveCatId] = useState(null);
   const [modalItem, setModalItem] = useState(null);
+  const [modalVariant, setModalVariant] = useState(null);
   const [cart, setCart] = useState([]);
+
+  // Helper to format variant + item name (e.g., Pollo Tacos)
+  const getFormattedVariantItemName = (itemName, variantName) => {
+    let cleanItemName = itemName;
+    if (cleanItemName.endsWith(" (3pc)")) {
+      cleanItemName = cleanItemName.slice(0, -6);
+    }
+    if (cleanItemName.endsWith(" or Bowl")) {
+      cleanItemName = cleanItemName.slice(0, -8);
+    }
+    return `${variantName} ${cleanItemName}`;
+  };
 
   // Fetch full menu on mount
   useEffect(() => {
@@ -30,19 +43,22 @@ export default function OrderEntry({ staff, onLogout }) {
   );
 
   // Handle item card click
-  const handleItemClick = useCallback((item) => {
-    // If the item has variants, modifiers, or addons → open modal
-    if (item.variants.length > 0 || item.modifier_groups.length > 0 || item.addons.length > 0) {
+  const handleItemClick = useCallback((item, variant = null) => {
+    const hasModifiersOrAddons = item.modifier_groups.length > 0 || item.addons.length > 0;
+    if (variant || hasModifiersOrAddons) {
       setModalItem(item);
+      setModalVariant(variant);
     } else {
-      // Simple item — add directly to cart
+      // Simple item or variant item with no modifiers/addons
       addToCart({
         itemId: item.id,
-        itemName: item.name,
-        variant: null,
+        itemName: variant ? getFormattedVariantItemName(item.name, variant.name) : item.name,
+        variant: variant
+          ? { id: variant.id, name: variant.name, price: parseFloat(variant.price) }
+          : null,
         modifiers: [],
         addons: [],
-        unitPrice: parseFloat(item.base_price),
+        unitPrice: variant ? parseFloat(variant.price) : parseFloat(item.base_price),
         quantity: 1,
       });
     }
@@ -52,6 +68,7 @@ export default function OrderEntry({ staff, onLogout }) {
   const addToCart = useCallback((cartItem) => {
     setCart((prev) => [...prev, { ...cartItem, cartLineId: Date.now() + Math.random() }]);
     setModalItem(null);
+    setModalVariant(null);
   }, []);
 
   // Adjust quantity
@@ -132,29 +149,54 @@ export default function OrderEntry({ staff, onLogout }) {
 
           {/* Item Grid */}
           <div className="oe-items">
-            {activeCategory?.items.map((item) => (
-              <div
-                key={item.id}
-                className="oe-item-card"
-                onClick={() => handleItemClick(item)}
-              >
-                <span className="oe-item-card__name">{item.name}</span>
-                {item.description && (
-                  <span className="oe-item-card__desc">{item.description}</span>
-                )}
-                <span className="oe-item-card__price">{getPriceDisplay(item)}</span>
-                <div className="oe-item-card__badges">
-                  {item.variants.length > 0 && (
-                    <span className="oe-item-card__badge">{item.variants.length} options</span>
-                  )}
-                  {item.addons.length > 0 && (
-                    <span className="oe-item-card__badge oe-item-card__badge--addon">
-                      + free add-on
+            {activeCategory?.items.flatMap((item) => {
+              if (item.variants.length > 0) {
+                return item.variants.map((v) => (
+                  <div
+                    key={`${item.id}-${v.id}`}
+                    className="oe-item-card"
+                    onClick={() => handleItemClick(item, v)}
+                  >
+                    <span className="oe-item-card__name">
+                      {getFormattedVariantItemName(item.name, v.name)}
                     </span>
+                    {item.description && (
+                      <span className="oe-item-card__desc">{item.description}</span>
+                    )}
+                    <span className="oe-item-card__price">
+                      ${parseFloat(v.price).toFixed(2)}
+                    </span>
+                    <div className="oe-item-card__badges">
+                      {item.addons.length > 0 && (
+                        <span className="oe-item-card__badge oe-item-card__badge--addon">
+                          + free add-on
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ));
+              }
+              return (
+                <div
+                  key={item.id}
+                  className="oe-item-card"
+                  onClick={() => handleItemClick(item)}
+                >
+                  <span className="oe-item-card__name">{item.name}</span>
+                  {item.description && (
+                    <span className="oe-item-card__desc">{item.description}</span>
                   )}
+                  <span className="oe-item-card__price">{getPriceDisplay(item)}</span>
+                  <div className="oe-item-card__badges">
+                    {item.addons.length > 0 && (
+                      <span className="oe-item-card__badge oe-item-card__badge--addon">
+                        + free add-on
+                      </span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -240,8 +282,12 @@ export default function OrderEntry({ staff, onLogout }) {
       {modalItem && (
         <ItemModal
           item={modalItem}
+          initialVariant={modalVariant}
           onAdd={addToCart}
-          onClose={() => setModalItem(null)}
+          onClose={() => {
+            setModalItem(null);
+            setModalVariant(null);
+          }}
         />
       )}
     </div>

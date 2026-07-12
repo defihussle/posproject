@@ -1,10 +1,23 @@
 import { useState, useMemo } from "react";
 import "./ItemModal.css";
 
-export default function ItemModal({ item, onAdd, onClose }) {
+export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
   // --- Variant selection (radio — pick exactly one) ---
-  const [selectedVariant, setSelectedVariant] = useState(null);
+  const [selectedVariant, setSelectedVariant] = useState(initialVariant || null);
   const hasVariants = item.variants.length > 0;
+  const hideVariantSelector = !!initialVariant;
+
+  // Helper to format variant + item name (e.g., Pollo Tacos)
+  const getFormattedVariantItemName = (itemName, variantName) => {
+    let cleanItemName = itemName;
+    if (cleanItemName.endsWith(" (3pc)")) {
+      cleanItemName = cleanItemName.slice(0, -6);
+    }
+    if (cleanItemName.endsWith(" or Bowl")) {
+      cleanItemName = cleanItemName.slice(0, -8);
+    }
+    return `${variantName} ${cleanItemName}`;
+  };
 
   // --- Modifier selections keyed by group id ---
   // { [groupId]: Set of selected option ids }
@@ -134,7 +147,9 @@ export default function ItemModal({ item, onAdd, onClose }) {
 
     onAdd({
       itemId: item.id,
-      itemName: item.name,
+      itemName: selectedVariant
+        ? getFormattedVariantItemName(item.name, selectedVariant.name)
+        : item.name,
       variant: selectedVariant
         ? { id: selectedVariant.id, name: selectedVariant.name, price: parseFloat(selectedVariant.price) }
         : null,
@@ -151,7 +166,9 @@ export default function ItemModal({ item, onAdd, onClose }) {
         {/* Header */}
         <div className="item-modal__header">
           <div className="item-modal__header-info">
-            <h2 className="item-modal__name">{item.name}</h2>
+            <h2 className="item-modal__name">
+              {selectedVariant ? getFormattedVariantItemName(item.name, selectedVariant.name) : item.name}
+            </h2>
             {item.description && (
               <p className="item-modal__desc">{item.description}</p>
             )}
@@ -169,7 +186,7 @@ export default function ItemModal({ item, onAdd, onClose }) {
         {/* Body */}
         <div className="item-modal__body">
           {/* Variants */}
-          {hasVariants && (
+          {hasVariants && !hideVariantSelector && (
             <div className="item-modal__section">
               <div className="item-modal__section-header">
                 <span className="item-modal__section-title">Choose Option</span>
