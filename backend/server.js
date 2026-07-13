@@ -899,8 +899,11 @@ app.patch("/api/orders/:id/status", async (req, res) => {
 // owner/admin (403 otherwise) — same principle as checkout's server-side
 // price recomputation: never trust the frontend to have hidden the button.
 
-// Resolve staffId → active owner/admin staff row, or throw 401/403.
-async function requireBackofficeStaff(staffId) {
+// Resolve staffId → active staff row with one of `allowedRoles`, or throw
+// 401/403. The requester's role is ALWAYS looked up in the DB — a role sent
+// in the request body/headers is never trusted.
+async function requireBackofficeStaff(staffId, allowedRoles = ["owner", "admin"]) {
+  const denied = `Access restricted to ${allowedRoles.join("/")}`;
   if (!staffId || typeof staffId !== "string") {
     throw new HttpError(401, "staffId is required");
   }
@@ -912,11 +915,11 @@ async function requireBackofficeStaff(staffId) {
     ));
   } catch {
     // Malformed UUID etc. — treat as unknown staff
-    throw new HttpError(403, "Access restricted to owners and admins");
+    throw new HttpError(403, denied);
   }
   const staff = rows[0];
-  if (!staff || (staff.role !== "owner" && staff.role !== "admin")) {
-    throw new HttpError(403, "Access restricted to owners and admins");
+  if (!staff || !allowedRoles.includes(staff.role)) {
+    throw new HttpError(403, denied);
   }
   return staff;
 }
@@ -1089,6 +1092,220 @@ app.post("/api/backoffice/item-variants", async (req, res) => {
     res.status(201).json(rows[0]);
   } catch (err) {
     sendHttpError(res, err, "Failed to create variant");
+  }
+});
+
+// --------------- Back Office: staff management ---------------
+// All routes verify the REQUESTER's role server-side (owner/admin/manager),
+// then apply hierarchy protection based on the TARGET row's current role:
+//   target owner   → only an owner may act on it
+//   target admin   → only owner or admin (managers can't touch admin rows)
+//   target manager/cashier/kitchen → owner, admin, or manager
+// Raw PINs are hashed server-side and never logged, echoed, or returned.
+
+const STAFF_MANAGER_ROLES = ["owner", "admin", "manager"];
+const STAFF_ROLES = ["owner", "admin", "manager", "cashier", "kitchen"];
+// Columns safe to return — pin_hash is NEVER selected.
+const STAFF_SAFE_COLS =
+  "id, location_id, name, title, phone, email, role, hourly_rate, hire_date, active, created_at";
+
+function canManageTarget(requesterRole, targetRole) {
+  if (targetRole === "owner") return requesterRole === "owner";
+  if (targetRole === "admin") return requesterRole === "owner" || requesterRole === "admin";
+  return true; // manager/cashier/kitchen rows
+}
+
+// Only owners may hand out the owner or admin role (create OR promote) —
+// prevents privilege escalation by admins/managers.
+function assertRoleAssignable(requesterRole, newRole) {
+  if ((newRole === "owner" || newRole === "admin") && requesterRole !== "owner") {
+    throw new HttpError(403, "Only an owner can assign the owner or admin role");
+  }
+}
+
+function validatePin(pin) {
+  if (typeof pin !== "string" || !/^\d{4}$/.test(pin)) {
+    throw new HttpError(400, "PIN must be exactly 4 digits");
+  }
+}
+
+// PINs must be unique among ACTIVE staff (login matches the PIN against all
+// active hashes, so a duplicate would log in as whoever matches first).
+// Compares against every active hash; excludeId skips the row being updated.
+async function assertPinAvailable(pin, excludeId = null) {
+  const { rows } = await pool.query(
+    "SELECT id, pin_hash FROM staff WHERE active = true"
+  );
+  for (const row of rows) {
+    if (excludeId && row.id === excludeId) continue;
+    if (await bcrypt.compare(pin, row.pin_hash)) {
+      throw new HttpError(409, "That PIN is already in use — choose another");
+    }
+  }
+}
+
+// GET /api/backoffice/staff?staffId=...
+// All staff, active AND inactive, without pin_hash.
+app.get("/api/backoffice/staff", async (req, res) => {
+  try {
+    await requireBackofficeStaff(req.query.staffId, STAFF_MANAGER_ROLES);
+    const { rows } = await pool.query(
+      `SELECT ${STAFF_SAFE_COLS} FROM staff
+        ORDER BY active DESC, array_position(ARRAY['owner','admin','manager','cashier','kitchen'], role::text), name`
+    );
+    res.json(rows);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch staff");
+  }
+});
+
+// POST /api/backoffice/staff
+// Body: { staffId, name, role, hourly_rate, pin }
+app.post("/api/backoffice/staff", async (req, res) => {
+  try {
+    const { staffId, name, role, hourly_rate, pin } = req.body || {};
+    const requester = await requireBackofficeStaff(staffId, STAFF_MANAGER_ROLES);
+
+    if (typeof name !== "string" || !name.trim()) {
+      throw new HttpError(400, "name is required");
+    }
+    if (!STAFF_ROLES.includes(role)) {
+      throw new HttpError(400, "role must be one of owner/admin/manager/cashier/kitchen");
+    }
+    assertRoleAssignable(requester.role, role);
+    const rate = Number(hourly_rate);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      throw new HttpError(400, "hourly_rate must be a positive number");
+    }
+    validatePin(pin);
+    await assertPinAvailable(pin);
+
+    // Owners span all locations (location_id NULL, per schema design);
+    // everyone else is scoped to the single active location.
+    let locationId = null;
+    if (role !== "owner") {
+      const { rows: locRows } = await pool.query(
+        "SELECT id FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
+      );
+      if (locRows.length === 0) throw new HttpError(500, "No active location");
+      locationId = locRows[0].id;
+    }
+
+    const pinHash = await bcrypt.hash(pin, 10);
+    const title = role.charAt(0).toUpperCase() + role.slice(1);
+    const { rows } = await pool.query(
+      `INSERT INTO staff (location_id, name, title, pin_hash, role, hourly_rate, active)
+       VALUES ($1, $2, $3, $4, $5, $6, true)
+       RETURNING ${STAFF_SAFE_COLS}`,
+      [locationId, name.trim(), title, pinHash, role, rate]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to create staff member");
+  }
+});
+
+// Fetch the target row + enforce hierarchy, shared by the two PUT routes.
+async function requireManagedTarget(requester, targetId) {
+  let rows;
+  try {
+    ({ rows } = await pool.query(
+      "SELECT id, name, role, active FROM staff WHERE id = $1",
+      [targetId]
+    ));
+  } catch {
+    throw new HttpError(404, "Staff member not found");
+  }
+  const target = rows[0];
+  if (!target) throw new HttpError(404, "Staff member not found");
+  if (!canManageTarget(requester.role, target.role)) {
+    throw new HttpError(
+      403,
+      `Your role (${requester.role}) cannot manage a staff member with role '${target.role}'`
+    );
+  }
+  return target;
+}
+
+// PUT /api/backoffice/staff/:id
+// Body: { staffId, name?, role?, hourly_rate?, active? } — partial update.
+// Hierarchy protection applies to EVERY field, not just `active`.
+// Deactivation = active:false; staff rows are never hard-deleted (historical
+// orders reference them).
+app.put("/api/backoffice/staff/:id", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const requester = await requireBackofficeStaff(body.staffId, STAFF_MANAGER_ROLES);
+    await requireManagedTarget(requester, req.params.id);
+
+    const sets = [];
+    const vals = [];
+    let i = 1;
+
+    if (body.name !== undefined) {
+      if (typeof body.name !== "string" || !body.name.trim()) {
+        throw new HttpError(400, "name must be a non-empty string");
+      }
+      sets.push(`name = $${i++}`);
+      vals.push(body.name.trim());
+    }
+    if (body.role !== undefined) {
+      if (!STAFF_ROLES.includes(body.role)) {
+        throw new HttpError(400, "role must be one of owner/admin/manager/cashier/kitchen");
+      }
+      assertRoleAssignable(requester.role, body.role);
+      sets.push(`role = $${i++}`);
+      vals.push(body.role);
+    }
+    if (body.hourly_rate !== undefined) {
+      const rate = Number(body.hourly_rate);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        throw new HttpError(400, "hourly_rate must be a positive number");
+      }
+      sets.push(`hourly_rate = $${i++}`);
+      vals.push(rate);
+    }
+    if (body.active !== undefined) {
+      if (typeof body.active !== "boolean") {
+        throw new HttpError(400, "active must be a boolean");
+      }
+      sets.push(`active = $${i++}`);
+      vals.push(body.active);
+    }
+    if (sets.length === 0) {
+      throw new HttpError(400, "No updatable fields provided");
+    }
+
+    vals.push(req.params.id);
+    const { rows } = await pool.query(
+      `UPDATE staff SET ${sets.join(", ")} WHERE id = $${i} RETURNING ${STAFF_SAFE_COLS}`,
+      vals
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to update staff member");
+  }
+});
+
+// PUT /api/backoffice/staff/:id/pin
+// Body: { staffId, pin } — validate, hash server-side, never echo the pin.
+app.put("/api/backoffice/staff/:id/pin", async (req, res) => {
+  try {
+    const { staffId, pin } = req.body || {};
+    const requester = await requireBackofficeStaff(staffId, STAFF_MANAGER_ROLES);
+    const target = await requireManagedTarget(requester, req.params.id);
+
+    validatePin(pin);
+    await assertPinAvailable(pin, target.id);
+
+    const pinHash = await bcrypt.hash(pin, 10);
+    await pool.query("UPDATE staff SET pin_hash = $1 WHERE id = $2", [
+      pinHash,
+      target.id,
+    ]);
+    res.json({ success: true, id: target.id });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to reset PIN");
   }
 });
 

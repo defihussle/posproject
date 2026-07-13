@@ -8,7 +8,7 @@
 -- owners (location_id NULL = all locations), these are scoped to
 -- the single Lawrence East location.
 --
--- Test PINs: Manager 2001, Cashier 3001, Kitchen 4001.
+-- Test PINs: Admin 5001, Manager 2001, Cashier 3001, Kitchen 4001.
 -- Kitchen does NOT use PIN login (KDS is a no-auth screen) but the
 -- record still exists for future payroll/reporting.
 --
@@ -18,6 +18,7 @@
 INSERT INTO staff (location_id, name, title, pin_hash, role, active)
 SELECT loc.id, v.name, v.title, crypt(v.pin, gen_salt('bf')), v.role::staff_role, true
 FROM (VALUES
+    ('Test Admin',   'Admin',   '5001', 'admin'),
     ('Test Manager', 'Manager', '2001', 'manager'),
     ('Test Cashier', 'Cashier', '3001', 'cashier'),
     ('Test Kitchen', 'Kitchen', '4001', 'kitchen')

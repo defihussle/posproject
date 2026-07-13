@@ -1,10 +1,14 @@
 import { useState, useCallback } from "react";
 import PinLogin from "./PinLogin";
 import MenuManager from "./MenuManager";
+import StaffManager from "./StaffManager";
 import "./BackOffice.css";
 
 const TABS = ["Reports", "Menu", "Staff", "Orders"];
-const ALLOWED_ROLES = ["owner", "admin"];
+// Managers are admitted for Staff management ONLY — every other tab stays
+// owner/admin (they see just the Staff tab).
+const ALLOWED_ROLES = ["owner", "admin", "manager"];
+const tabsForRole = (role) => (role === "manager" ? ["Staff"] : TABS);
 
 export default function BackOffice() {
   const [staff, setStaff] = useState(null);
@@ -17,6 +21,8 @@ export default function BackOffice() {
       return;
     }
     setStaff(staffData);
+    // Managers only get the Staff tab — land them there directly
+    if (staffData.role === "manager") setActiveTab("Staff");
   }, []);
 
   const handleLogout = useCallback(() => {
@@ -35,7 +41,7 @@ export default function BackOffice() {
       <div className="backoffice__denied">
         <h1 className="backoffice__denied-title">Access Restricted</h1>
         <p className="backoffice__denied-msg">
-          Access restricted to owners and admins
+          Access restricted to owners, admins, and managers
         </p>
         <button className="backoffice__btn" onClick={handleLogout}>
           Back to Login
@@ -66,7 +72,7 @@ export default function BackOffice() {
 
       {/* Tabs */}
       <nav className="backoffice__tabs">
-        {TABS.map((tab) => (
+        {tabsForRole(staff.role).map((tab) => (
           <button
             key={tab}
             className={`backoffice__tab${tab === activeTab ? " backoffice__tab--active" : ""}`}
@@ -79,10 +85,14 @@ export default function BackOffice() {
 
       {/* Body */}
       <main
-        className={`backoffice__body${activeTab === "Menu" ? " backoffice__body--top" : ""}`}
+        className={`backoffice__body${
+          activeTab === "Menu" || activeTab === "Staff" ? " backoffice__body--top" : ""
+        }`}
       >
         {activeTab === "Menu" ? (
           <MenuManager staff={staff} />
+        ) : activeTab === "Staff" ? (
+          <StaffManager staff={staff} />
         ) : (
           <div className="backoffice__placeholder">
             <h1 className="backoffice__placeholder-title">{activeTab}</h1>

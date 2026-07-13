@@ -1,7 +1,12 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import ItemModal from "./ItemModal";
+import { StaffAddForm } from "./StaffManager";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import "./OrderEntry.css";
+import "./StaffManager.css";
+
+// Roles allowed to quick-add staff from the POS account dropdown
+const STAFF_QUICKADD_ROLES = ["owner", "admin", "manager"];
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const TAX_RATE = 0.13; // Ontario HST — display only; the server is the source of truth
@@ -16,6 +21,8 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [cart, setCart] = useState([]);
   const [cartCollapsed, setCartCollapsed] = useState(true);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [staffModalOpen, setStaffModalOpen] = useState(false);
+  const [staffAddedName, setStaffAddedName] = useState(null); // brief success note
 
   // Checkout flow state
   const [checkoutOpen, setCheckoutOpen] = useState(false);
@@ -235,8 +242,22 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                     </div>
                   )}
                   {staff.role === "owner" && <div className="oe-account-menu-divider" />}
-                  <button 
-                    className="oe-account-menu-logout" 
+                  {STAFF_QUICKADD_ROLES.includes(staff.role) && (
+                    <>
+                      <button
+                        className="oe-account-menu-item"
+                        onClick={() => {
+                          setAccountMenuOpen(false);
+                          setStaffModalOpen(true);
+                        }}
+                      >
+                        Staff Management
+                      </button>
+                      <div className="oe-account-menu-divider" />
+                    </>
+                  )}
+                  <button
+                    className="oe-account-menu-logout"
                     onClick={() => { setAccountMenuOpen(false); onLogout(); }}
                   >
                     Log Out
@@ -430,6 +451,41 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
             setModalVariant(null);
           }}
         />
+      )}
+
+      {/* Staff quick-add modal — add-only by design; list/edit/deactivate/PIN
+          reset live in Back Office, keeping the counter screen simple */}
+      {staffModalOpen && (
+        <div className="staffmgr__overlay" onClick={() => setStaffModalOpen(false)}>
+          <div className="staffmgr__modal" onClick={(e) => e.stopPropagation()}>
+            <div className="staffmgr__modal-head">
+              <h3 className="staffmgr__modal-title">Add Staff</h3>
+              <button
+                className="staffmgr__modal-close"
+                onClick={() => setStaffModalOpen(false)}
+                aria-label="Close"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <StaffAddForm
+              staff={staff}
+              onCreated={(created) => {
+                setStaffModalOpen(false);
+                setStaffAddedName(created.name);
+                setTimeout(() => setStaffAddedName(null), 2500);
+              }}
+              onCancel={() => setStaffModalOpen(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Brief confirmation after quick-adding staff */}
+      {staffAddedName && (
+        <div className="oe-staff-added-toast">✓ {staffAddedName} added to staff</div>
       )}
 
       {/* Checkout Modal */}

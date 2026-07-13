@@ -730,6 +730,42 @@
   margin: 4px 0;
 }
 
+.oe-account-menu-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 10px 16px;
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.oe-account-menu-item:hover {
+  background: var(--bg-surface-hover);
+}
+
+/* Toast after quick-adding staff from the account dropdown */
+.oe-staff-added-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
+  background: var(--green);
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 10px 20px;
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-medium);
+  animation: fadeIn 0.2s ease-out;
+}
+
 .oe-account-menu-logout {
   width: 100%;
   text-align: left;

@@ -97,10 +97,17 @@ posproject/
   **Kitchen does NOT log in at all** — KDS is a no-auth "open book" screen 
   at a deliberately non-guessable route (`/kds/lawrence-east-4471`), meant 
   to be opened once on a kitchen device and left running indefinitely.
-- **Back Office** — separate route `/backoffice`, own PIN login, only 
-  owner/admin roles allowed through, everyone else blocked with a message. 
-  Currently a placeholder shell (Reports/Menu/Staff/Orders tabs), not built 
-  out yet.
+- **Back Office** — separate route `/backoffice`, own PIN login. Owner/admin 
+  get all tabs; **managers are admitted for the Staff tab ONLY** (staff 
+  management); cashier/kitchen blocked with a message. Menu and Staff tabs 
+  are functional; Reports/Orders are placeholders.
+- **Staff management hierarchy** (enforced server-side in /api/backoffice/
+  staff routes AND mirrored in UI button-hiding): only owners can act on 
+  owner rows or assign the owner/admin role; owner+admin can act on admin 
+  rows; owner/admin/manager can act on manager/cashier/kitchen rows. 
+  Deactivation only (active=false), never hard-delete — staff rows are 
+  referenced by historical orders. PINs: 4 digits, bcrypt-hashed server-side, 
+  never returned/logged, unique among active staff (login matches globally).
 - Theme defaults to **Light**, only owners can toggle dark mode 
   (app-wide setting, in the account dropdown menu next to the staff name 
   on Order Entry — NOT visible to non-owner roles at all)
@@ -131,13 +138,16 @@ posproject/
 - Checkout / order persistence (`POST /api/orders`) — in progress
 - KDS real build (`GET /api/orders`, `PATCH /api/orders/:id/status`, the 
   actual KDS screen)
-- Back Office functionality: staff management, reports, orders (placeholder 
-  tabs). Menu editing IS built — the Menu tab manages items/variants/86ing 
-  via /api/backoffice/* routes (server-side owner/admin role check)
+- Back Office reports + orders tabs (placeholders). Menu editing and Staff 
+  management ARE built (Menu/Staff tabs + /api/backoffice/* routes with 
+  server-side role checks; staff also quick-addable from the Order Entry 
+  account dropdown for owner/admin/manager)
 - Real Stripe Terminal integration
-- Change-PIN self-service flow
-- Only 3 owner staff accounts seeded so far (Ali Barakat, Umran Hanifi, 
-  Saif Omar) — no manager/cashier/kitchen test accounts yet
+- Change-PIN self-service flow (managers+ can reset PINs via Staff tab; 
+  self-service for cashiers not built)
+- Staff accounts: 3 owners (Ali Barakat 1234, Umran Hanifi 1235, Saif Omar 
+  1236) + test accounts Test Admin 5001, Test Manager 2001, Test Cashier 
+  3001, Test Kitchen 4001 (seed_test_staff.sql)
 
 ## Workflow conventions
 - Prompts should be scoped to one complete, testable slice of functionality 

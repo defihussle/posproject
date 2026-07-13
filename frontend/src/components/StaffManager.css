@@ -1,0 +1,335 @@
+/* ============================================================
+   Back Office — Staff Manager (+ shared add-staff form styles,
+   also used by the Order Entry quick-add modal)
+   ============================================================ */
+
+.staffmgr {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: fadeIn 0.25s ease-out;
+}
+
+.staffmgr__notice {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.staffmgr__error {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--red-light);
+  color: var(--red);
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.staffmgr__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.staffmgr__title {
+  font-family: var(--font-headline);
+  font-size: 1.1rem;
+  color: var(--text-primary);
+}
+
+.staffmgr__add-btn {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--red);
+  background: var(--red-light);
+  border-radius: var(--radius-sm);
+  padding: 8px 16px;
+  transition: all 0.12s ease;
+}
+
+.staffmgr__add-btn:hover {
+  background: var(--red);
+  color: #fff;
+}
+
+/* ---------- Table ---------- */
+.staffmgr__table {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 4px 18px;
+}
+
+.staffmgr-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.9fr 0.9fr 0.7fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px dashed var(--border-color);
+}
+
+.staffmgr-row:last-child {
+  border-bottom: none;
+}
+
+.staffmgr-row--head {
+  padding: 10px 0 6px;
+}
+
+.staffmgr-row--head span {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Inactive staff — dimmed, same treatment as 86'd menu items */
+.staffmgr-row--inactive .staffmgr-row__name,
+.staffmgr-row--inactive .staffmgr-row__role,
+.staffmgr-row--inactive .staffmgr-row__rate {
+  opacity: 0.45;
+}
+
+.staffmgr-row__name {
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.staffmgr-row__you {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--bg-surface-hover);
+  border-radius: var(--radius-full);
+  padding: 2px 8px;
+}
+
+.staffmgr-row__role {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.staffmgr-row__role--owner {
+  color: var(--red);
+}
+
+.staffmgr-row__role--admin {
+  color: #B0670F;
+}
+
+.staffmgr-row__rate {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.staffmgr-row__status {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--green);
+}
+
+.staffmgr-row__status--off {
+  color: var(--red);
+}
+
+.staffmgr-row__actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.staffmgr__btn {
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+
+.staffmgr__btn:hover:not(:disabled) {
+  border-color: var(--text-primary);
+}
+
+.staffmgr__btn:disabled {
+  opacity: 0.5;
+}
+
+.staffmgr__btn--danger {
+  background: var(--red-light);
+  color: var(--red);
+  border-color: transparent;
+}
+
+.staffmgr__btn--danger:hover:not(:disabled) {
+  background: var(--red);
+  color: #fff;
+  border-color: transparent;
+}
+
+.staffmgr__btn--green {
+  background: var(--green-light);
+  color: var(--green);
+  border-color: transparent;
+}
+
+.staffmgr__btn--green:hover:not(:disabled) {
+  background: var(--green);
+  color: #fff;
+  border-color: transparent;
+}
+
+.staffmgr__btn--save {
+  background: var(--red);
+  color: #fff;
+  border-color: transparent;
+}
+
+.staffmgr__btn--save:hover:not(:disabled) {
+  background: var(--red-hover);
+  border-color: transparent;
+}
+
+/* ---------- Inline edit ---------- */
+.staffmgr-row__editform {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ---------- Inputs ---------- */
+.staffmgr__input {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+
+.staffmgr__input:focus {
+  border-color: var(--red);
+}
+
+.staffmgr__input--rate,
+.staffmgr__input--pin {
+  max-width: 140px;
+  font-family: var(--font-mono);
+}
+
+.staffmgr-row__editform .staffmgr__input {
+  width: auto;
+}
+
+.staffmgr__label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* ---------- Modal ---------- */
+.staffmgr__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.staffmgr__modal {
+  width: 100%;
+  max-width: 400px;
+  max-height: 88vh;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-medium);
+}
+
+.staffmgr__modal--small {
+  max-width: 320px;
+}
+
+.staffmgr__modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.staffmgr__modal-title {
+  font-family: var(--font-headline);
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.staffmgr__modal-close {
+  color: var(--text-muted);
+  display: flex;
+  padding: 4px;
+  border-radius: 50%;
+  transition: all 0.12s ease;
+}
+
+.staffmgr__modal-close:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+
+.staffmgr__modal-body {
+  padding: 16px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.staffmgr__modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
