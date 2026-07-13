@@ -153,17 +153,19 @@
 }
 
 /* ---------- Order card ----------
-   Two independent border signals:
-   - the thick LEFT border = status (open red / preparing green) — the
+   Two independent border signals, layered so both read at a glance:
+   - INNER thick LEFT border = status (open red / preparing green) — the
      existing open/preparing distinction, unchanged;
-   - the thin surrounding border = elapsed-time tier (green/yellow/red),
-     set by the .kds-card--t-* classes below. */
+   - OUTER full ring (outline, wraps all four sides of the card) =
+     elapsed-time tier: green <5min, amber 5–10min, deep maroon >10min.
+     Maroon (not brand red) so the most-urgent tier can't be confused with
+     the open-status red accent. Set by the .kds-card--t-* classes below. */
 .kds-card {
   display: flex;
   flex-direction: column;
   background: #FFFFFF;
   border-radius: 16px;
-  border: 3px solid #E5E5E5;
+  border: 2px solid #E5E5E5;
   border-left: 10px solid #E5E5E5;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.07);
   overflow: hidden;
@@ -182,8 +184,8 @@
 }
 
 .kds-card:focus-visible {
-  outline: 3px solid #1A1A1A;
-  outline-offset: 2px;
+  /* box-shadow (not outline) so keyboard focus never hides the elapsed-tier ring */
+  box-shadow: 0 0 0 3px #1A1A1A, 0 2px 10px rgba(0, 0, 0, 0.07);
 }
 
 /* Open = not started yet → red left accent, white surface (needs attention) */
@@ -197,22 +199,18 @@
   background: #F3FBF5;
 }
 
-/* Elapsed-time escalation → thin surrounding border color (leaves the thick
-   left status accent untouched). Thresholds live in KitchenDisplay.jsx. */
+/* Elapsed-time escalation → full outer ring wrapping the ENTIRE card (all
+   four sides), independent of the inner left status accent. >10min uses deep
+   maroon #7A1F3D — deliberately NOT brand red, so it can't merge visually
+   with the open-status border. Thresholds live in KitchenDisplay.jsx. */
 .kds-card--t-green {
-  border-top-color: #34A853;
-  border-right-color: #34A853;
-  border-bottom-color: #34A853;
+  outline: 5px solid #34A853;
 }
 .kds-card--t-yellow {
-  border-top-color: #E8A32E;
-  border-right-color: #E8A32E;
-  border-bottom-color: #E8A32E;
+  outline: 5px solid #E8A32E;
 }
 .kds-card--t-red {
-  border-top-color: #E8442E;
-  border-right-color: #E8442E;
-  border-bottom-color: #E8442E;
+  outline: 6px solid #7A1F3D;
 }
 
 /* Busy = PATCH in flight → dim + non-interactive */
@@ -302,8 +300,8 @@
   background: rgba(232, 163, 46, 0.20);
 }
 .kds-card__timer--red {
-  color: #E8442E;
-  background: rgba(232, 68, 46, 0.14);
+  color: #7A1F3D;
+  background: rgba(122, 31, 61, 0.14);
 }
 
 /* ---------- Items ---------- */
