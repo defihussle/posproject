@@ -131,8 +131,9 @@ posproject/
 - Checkout / order persistence (`POST /api/orders`) — in progress
 - KDS real build (`GET /api/orders`, `PATCH /api/orders/:id/status`, the 
   actual KDS screen)
-- Back Office functionality (menu editing, staff management, reports — 
-  currently just placeholder tabs)
+- Back Office functionality: staff management, reports, orders (placeholder 
+  tabs). Menu editing IS built — the Menu tab manages items/variants/86ing 
+  via /api/backoffice/* routes (server-side owner/admin role check)
 - Real Stripe Terminal integration
 - Change-PIN self-service flow
 - Only 3 owner staff accounts seeded so far (Ali Barakat, Umran Hanifi, 

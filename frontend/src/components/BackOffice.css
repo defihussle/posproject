@@ -104,6 +104,13 @@
   padding: 48px 24px;
 }
 
+/* Content tabs (e.g. Menu) — top-aligned scroll instead of centered */
+.backoffice__body--top {
+  align-items: flex-start;
+  overflow-y: auto;
+  padding: 24px;
+}
+
 .backoffice__placeholder {
   display: flex;
   flex-direction: column;

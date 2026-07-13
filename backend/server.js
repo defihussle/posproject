@@ -894,6 +894,204 @@ app.patch("/api/orders/:id/status", async (req, res) => {
   }
 });
 
+// --------------- Back Office: menu management ---------------
+// Every route here re-verifies ON THE SERVER that the caller is an active
+// owner/admin (403 otherwise) — same principle as checkout's server-side
+// price recomputation: never trust the frontend to have hidden the button.
+
+// Resolve staffId → active owner/admin staff row, or throw 401/403.
+async function requireBackofficeStaff(staffId) {
+  if (!staffId || typeof staffId !== "string") {
+    throw new HttpError(401, "staffId is required");
+  }
+  let rows;
+  try {
+    ({ rows } = await pool.query(
+      "SELECT id, name, role FROM staff WHERE id = $1 AND active = true",
+      [staffId]
+    ));
+  } catch {
+    // Malformed UUID etc. — treat as unknown staff
+    throw new HttpError(403, "Access restricted to owners and admins");
+  }
+  const staff = rows[0];
+  if (!staff || (staff.role !== "owner" && staff.role !== "admin")) {
+    throw new HttpError(403, "Access restricted to owners and admins");
+  }
+  return staff;
+}
+
+const sendHttpError = (res, err, fallbackMsg) => {
+  if (err instanceof HttpError) {
+    return res.status(err.status).json({ error: err.message });
+  }
+  console.error(fallbackMsg, err);
+  return res.status(500).json({ error: fallbackMsg });
+};
+
+// GET /api/backoffice/menu?staffId=...
+// Full menu tree INCLUDING inactive items (the public /api/menu/full keeps
+// hiding them) — owners need to see and reactivate 86'd items.
+app.get("/api/backoffice/menu", async (req, res) => {
+  try {
+    await requireBackofficeStaff(req.query.staffId);
+
+    const { rows: categories } = await pool.query(
+      "SELECT id, name, sort_order FROM menu_categories WHERE active = true ORDER BY sort_order"
+    );
+    const { rows: items } = await pool.query(
+      `SELECT id, category_id, name, description, base_price, active, sort_order
+         FROM menu_items ORDER BY sort_order, name`
+    );
+    const { rows: variants } = await pool.query(
+      `SELECT id, item_id, name, price, active, sort_order
+         FROM item_variants WHERE active = true ORDER BY sort_order`
+    );
+
+    const variantsByItem = {};
+    for (const v of variants) (variantsByItem[v.item_id] ||= []).push(v);
+
+    const itemsByCat = {};
+    for (const it of items) {
+      (itemsByCat[it.category_id] ||= []).push({
+        ...it,
+        variants: variantsByItem[it.id] || [],
+      });
+    }
+
+    res.json(categories.map((c) => ({ ...c, items: itemsByCat[c.id] || [] })));
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch back office menu");
+  }
+});
+
+// Shared field validation for menu item create/update
+function validateItemFields({ name, base_price }) {
+  if (typeof name !== "string" || !name.trim()) {
+    throw new HttpError(400, "name is required");
+  }
+  const price = Number(base_price);
+  if (!Number.isFinite(price) || price <= 0) {
+    throw new HttpError(400, "base_price must be a positive number");
+  }
+  return { name: name.trim(), price };
+}
+
+// PUT /api/backoffice/menu-items/:id
+// Body: { staffId, name, description, base_price, active }
+app.put("/api/backoffice/menu-items/:id", async (req, res) => {
+  try {
+    const { staffId, description, active } = req.body || {};
+    await requireBackofficeStaff(staffId);
+    const { name, price } = validateItemFields(req.body || {});
+    if (typeof active !== "boolean") {
+      throw new HttpError(400, "active must be a boolean");
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE menu_items
+          SET name = $1, description = $2, base_price = $3, active = $4
+        WHERE id = $5
+        RETURNING id, category_id, name, description, base_price, active, sort_order`,
+      [name, description || null, price, active, req.params.id]
+    );
+    if (rows.length === 0) throw new HttpError(404, "Menu item not found");
+    res.json(rows[0]);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to update menu item");
+  }
+});
+
+// POST /api/backoffice/menu-items
+// Body: { staffId, category_id, name, description, base_price }
+app.post("/api/backoffice/menu-items", async (req, res) => {
+  try {
+    const { staffId, category_id, description } = req.body || {};
+    await requireBackofficeStaff(staffId);
+    const { name, price } = validateItemFields(req.body || {});
+    if (!category_id || typeof category_id !== "string") {
+      throw new HttpError(400, "category_id is required");
+    }
+
+    const { rows: catRows } = await pool.query(
+      "SELECT id FROM menu_categories WHERE id = $1 AND active = true",
+      [category_id]
+    );
+    if (catRows.length === 0) throw new HttpError(400, "Unknown category");
+
+    const { rows } = await pool.query(
+      `INSERT INTO menu_items (category_id, name, description, base_price, active)
+       VALUES ($1, $2, $3, $4, true)
+       RETURNING id, category_id, name, description, base_price, active, sort_order`,
+      [category_id, name, description || null, price]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to create menu item");
+  }
+});
+
+// Shared field validation for variant create/update
+function validateVariantFields({ name, price }) {
+  if (typeof name !== "string" || !name.trim()) {
+    throw new HttpError(400, "name is required");
+  }
+  const p = Number(price);
+  if (!Number.isFinite(p) || p <= 0) {
+    throw new HttpError(400, "price must be a positive number");
+  }
+  return { name: name.trim(), price: p };
+}
+
+// PUT /api/backoffice/item-variants/:id
+// Body: { staffId, name, price }
+app.put("/api/backoffice/item-variants/:id", async (req, res) => {
+  try {
+    await requireBackofficeStaff((req.body || {}).staffId);
+    const { name, price } = validateVariantFields(req.body || {});
+
+    const { rows } = await pool.query(
+      `UPDATE item_variants SET name = $1, price = $2
+        WHERE id = $3
+        RETURNING id, item_id, name, price, active, sort_order`,
+      [name, price, req.params.id]
+    );
+    if (rows.length === 0) throw new HttpError(404, "Variant not found");
+    res.json(rows[0]);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to update variant");
+  }
+});
+
+// POST /api/backoffice/item-variants
+// Body: { staffId, item_id, name, price }
+app.post("/api/backoffice/item-variants", async (req, res) => {
+  try {
+    const { staffId, item_id } = req.body || {};
+    await requireBackofficeStaff(staffId);
+    const { name, price } = validateVariantFields(req.body || {});
+    if (!item_id || typeof item_id !== "string") {
+      throw new HttpError(400, "item_id is required");
+    }
+
+    const { rows: itemRows } = await pool.query(
+      "SELECT id FROM menu_items WHERE id = $1",
+      [item_id]
+    );
+    if (itemRows.length === 0) throw new HttpError(400, "Unknown menu item");
+
+    const { rows } = await pool.query(
+      `INSERT INTO item_variants (item_id, name, price)
+       VALUES ($1, $2, $3)
+       RETURNING id, item_id, name, price, active, sort_order`,
+      [item_id, name, price]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to create variant");
+  }
+});
+
 // --------------- Start server ---------------
 app.listen(PORT, () => {
   console.log(`Narcos Tacos POS API running on http://localhost:${PORT}`);

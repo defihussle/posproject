@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
 import PinLogin from "./PinLogin";
+import MenuManager from "./MenuManager";
 import "./BackOffice.css";
 
 const TABS = ["Reports", "Menu", "Staff", "Orders"];
@@ -77,11 +78,17 @@ export default function BackOffice() {
       </nav>
 
       {/* Body */}
-      <main className="backoffice__body">
-        <div className="backoffice__placeholder">
-          <h1 className="backoffice__placeholder-title">{activeTab}</h1>
-          <p className="backoffice__placeholder-sub">Coming Soon</p>
-        </div>
+      <main
+        className={`backoffice__body${activeTab === "Menu" ? " backoffice__body--top" : ""}`}
+      >
+        {activeTab === "Menu" ? (
+          <MenuManager staff={staff} />
+        ) : (
+          <div className="backoffice__placeholder">
+            <h1 className="backoffice__placeholder-title">{activeTab}</h1>
+            <p className="backoffice__placeholder-sub">Coming Soon</p>
+          </div>
+        )}
       </main>
     </div>
   );
