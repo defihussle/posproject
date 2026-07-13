@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import "./KitchenDisplay.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -71,6 +71,9 @@ export default function KitchenDisplay() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   // Past Orders overlay toggle.
   const [pastOpen, setPastOpen] = useState(false);
+  // Fast Mode: aggregated rush-hour view. Manual toggle only, view-only —
+  // completing orders still happens in the normal ticket view.
+  const [fastMode, setFastMode] = useState(false);
 
   const markFailed = useCallback((orderId) => {
     setFailedIds((prev) => new Set(prev).add(orderId));
@@ -197,6 +200,46 @@ export default function KitchenDisplay() {
     [fetchOrders, clearFailed, markFailed]
   );
 
+  // Fast Mode aggregation — pure client-side reshaping of the SAME polled
+  // order data (open/preparing only, no extra fetching). Two lines merge only
+  // when item_id + variant_id + the FULL modifier set (option ids AND
+  // quantities) match exactly; any difference is a separate line, because the
+  // cook needs to see exactly what to make.
+  const fastLines = useMemo(() => {
+    const map = new Map();
+    for (const order of orders) {
+      for (const it of order.items) {
+        const modKey = (it.modifiers_raw || [])
+          .map((m) => `${m.option_id}:${m.quantity}`)
+          .sort()
+          .join(",");
+        const key = `${it.item_id}|${it.variant_id || ""}|${modKey}`;
+        const entry = map.get(key);
+        if (entry) {
+          entry.count += it.quantity;
+          // Track the oldest source order so the line can carry the same
+          // elapsed-tier color language as the ticket view.
+          if (new Date(order.created_at) < new Date(entry.oldestCreatedAt)) {
+            entry.oldestCreatedAt = order.created_at;
+          }
+        } else {
+          map.set(key, {
+            key,
+            count: it.quantity,
+            oldestCreatedAt: order.created_at,
+            sample: it, // identical modifier set ⇒ identical display fields
+          });
+        }
+      }
+    }
+    // Busiest first; ties broken by oldest order so urgent work floats up
+    return [...map.values()].sort(
+      (a, b) =>
+        b.count - a.count ||
+        new Date(a.oldestCreatedAt) - new Date(b.oldestCreatedAt)
+    );
+  }, [orders]);
+
   return (
     <div className="kds">
       <header className="kds__header">
@@ -206,6 +249,12 @@ export default function KitchenDisplay() {
         <div className="kds__header-right">
           <span className="kds__title">KITCHEN</span>
           <span className="kds__count">{orders.length}</span>
+          <button
+            className={`kds__fast-btn${fastMode ? " kds__fast-btn--on" : ""}`}
+            onClick={() => setFastMode((v) => !v)}
+          >
+            ⚡ Fast Mode{fastMode ? " ON" : ""}
+          </button>
           <button className="kds__past-btn" onClick={() => setPastOpen(true)}>
             Past Orders
           </button>
@@ -214,7 +263,7 @@ export default function KitchenDisplay() {
 
       {error && <div className="kds__error">{error}</div>}
 
-      <main className="kds__board">
+      <main className={`kds__board${fastMode ? " kds__board--fast" : ""}`}>
         {loading ? (
           <div className="kds__empty">Loading orders…</div>
         ) : orders.length === 0 ? (
@@ -222,6 +271,14 @@ export default function KitchenDisplay() {
             <div className="kds__empty-check">✓</div>
             <div className="kds__empty-title">All caught up</div>
             <div className="kds__empty-sub">No open orders right now</div>
+          </div>
+        ) : fastMode ? (
+          /* Fast Mode — aggregated, VIEW-ONLY. No tap targets: orders are
+             completed via the normal ticket view. */
+          <div className="kds-fast">
+            {fastLines.map((line) => (
+              <FastLine key={line.key} line={line} nowMs={nowMs} />
+            ))}
           </div>
         ) : (
           orders.map((order) => (
@@ -288,6 +345,46 @@ function OrderCard({ order, nowMs, busy, failed, onAdvance }) {
           : failed
           ? "UPDATE FAILED · TAP TO RETRY"
           : TAP_HINT[order.status] || ""}
+      </div>
+    </div>
+  );
+}
+
+// One aggregated Fast Mode line: exact make-spec + how many are needed.
+// View-only by design — no click handler, no role=button.
+function FastLine({ line, nowMs }) {
+  const it = line.sample;
+  const tier = elapsedTier(elapsedSeconds(line.oldestCreatedAt, nowMs));
+  const parts = [];
+  for (const opt of it.selected_options || []) parts.push(opt.choice);
+  for (const name of it.removed_ingredients || []) parts.push(`no ${name}`);
+  for (const m of it.added_modifiers || [])
+    parts.push(m.quantity > 1 ? `${m.name} x${m.quantity}` : m.name);
+
+  return (
+    <div className={`kds-fast-line kds-fast-line--t-${tier}`}>
+      <span className={`kds-fast-line__count kds-fast-line__count--${tier}`}>
+        ×{line.count}
+      </span>
+      <div className="kds-fast-line__what">
+        <span className="kds-fast-line__name">
+          {it.name}
+          {it.variant && <span className="kds-fast-line__variant"> · {it.variant}</span>}
+        </span>
+        {parts.length > 0 && (
+          <span className="kds-fast-line__mods">
+            {parts.map((p, i) => (
+              <span
+                key={i}
+                className={`kds-fast-line__mod${
+                  p.startsWith("no ") ? " kds-fast-line__mod--removed" : ""
+                }`}
+              >
+                {p}
+              </span>
+            ))}
+          </span>
+        )}
       </div>
     </div>
   );

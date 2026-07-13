@@ -597,7 +597,7 @@ async function fetchKdsOrders(client, orderIds, { includeCompletedAt = false } =
   );
 
   const { rows: items } = await client.query(
-    `SELECT oi.id, oi.order_id, oi.item_id, oi.quantity, oi.notes, oi.status,
+    `SELECT oi.id, oi.order_id, oi.item_id, oi.variant_id, oi.quantity, oi.notes, oi.status,
             mi.name AS item_name, iv.name AS variant_name
        FROM order_items oi
        JOIN menu_items mi ON mi.id = oi.item_id
@@ -663,8 +663,15 @@ async function fetchKdsOrders(client, orderIds, { includeCompletedAt = false } =
   const presentOptByItem = {}; // order_item_id -> Set(option_id)
   const selectedByItem = {}; // order_item_id -> [{ group, choice }]
   const addedByItem = {}; // order_item_id -> [{ name, quantity }]
+  // Raw modifier ids+quantities per line — the KDS Fast Mode grouping key
+  // (two items only aggregate if item_id + variant_id + this set all match).
+  const rawModsByItem = {}; // order_item_id -> [{ option_id, quantity }]
   for (const m of mods) {
     (presentOptByItem[m.order_item_id] ||= new Set()).add(m.modifier_option_id);
+    (rawModsByItem[m.order_item_id] ||= []).push({
+      option_id: m.modifier_option_id,
+      quantity: m.quantity,
+    });
     if (m.group_required) {
       // Required choice — defines what the item IS. Surfaced on its own; never
       // an optional add and never a removal. One entry per choice made.
@@ -708,6 +715,11 @@ async function fetchKdsOrders(client, orderIds, { includeCompletedAt = false } =
 
     (itemsByOrder[it.order_id] ||= []).push({
       id: it.id,
+      // item_id / variant_id / modifiers_raw exist for Fast Mode's exact
+      // grouping key; the ticket view ignores them (additive fields only).
+      item_id: it.item_id,
+      variant_id: it.variant_id,
+      modifiers_raw: rawModsByItem[it.id] || [],
       name: it.item_name,
       variant: it.variant_name, // null when the item has no variant
       quantity: it.quantity,

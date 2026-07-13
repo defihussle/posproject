@@ -69,6 +69,34 @@
   justify-content: center;
 }
 
+.kds__fast-btn {
+  margin-left: 8px;
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 700;
+  color: #1A1A1A;
+  background: #FFFFFF;
+  border: 2px solid #1A1A1A;
+  border-radius: 9999px;
+  height: 44px;
+  padding: 0 20px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.kds__fast-btn:hover {
+  background: #1A1A1A;
+  color: #FFFFFF;
+}
+
+/* Toggle is ON — brand red, unmistakable from across the kitchen */
+.kds__fast-btn--on,
+.kds__fast-btn--on:hover {
+  background: #E8442E;
+  border-color: #E8442E;
+  color: #FFFFFF;
+}
+
 .kds__past-btn {
   margin-left: 8px;
   font-family: var(--font-body);
@@ -467,6 +495,114 @@
 .kds-card--preparing .kds-card__cta {
   color: #2A8C45;
   background: rgba(52, 168, 83, 0.08);
+}
+
+/* ============================================================
+   Fast Mode — aggregated rush-hour view (view-only)
+   ============================================================ */
+
+/* Single-column list instead of the ticket grid */
+.kds__board--fast {
+  display: block;
+}
+
+.kds-fast {
+  max-width: 900px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.kds-fast-line {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  background: #FFFFFF;
+  border: 2px solid #E5E5E5;
+  border-left: 10px solid #E5E5E5;
+  border-radius: 14px;
+  padding: 16px 20px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.07);
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* Left accent carries the same elapsed-tier color language as tickets
+   (based on the OLDEST source order in the aggregate) */
+.kds-fast-line--t-green { border-left-color: #34A853; }
+.kds-fast-line--t-yellow { border-left-color: #E8A32E; }
+.kds-fast-line--t-red { border-left-color: #7A1F3D; }
+
+.kds-fast-line__count {
+  font-family: var(--font-mono);
+  font-size: 2.2rem;
+  font-weight: 700;
+  line-height: 1;
+  min-width: 86px;
+  text-align: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.kds-fast-line__count--green {
+  color: #2A8C45;
+  background: rgba(52, 168, 83, 0.14);
+}
+
+.kds-fast-line__count--yellow {
+  color: #8A5A00;
+  background: rgba(232, 163, 46, 0.20);
+}
+
+.kds-fast-line__count--red {
+  color: #7A1F3D;
+  background: rgba(122, 31, 61, 0.14);
+}
+
+.kds-fast-line__what {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.kds-fast-line__name {
+  font-family: var(--font-body);
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #1A1A1A;
+  line-height: 1.2;
+}
+
+.kds-fast-line__variant {
+  font-weight: 600;
+  color: #6B6B6B;
+}
+
+.kds-fast-line__mods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.kds-fast-line__mod {
+  font-family: var(--font-body);
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #1A1A1A;
+  background: #F0F0EF;
+  border-radius: 8px;
+  padding: 4px 12px;
+}
+
+/* Removals stay the loudest thing on the line, same as ticket view */
+.kds-fast-line__mod--removed {
+  color: #FFFFFF;
+  background: #E8442E;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 /* ============================================================
