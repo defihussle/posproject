@@ -156,3 +156,11 @@ posproject/
   (already covered in `.gitignore`)
 - Production build should be verified clean (`npx vite build`) before 
   considering a frontend change done
+
+## Known Gotchas
+- **UTF-8 encoding risk on Windows:** piping SQL containing accented 
+  characters (é, à, etc.) through PowerShell to `docker exec` has corrupted 
+  them before (e.g. "Consomé" → "Consom??", "à la carte" → "?? la carte"). 
+  When inserting or updating text with accented characters via this method, 
+  verify the stored value afterward with a `SELECT` query before considering 
+  the change done.
