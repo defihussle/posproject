@@ -67,32 +67,43 @@
   color: #fff;
 }
 
-/* Tabs */
-.backoffice__tabs {
+/* ---------- Shell: persistent sidebar + content ---------- */
+.backoffice__shell {
+  flex: 1;
   display: flex;
-  gap: 0;
-  border-bottom: 1px solid var(--border-color);
-  background: var(--bg-surface);
-  padding: 0 24px;
+  min-height: 0; /* let the content pane scroll instead of the whole page */
 }
 
-.backoffice__tab {
+.backoffice__sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 20px 12px;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-color);
+}
+
+.backoffice__navitem {
+  text-align: left;
   font-family: var(--font-body);
   font-size: 0.85rem;
   font-weight: 600;
-  padding: 14px 24px;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  border-bottom: 2px solid transparent;
   transition: all 0.15s ease;
 }
 
-.backoffice__tab:hover {
+.backoffice__navitem:hover {
+  background: var(--bg-surface-hover);
   color: var(--text-primary);
 }
 
-.backoffice__tab--active {
+.backoffice__navitem--active {
+  background: var(--red-light);
   color: var(--red);
-  border-bottom-color: var(--red);
 }
 
 /* Body */
@@ -102,9 +113,10 @@
   align-items: center;
   justify-content: center;
   padding: 48px 24px;
+  min-width: 0;
 }
 
-/* Content tabs (e.g. Menu) — top-aligned scroll instead of centered */
+/* Content sections (Home/Menu/Staff) — top-aligned scroll instead of centered */
 .backoffice__body--top {
   align-items: flex-start;
   overflow-y: auto;

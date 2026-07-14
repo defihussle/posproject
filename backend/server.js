@@ -1321,6 +1321,148 @@ app.put("/api/backoffice/staff/:id/pin", async (req, res) => {
   }
 });
 
+// --------------- Back Office: read-only stats ---------------
+// Owner/admin only — requireBackofficeStaff's default allowedRoles is
+// exactly ["owner", "admin"], so managers correctly get 403 on all three.
+// All figures are based on completed (status='ready') orders, using
+// completed_at exactly as KDS's history/prep-time endpoint already does.
+
+const STATS_RANGE_TRUNC = { today: "day", week: "week", month: "month" };
+
+function resolveStatsRange(range) {
+  const r = range === undefined ? "today" : range;
+  const trunc = STATS_RANGE_TRUNC[r];
+  if (!trunc) {
+    throw new HttpError(400, "range must be one of today, week, month");
+  }
+  return { range: r, trunc };
+}
+
+async function getSingleActiveLocation(client) {
+  const { rows } = await client.query(
+    "SELECT id, timezone FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
+  );
+  if (rows.length === 0) throw new HttpError(500, "No active location");
+  return rows[0];
+}
+
+// GET /api/backoffice/stats/summary?staffId=...&range=today|week|month
+app.get("/api/backoffice/stats/summary", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeStaff(req.query.staffId);
+    const { range, trunc } = resolveStatsRange(req.query.range);
+    const location = await getSingleActiveLocation(client);
+
+    const { rows } = await client.query(
+      `SELECT COALESCE(SUM(total), 0) AS total_sales, COUNT(*) AS order_count
+         FROM orders
+        WHERE location_id = $1
+          AND status = 'ready'
+          AND completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)`,
+      [location.id, trunc, location.timezone]
+    );
+    const totalSales = parseFloat(rows[0].total_sales);
+    const orderCount = parseInt(rows[0].order_count, 10);
+    res.json({
+      range,
+      totalSales,
+      orderCount,
+      avgOrderValue: orderCount > 0 ? totalSales / orderCount : 0,
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch sales summary");
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/backoffice/stats/top-items?staffId=...&range=...&limit=5
+// Top items by quantity sold — grouped by item + variant (same distinct-line
+// concept as KDS Fast Mode; modifiers are NOT part of this grouping since
+// the goal here is "what sells", not "exact make-spec").
+app.get("/api/backoffice/stats/top-items", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeStaff(req.query.staffId);
+    const { trunc } = resolveStatsRange(req.query.range);
+    const location = await getSingleActiveLocation(client);
+
+    const limit = req.query.limit === undefined ? 5 : Number(req.query.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+      throw new HttpError(400, "limit must be an integer between 1 and 50");
+    }
+
+    const { rows } = await client.query(
+      `SELECT mi.id AS item_id, mi.name AS item_name,
+              iv.id AS variant_id, iv.name AS variant_name,
+              SUM(oi.quantity) AS quantity
+         FROM order_items oi
+         JOIN orders o ON o.id = oi.order_id
+         JOIN menu_items mi ON mi.id = oi.item_id
+         LEFT JOIN item_variants iv ON iv.id = oi.variant_id
+        WHERE o.location_id = $1
+          AND o.status = 'ready'
+          AND o.completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
+        GROUP BY mi.id, mi.name, iv.id, iv.name
+        ORDER BY quantity DESC
+        LIMIT $4`,
+      [location.id, trunc, location.timezone, limit]
+    );
+    res.json(
+      rows.map((r) => ({
+        item_id: r.item_id,
+        name: r.item_name,
+        variant: r.variant_name,
+        quantity: parseInt(r.quantity, 10),
+      }))
+    );
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch top items");
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/backoffice/stats/staff-performance?staffId=...&range=...
+// Orders handled per staff member, attributed via orders.staff_id (set at
+// checkout to the logged-in staff member who rang the order in).
+app.get("/api/backoffice/stats/staff-performance", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeStaff(req.query.staffId);
+    const { trunc } = resolveStatsRange(req.query.range);
+    const location = await getSingleActiveLocation(client);
+
+    const { rows } = await client.query(
+      `SELECT s.id AS staff_id, s.name AS staff_name, s.role,
+              COUNT(*) AS order_count,
+              COALESCE(SUM(o.total), 0) AS total_sales
+         FROM orders o
+         JOIN staff s ON s.id = o.staff_id
+        WHERE o.location_id = $1
+          AND o.status = 'ready'
+          AND o.completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
+        GROUP BY s.id, s.name, s.role
+        ORDER BY order_count DESC`,
+      [location.id, trunc, location.timezone]
+    );
+    res.json(
+      rows.map((r) => ({
+        staff_id: r.staff_id,
+        name: r.staff_name,
+        role: r.role,
+        orderCount: parseInt(r.order_count, 10),
+        totalSales: parseFloat(r.total_sales),
+      }))
+    );
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch staff performance");
+  } finally {
+    client.release();
+  }
+});
+
 // --------------- Start server ---------------
 app.listen(PORT, () => {
   console.log(`Narcos Tacos POS API running on http://localhost:${PORT}`);
