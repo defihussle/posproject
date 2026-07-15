@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { API_URL } from "../config";
 import "./KitchenDisplay.css";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const POLL_MS = 5000;
 const KDS_STATUSES = "open,preparing";
 const FAIL_FLASH_MS = 2500; // how long a card shows its "update failed" state

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
+import { API_URL } from "../config";
 import "./MenuManager.css";
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
 const fmtPrice = (p) => `$${parseFloat(p).toFixed(2)}`;
 

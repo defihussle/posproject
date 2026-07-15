@@ -2,13 +2,13 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import ItemModal from "./ItemModal";
 import { StaffAddForm } from "./StaffManager";
 import logoImg from "../assets/narcos-tacos-logo.png";
+import { API_URL } from "../config";
 import "./OrderEntry.css";
 import "./StaffManager.css";
 
 // Roles allowed to quick-add staff from the POS account dropdown
 const STAFF_QUICKADD_ROLES = ["owner", "admin", "manager"];
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const TAX_RATE = 0.13; // Ontario HST — display only; the server is the source of truth
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 

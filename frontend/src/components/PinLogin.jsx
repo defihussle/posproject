@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import logoImg from "../assets/narcos-tacos-logo.png";
+import { API_URL } from "../config";
 import "./PinLogin.css";
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
 const KEYPAD_KEYS = [
   { digit: "1", letters: "" },

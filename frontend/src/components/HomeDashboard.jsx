@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
+import { API_URL } from "../config";
 import "./HomeDashboard.css";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const RANGES = [
   { key: "today", label: "Today" },
   { key: "week", label: "Week" },
