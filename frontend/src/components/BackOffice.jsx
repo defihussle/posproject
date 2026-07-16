@@ -9,9 +9,17 @@ import "./BackOffice.css";
 // Persistent nav config — add future Back Office sections here, each with
 // the roles allowed to see/use it. Nothing else in this file needs to
 // change to add a new section (e.g. Reports, Orders).
+//
+// Back Office access is owner/admin ONLY — Manager's access was fully
+// revoked (they used to see Staff Management only; that capability moved
+// to a POS-side quick-add action instead, see OrderEntry's account
+// dropdown + StaffAddForm's `endpoint` prop). Since ALLOWED_ROLES below is
+// derived from these roles lists, removing "manager" here also makes PIN
+// login correctly reject Manager with the "Access Restricted" screen —
+// no separate check needed.
 const NAV_ITEMS = [
   { key: "home", label: "Home", roles: ["owner", "admin"], render: (staff) => <HomeDashboard staff={staff} /> },
-  { key: "staff", label: "Staff Management", roles: ["owner", "admin", "manager"], render: (staff) => <StaffManager staff={staff} /> },
+  { key: "staff", label: "Staff Management", roles: ["owner", "admin"], render: (staff) => <StaffManager staff={staff} /> },
   { key: "menu", label: "Menu Management", roles: ["owner", "admin"], render: (staff) => <MenuManager staff={staff} /> },
 ];
 
@@ -66,7 +74,7 @@ export default function BackOffice() {
       <div className="backoffice__denied">
         <h1 className="backoffice__denied-title">Access Restricted</h1>
         <p className="backoffice__denied-msg">
-          Access restricted to owners, admins, and managers
+          Access restricted to owners and admins
         </p>
         <button className="backoffice__btn" onClick={handleLogout}>
           Back to Login

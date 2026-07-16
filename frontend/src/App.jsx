@@ -4,6 +4,13 @@ import PinLogin from "./components/PinLogin";
 import OrderEntry from "./components/OrderEntry";
 import KitchenDisplay from "./components/KitchenDisplay";
 import BackOffice from "./components/BackOffice";
+import ManageMenu from "./components/ManageMenu";
+
+// Roles allowed onto the POS-side "Manage Menu" page (mirrors Back Office's
+// Menu Management access — real enforcement is server-side on every write,
+// this is just so a typed-in URL doesn't dead-end non-owner/admin staff on
+// a blank page instead of sending them back to work).
+const MANAGE_MENU_ROLES = ["owner", "admin"];
 
 const STORAGE_KEY_STAFF = "narcos_pos_staff";
 const STORAGE_KEY_THEME = "narcos_pos_theme";
@@ -83,6 +90,18 @@ export default function App() {
               />
             ) : (
               <Navigate to="/login" replace />
+            )
+          }
+        />
+
+        {/* Manage Menu — POS-reachable, owner/admin only */}
+        <Route
+          path="/manage-menu"
+          element={
+            staff && MANAGE_MENU_ROLES.includes(staff.role) ? (
+              <ManageMenu staff={staff} />
+            ) : (
+              <Navigate to={staff ? "/order-entry" : "/login"} replace />
             )
           }
         />

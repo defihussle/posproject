@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import ItemModal from "./ItemModal";
 import { StaffAddForm } from "./StaffManager";
 import logoImg from "../assets/narcos-tacos-logo.png";
@@ -8,6 +9,10 @@ import "./StaffManager.css";
 
 // Roles allowed to quick-add staff from the POS account dropdown
 const STAFF_QUICKADD_ROLES = ["owner", "admin", "manager"];
+// Roles allowed onto the POS-side "Manage Menu" page — owner/admin only,
+// same as Back Office's Menu Management section (real enforcement is
+// server-side on every write; this only controls what the dropdown offers)
+const MANAGE_MENU_ROLES = ["owner", "admin"];
 
 const TAX_RATE = 0.13; // Ontario HST — display only; the server is the source of truth
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -18,6 +23,7 @@ const SWIPE_DELETE_PX = 140; // swipe past this and release = delete immediately
 const SWIPE_MAX_PX = 220; // hard clamp so a fast/long drag can't overshoot
 
 export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
+  const navigate = useNavigate();
   const [menu, setMenu] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeCatId, setActiveCatId] = useState(null);
@@ -247,19 +253,30 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                     </div>
                   )}
                   {staff.role === "owner" && <div className="oe-account-menu-divider" />}
+                  {MANAGE_MENU_ROLES.includes(staff.role) && (
+                    <button
+                      className="oe-account-menu-item"
+                      onClick={() => {
+                        setAccountMenuOpen(false);
+                        navigate("/manage-menu");
+                      }}
+                    >
+                      Manage Menu
+                    </button>
+                  )}
                   {STAFF_QUICKADD_ROLES.includes(staff.role) && (
-                    <>
-                      <button
-                        className="oe-account-menu-item"
-                        onClick={() => {
-                          setAccountMenuOpen(false);
-                          setStaffModalOpen(true);
-                        }}
-                      >
-                        Staff Management
-                      </button>
-                      <div className="oe-account-menu-divider" />
-                    </>
+                    <button
+                      className="oe-account-menu-item"
+                      onClick={() => {
+                        setAccountMenuOpen(false);
+                        setStaffModalOpen(true);
+                      }}
+                    >
+                      Staff Management
+                    </button>
+                  )}
+                  {(MANAGE_MENU_ROLES.includes(staff.role) || STAFF_QUICKADD_ROLES.includes(staff.role)) && (
+                    <div className="oe-account-menu-divider" />
                   )}
                   <button
                     className="oe-account-menu-logout"
@@ -434,6 +451,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
             </div>
             <StaffAddForm
               staff={staff}
+              endpoint="/api/staff/quick-add"
               onCreated={(created) => {
                 setStaffModalOpen(false);
                 setStaffAddedName(created.name);

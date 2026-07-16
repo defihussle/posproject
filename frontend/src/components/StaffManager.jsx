@@ -329,11 +329,15 @@ function PinResetPrompt({ row, me, onDone, onError }) {
 }
 
 /**
- * Add-staff form — shared by the Back Office Staff tab and the Order Entry
- * quick-add modal. Role options are restricted client-side to what the
- * logged-in role may assign (backend re-checks).
+ * Add-staff form — shared by the Back Office Staff tab (full CRUD, owner/
+ * admin only) and the Order Entry quick-add modal (owner/admin/manager).
+ * Those two surfaces now hit DIFFERENT backend routes (Back Office access
+ * was revoked from Manager, but Manager keeps this one add-only POS
+ * action) — pass `endpoint` to target the right one; defaults to the
+ * Back Office route. Role options are restricted client-side to what the
+ * logged-in role may assign (backend re-checks regardless).
  */
-export function StaffAddForm({ staff, onCreated, onCancel }) {
+export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/backoffice/staff" }) {
   const roles = assignableRoles(staff.role);
   const [name, setName] = useState("");
   const [role, setRole] = useState("cashier");
@@ -351,7 +355,7 @@ export function StaffAddForm({ staff, onCreated, onCancel }) {
     setSaving(true);
     setErr(null);
     try {
-      const res = await fetch(`${API_URL}/api/backoffice/staff`, {
+      const res = await fetch(`${API_URL}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -1,25 +1,26 @@
 /* ============================================================
-   Back Office — Menu Manager
+   Menu Editor — shared by Back Office and the POS "Manage Menu" page.
+   Shopify-product-editor-inspired: browsable list + focused detail panel,
+   inline editing, generous whitespace, clear typographic hierarchy.
    ============================================================ */
 
-.menumgr {
+.menued {
   width: 100%;
-  max-width: 860px;
-  margin: 0 auto;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 16px;
   animation: fadeIn 0.25s ease-out;
 }
 
-.menumgr__notice {
+.menued__notice {
   font-family: var(--font-mono);
   font-size: 0.85rem;
   color: var(--text-muted);
   animation: pulse 1.5s ease-in-out infinite;
 }
 
-.menumgr__error {
+.menued__error {
+  margin-bottom: 12px;
   padding: 10px 14px;
   border-radius: var(--radius-md);
   background: var(--red-light);
@@ -27,312 +28,338 @@
   font-family: var(--font-body);
   font-size: 0.8rem;
   font-weight: 600;
+  flex-shrink: 0;
 }
 
-/* ---------- Category section ---------- */
-.menumgr__cat {
-  background: var(--bg-surface);
+/* ---------- Two-pane shell ---------- */
+.menued__shell {
+  flex: 1;
+  display: flex;
+  min-height: 0;
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
   overflow: hidden;
 }
 
-.menumgr__cat-head {
+/* ---------- Left: browsable list ---------- */
+.menued__list {
+  width: 300px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 10px;
+  border-right: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+.menued__cat {
+  margin-bottom: 4px;
+}
+
+.menued__cat-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 14px 10px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.menued__list-item {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 14px 18px;
+  gap: 8px;
+  padding: 10px 10px;
+  border-radius: var(--radius-sm);
   text-align: left;
-  background: transparent;
-  cursor: pointer;
   transition: background-color 0.12s ease;
 }
 
-.menumgr__cat-head:hover {
+.menued__list-item:hover {
   background: var(--bg-surface-hover);
 }
 
-.menumgr__cat-chev {
-  font-family: var(--font-mono);
-  font-size: 1.2rem;
-  color: var(--text-muted);
-  transition: transform 0.15s ease;
+.menued__list-item--active {
+  background: var(--red-light);
 }
 
-.menumgr__cat-chev--open {
-  transform: rotate(90deg);
-}
-
-.menumgr__cat-name {
-  font-family: var(--font-headline);
-  font-size: 0.95rem;
-  color: var(--text-primary);
-}
-
-.menumgr__cat-count {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  color: var(--text-muted);
-}
-
-.menumgr__items {
-  border-top: 1px solid var(--border-color);
-  padding: 4px 18px 14px;
-}
-
-/* ---------- Item row ---------- */
-.menumgr-item {
-  border-bottom: 1px dashed var(--border-color);
-  padding: 12px 0;
-}
-
-.menumgr-item:last-of-type {
-  border-bottom: none;
-}
-
-.menumgr-item__row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.menumgr-item__info {
+.menued__list-item-name {
   flex: 1;
   min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.menumgr-item__name {
   font-family: var(--font-body);
-  font-size: 0.92rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.menumgr-item__desc {
-  font-family: var(--font-body);
-  font-size: 0.72rem;
-  color: var(--text-muted);
-}
-
-.menumgr-item__badge {
-  font-family: var(--font-mono);
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: var(--red);
-  background: var(--red-light);
-  border-radius: var(--radius-full);
-  padding: 2px 8px;
-}
-
-/* Inactive (86'd) — greyed but visible so it can be reactivated */
-.menumgr-item--inactive .menumgr-item__name,
-.menumgr-item--inactive .menumgr-item__desc,
-.menumgr-item--inactive .menumgr-item__price {
-  opacity: 0.45;
-}
-
-.menumgr-item__price {
-  font-family: var(--font-mono);
   font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.menumgr-item__actions {
-  display: flex;
-  gap: 8px;
+.menued__list-item--active .menued__list-item-name {
+  color: var(--red);
+}
+
+.menued__list-item-meta {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.menued__list-item-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
   flex-shrink: 0;
 }
 
-.menumgr-item__btn86 {
+.menued__list-item--inactive .menued__list-item-name,
+.menued__list-item--inactive .menued__list-item-meta {
+  opacity: 0.45;
+}
+
+.menued__add-item {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  margin-top: 2px;
   font-family: var(--font-body);
-  font-size: 0.72rem;
-  font-weight: 700;
-  padding: 6px 12px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
   border-radius: var(--radius-sm);
-  background: var(--red-light);
+  transition: all 0.12s ease;
+}
+
+.menued__add-item:hover,
+.menued__add-item--active {
   color: var(--red);
-  transition: all 0.12s ease;
+  background: var(--red-light);
 }
 
-.menumgr-item__btn86:hover:not(:disabled) {
-  background: var(--red);
-  color: #fff;
+/* ---------- Right: detail panel ---------- */
+.menued__detail {
+  flex: 1;
+  overflow-y: auto;
+  min-width: 0;
 }
 
-/* Item is currently 86'd — button becomes the green "Reactivate" action */
-.menumgr-item__btn86--off {
-  background: var(--green-light);
-  color: var(--green);
-}
-
-.menumgr-item__btn86--off:hover:not(:disabled) {
-  background: var(--green);
-  color: #fff;
-}
-
-.menumgr-item__btn-edit {
-  font-family: var(--font-body);
-  font-size: 0.72rem;
-  font-weight: 700;
-  padding: 6px 12px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface-hover);
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  transition: all 0.12s ease;
-}
-
-.menumgr-item__btn-edit:hover {
-  border-color: var(--text-primary);
-}
-
-/* ---------- Variants (nested) ---------- */
-.menumgr-item__variants {
-  margin: 8px 0 0 22px;
-  padding-left: 14px;
-  border-left: 2px solid var(--border-color);
+.menued__panel {
+  max-width: 640px;
+  padding: 36px 44px 60px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
 }
 
-.menumgr-variant {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 0;
-}
-
-.menumgr-variant__name {
-  font-family: var(--font-body);
-  font-size: 0.8rem;
-  font-weight: 500;
-  color: var(--text-secondary);
-  flex: 1;
-}
-
-.menumgr-variant__price {
+.menued__panel-eyebrow {
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  font-size: 0.7rem;
   font-weight: 600;
-  color: var(--text-primary);
-}
-
-.menumgr-variant__edit {
-  font-family: var(--font-body);
-  font-size: 0.68rem;
-  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
   color: var(--text-muted);
-  padding: 3px 10px;
-  border-radius: var(--radius-sm);
-  transition: all 0.12s ease;
+  margin-bottom: 8px;
 }
 
-.menumgr-variant__edit:hover {
+.menued__panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+/* Inline-editable "heading" — looks like plain text until focused */
+.menued__name-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-headline);
+  font-size: 1.7rem;
   color: var(--text-primary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  margin: -6px 0 0 -8px;
+  outline: none;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.menued__name-input:hover {
   background: var(--bg-surface-hover);
 }
 
-.menumgr-variant--form {
-  flex-wrap: wrap;
-}
-
-.menumgr__add-variant {
-  align-self: flex-start;
-  font-family: var(--font-body);
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  padding: 4px 0;
-  transition: color 0.12s ease;
-}
-
-.menumgr__add-variant:hover {
-  color: var(--red);
-}
-
-/* ---------- Add item button ---------- */
-.menumgr__add-btn {
-  margin-top: 10px;
-  font-family: var(--font-body);
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: var(--red);
-  background: var(--red-light);
-  border-radius: var(--radius-sm);
-  padding: 8px 16px;
-  transition: all 0.12s ease;
-}
-
-.menumgr__add-btn:hover {
-  background: var(--red);
-  color: #fff;
-}
-
-/* ---------- Inputs / forms ---------- */
-.menumgr__input {
-  font-family: var(--font-body);
-  font-size: 0.85rem;
-  color: var(--text-primary);
+.menued__name-input:focus {
   background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  padding: 8px 12px;
-  width: 100%;
-  outline: none;
-  transition: border-color 0.12s ease;
-}
-
-.menumgr__input:focus {
   border-color: var(--red);
 }
 
-.menumgr__input--price {
-  max-width: 110px;
-  font-family: var(--font-mono);
-}
-
-.menumgr__input--area {
-  resize: vertical;
-}
-
-.menumgr__label {
+.menued__status-cluster {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding-top: 10px;
+}
+
+.menued__status-pill {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--green);
+  background: var(--green-light);
+  border-radius: var(--radius-full);
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+.menued__status-pill--off {
+  color: var(--text-muted);
+  background: var(--bg-surface-hover);
+}
+
+/* 86/Reactivate — a routine operational action, not a destructive one:
+   calm neutral outline rather than red/alarming. */
+.menued__86-btn {
   font-family: var(--font-body);
   font-size: 0.75rem;
-  font-weight: 600;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
   color: var(--text-secondary);
+  background: var(--bg-surface);
+  white-space: nowrap;
+  transition: all 0.12s ease;
 }
 
-.menumgr__toggle-row {
+.menued__86-btn:hover:not(:disabled) {
+  border-color: var(--text-primary);
+  color: var(--text-primary);
+}
+
+.menued__86-btn:disabled {
+  opacity: 0.6;
+}
+
+/* ---------- Inline fields ---------- */
+.menued__field-label {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.menued__desc-input {
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  margin: 0 0 20px -8px;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.menued__desc-input:hover {
+  background: var(--bg-surface-hover);
+}
+
+.menued__desc-input:focus {
+  background: var(--bg-primary);
+  border-color: var(--red);
+}
+
+.menued__price-note {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-style: italic;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+
+.menued__price-input-wrap {
+  display: flex;
+  align-items: center;
+  max-width: 160px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0 10px;
+  margin-bottom: 20px;
+  transition: border-color 0.12s ease;
+}
+
+.menued__price-input-wrap:focus-within {
+  border-color: var(--red);
+}
+
+.menued__price-input-wrap--sm {
+  max-width: 110px;
+  margin-bottom: 0;
+}
+
+.menued__price-prefix {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.menued__price-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  padding: 8px 4px;
+  outline: none;
+}
+
+/* ---------- Unsaved-changes bar ---------- */
+.menued__savebar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 24px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
   font-family: var(--font-body);
   font-size: 0.8rem;
   font-weight: 600;
-  color: var(--text-primary);
-  padding: 4px 0;
+  color: var(--text-secondary);
+  animation: fadeIn 0.15s ease-out;
 }
 
-.menumgr__toggle-row input {
-  width: 18px;
-  height: 18px;
-  accent-color: var(--red);
+.menued__savebar--create {
+  background: var(--bg-surface);
 }
 
-.menumgr__save {
+.menued__savebar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.menued__save {
   font-family: var(--font-body);
   font-size: 0.78rem;
   font-weight: 700;
@@ -343,15 +370,20 @@
   transition: background-color 0.12s ease;
 }
 
-.menumgr__save:hover:not(:disabled) {
+.menued__save:hover:not(:disabled) {
   background: var(--red-hover);
 }
 
-.menumgr__save:disabled {
+.menued__save:disabled {
   opacity: 0.6;
 }
 
-.menumgr__cancel {
+.menued__save--sm {
+  padding: 6px 12px;
+  font-size: 0.72rem;
+}
+
+.menued__cancel {
   font-family: var(--font-body);
   font-size: 0.78rem;
   font-weight: 600;
@@ -362,70 +394,184 @@
   transition: color 0.12s ease;
 }
 
-.menumgr__cancel:hover:not(:disabled) {
+.menued__cancel:hover:not(:disabled) {
   color: var(--text-primary);
 }
 
-/* ---------- Modal ---------- */
-.menumgr__overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  background: rgba(0, 0, 0, 0.5);
+.menued__cancel--sm {
+  padding: 6px 12px;
+  font-size: 0.72rem;
+}
+
+/* ---------- Sections (Variants / Modifier Groups) ---------- */
+.menued__section {
+  padding-top: 24px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-color);
+}
+
+.menued__section-title {
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 20px;
-  animation: fadeIn 0.15s ease-out;
-}
-
-.menumgr__modal {
-  width: 100%;
-  max-width: 420px;
-  max-height: 88vh;
-  overflow-y: auto;
-  background: var(--bg-surface);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-medium);
-}
-
-.menumgr__modal-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.menumgr__modal-title {
+  gap: 10px;
   font-family: var(--font-headline);
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   color: var(--text-primary);
+  margin-bottom: 14px;
 }
 
-.menumgr__modal-close {
+.menued__readonly-tag {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--text-muted);
-  display: flex;
-  padding: 4px;
-  border-radius: 50%;
-  transition: all 0.12s ease;
-}
-
-.menumgr__modal-close:hover {
   background: var(--bg-surface-hover);
-  color: var(--text-primary);
+  border-radius: var(--radius-full);
+  padding: 3px 8px;
 }
 
-.menumgr__modal-body {
-  padding: 16px 20px 20px;
+.menued__section-empty {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+/* ---------- Variants table ---------- */
+.menued__variant-table {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 4px;
+  margin-bottom: 10px;
 }
 
-.menumgr__modal-actions {
+.menued__variant-row {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
   gap: 10px;
-  margin-top: 4px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  transition: background-color 0.12s ease;
+}
+
+.menued__variant-row:hover {
+  background: var(--bg-surface-hover);
+}
+
+.menued__variant-row--new {
+  background: var(--bg-primary);
+  border: 1px dashed var(--border-color);
+}
+
+.menued__variant-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  outline: none;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.menued__variant-name:hover {
+  background: var(--bg-surface);
+}
+
+.menued__variant-name:focus {
+  background: var(--bg-surface);
+  border-color: var(--red);
+}
+
+.menued__add-variant {
+  align-self: flex-start;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 6px 8px;
+  transition: color 0.12s ease;
+}
+
+.menued__add-variant:hover {
+  color: var(--red);
+}
+
+/* ---------- Modifier groups (read-only) ---------- */
+.menued__modgroups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.menued__modgroup-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.menued__modgroup-required {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--red);
+  background: var(--red-light);
+  border-radius: var(--radius-full);
+  padding: 2px 8px;
+}
+
+.menued__modgroup-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.menued__modgroup-option {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-surface-hover);
+  border-radius: var(--radius-full);
+  padding: 5px 12px;
+}
+
+.menued__modgroup-price {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+/* ---------- Empty state ---------- */
+.menued__empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.menued__empty-title {
+  font-family: var(--font-headline);
+  font-size: 1rem;
+  color: var(--text-secondary);
+}
+
+.menued__empty-sub {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
 }

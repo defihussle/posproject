@@ -1,33 +1,58 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { API_URL } from "../config";
 import "./MenuManager.css";
 
 const fmtPrice = (p) => `$${parseFloat(p).toFixed(2)}`;
 
 /**
- * Back Office → Menu tab: full menu management.
+ * Menu management — shared by Back Office (owner/admin nav section) and the
+ * POS-reachable "Manage Menu" page (see ManageMenu.jsx). Same component,
+ * same backend routes, both places — a two-pane editor inspired by
+ * Shopify's product editor: a browsable list on the left, a focused detail
+ * panel for whatever's selected on the right, inline editing throughout.
+ *
  * Shows ALL items including inactive ones (86'd items stay visible, greyed
- * out, so owners can reactivate them). All writes go through the
- * /api/backoffice endpoints, which re-verify owner/admin role server-side.
+ * out, so owners/admins can reactivate them). All writes go through the
+ * /api/backoffice endpoints, which re-verify owner/admin role server-side —
+ * this file has zero client-side role gating of its own to duplicate, and
+ * zero new backend routes.
  */
 export default function MenuManager({ staff }) {
   const [menu, setMenu] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [openCats, setOpenCats] = useState(() => new Set());
-  const [editingItem, setEditingItem] = useState(null); // item being edited in the modal
-  const [addingToCat, setAddingToCat] = useState(null); // category id for "+ Add Item"
-  const [togglingIds, setTogglingIds] = useState(() => new Set()); // in-flight 86 toggles
+  // Modifier groups are read-only in this UI (no backend write route exists
+  // for them) — sourced from the public menu endpoint purely for display,
+  // indexed by item id. Active items only (the public route hides inactive
+  // ones), which is fine since 86'd items aren't being sold either way.
+  const [modGroupsByItem, setModGroupsByItem] = useState({});
+  const [selectedItemId, setSelectedItemId] = useState(null);
+  const [creatingInCat, setCreatingInCat] = useState(null); // category id, or null
+  const [togglingIds, setTogglingIds] = useState(() => new Set());
 
-  const loadMenu = useCallback(async () => {
+  const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/backoffice/menu?staffId=${staff.id}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      setMenu(data);
+      const [menuRes, publicRes] = await Promise.all([
+        fetch(`${API_URL}/api/backoffice/menu?staffId=${staff.id}`),
+        fetch(`${API_URL}/api/menu/full`),
+      ]);
+      const menuData = await menuRes.json();
+      if (!menuRes.ok) throw new Error(menuData.error || `HTTP ${menuRes.status}`);
+      setMenu(menuData);
+
+      if (publicRes.ok) {
+        const publicData = await publicRes.json();
+        const byItem = {};
+        for (const cat of publicData) {
+          for (const it of cat.items) {
+            if (it.modifier_groups?.length) byItem[it.id] = it.modifier_groups;
+          }
+        }
+        setModGroupsByItem(byItem);
+      }
       setError(null);
-      // First load: open every category so the whole menu is scannable
-      setOpenCats((prev) => (prev.size === 0 ? new Set(data.map((c) => c.id)) : prev));
+      // First load: auto-select the first item so the detail panel isn't blank
+      setSelectedItemId((prev) => prev ?? menuData.find((c) => c.items.length)?.items[0]?.id ?? null);
     } catch (err) {
       setError(err.message || "Failed to load menu");
     } finally {
@@ -36,18 +61,18 @@ export default function MenuManager({ staff }) {
   }, [staff.id]);
 
   useEffect(() => {
-    loadMenu();
-  }, [loadMenu]);
+    load();
+  }, [load]);
 
-  const toggleCat = (catId) => {
-    setOpenCats((prev) => {
-      const s = new Set(prev);
-      s.has(catId) ? s.delete(catId) : s.add(catId);
-      return s;
-    });
-  };
+  // Flat lookup of the selected item + its category, across all categories
+  const { selectedItem, selectedCat } = useMemo(() => {
+    for (const cat of menu) {
+      const item = cat.items.find((i) => i.id === selectedItemId);
+      if (item) return { selectedItem: item, selectedCat: cat };
+    }
+    return { selectedItem: null, selectedCat: null };
+  }, [menu, selectedItemId]);
 
-  // Replace one item in local state (from a PUT/POST response)
   const applyItem = useCallback((updated) => {
     setMenu((prev) =>
       prev.map((cat) =>
@@ -63,7 +88,24 @@ export default function MenuManager({ staff }) {
     );
   }, []);
 
-  // Quick "86 It" — flips active with no form
+  const applyVariant = useCallback((updated) => {
+    setMenu((prev) =>
+      prev.map((cat) => ({
+        ...cat,
+        items: cat.items.map((it) =>
+          it.id !== updated.item_id
+            ? it
+            : {
+                ...it,
+                variants: it.variants.some((v) => v.id === updated.id)
+                  ? it.variants.map((v) => (v.id === updated.id ? updated : v))
+                  : [...it.variants, updated],
+              }
+        ),
+      }))
+    );
+  }, []);
+
   const toggle86 = useCallback(
     async (item) => {
       if (togglingIds.has(item.id)) return;
@@ -97,328 +139,399 @@ export default function MenuManager({ staff }) {
     [staff.id, applyItem, togglingIds]
   );
 
-  // Replace one variant in local state
-  const applyVariant = useCallback((updated) => {
-    setMenu((prev) =>
-      prev.map((cat) => ({
-        ...cat,
-        items: cat.items.map((it) =>
-          it.id !== updated.item_id
-            ? it
-            : {
-                ...it,
-                variants: it.variants.some((v) => v.id === updated.id)
-                  ? it.variants.map((v) => (v.id === updated.id ? updated : v))
-                  : [...it.variants, updated],
-              }
-        ),
-      }))
-    );
-  }, []);
-
-  if (loading) return <div className="menumgr__notice">Loading menu…</div>;
+  if (loading) return <div className="menued__notice">Loading menu…</div>;
 
   return (
-    <div className="menumgr">
-      {error && <div className="menumgr__error">{error}</div>}
+    <div className="menued">
+      {error && <div className="menued__error">{error}</div>}
 
-      {menu.map((cat) => {
-        const open = openCats.has(cat.id);
-        return (
-          <section key={cat.id} className="menumgr__cat">
-            <button className="menumgr__cat-head" onClick={() => toggleCat(cat.id)}>
-              <span className={`menumgr__cat-chev${open ? " menumgr__cat-chev--open" : ""}`}>
-                ›
-              </span>
-              <h2 className="menumgr__cat-name">{cat.name}</h2>
-              <span className="menumgr__cat-count">
-                {cat.items.length} item{cat.items.length === 1 ? "" : "s"}
-              </span>
-            </button>
-
-            {open && (
-              <div className="menumgr__items">
-                {cat.items.map((item) => (
-                  <ItemRow
-                    key={item.id}
-                    item={item}
-                    staff={staff}
-                    busy={togglingIds.has(item.id)}
-                    onToggle86={() => toggle86(item)}
-                    onEdit={() => setEditingItem(item)}
-                    onVariantSaved={applyVariant}
-                    onError={setError}
-                  />
-                ))}
-                <button className="menumgr__add-btn" onClick={() => setAddingToCat(cat.id)}>
-                  + Add Item
-                </button>
+      <div className="menued__shell">
+        <aside className="menued__list">
+          {menu.map((cat) => (
+            <section key={cat.id} className="menued__cat">
+              <div className="menued__cat-head">
+                <span className="menued__cat-name">{cat.name}</span>
+                <span className="menued__cat-count">{cat.items.length}</span>
               </div>
-            )}
-          </section>
-        );
-      })}
+              {cat.items.map((item) => (
+                <button
+                  key={item.id}
+                  className={`menued__list-item${
+                    item.id === selectedItemId && !creatingInCat ? " menued__list-item--active" : ""
+                  }${item.active ? "" : " menued__list-item--inactive"}`}
+                  onClick={() => {
+                    setCreatingInCat(null);
+                    setSelectedItemId(item.id);
+                  }}
+                >
+                  <span className="menued__list-item-name">{item.name}</span>
+                  <span className="menued__list-item-meta">
+                    {item.variants.length > 0 ? `${item.variants.length} options` : fmtPrice(item.base_price)}
+                  </span>
+                  {!item.active && <span className="menued__list-item-dot" title="Inactive" />}
+                </button>
+              ))}
+              <button
+                className={`menued__add-item${creatingInCat === cat.id ? " menued__add-item--active" : ""}`}
+                onClick={() => {
+                  setSelectedItemId(null);
+                  setCreatingInCat(cat.id);
+                }}
+              >
+                + Add item
+              </button>
+            </section>
+          ))}
+        </aside>
 
-      {editingItem && (
-        <ItemEditModal
-          item={editingItem}
-          staff={staff}
-          onSaved={(updated) => {
-            applyItem(updated);
-            setEditingItem(null);
-          }}
-          onClose={() => setEditingItem(null)}
-        />
-      )}
-
-      {addingToCat && (
-        <ItemAddModal
-          categoryId={addingToCat}
-          categoryName={menu.find((c) => c.id === addingToCat)?.name || ""}
-          staff={staff}
-          onSaved={(created) => {
-            applyItem(created);
-            setAddingToCat(null);
-          }}
-          onClose={() => setAddingToCat(null)}
-        />
-      )}
+        <main className="menued__detail">
+          {creatingInCat ? (
+            <NewItemDetail
+              staff={staff}
+              categoryId={creatingInCat}
+              categoryName={menu.find((c) => c.id === creatingInCat)?.name || ""}
+              onCreated={(created) => {
+                applyItem(created);
+                setCreatingInCat(null);
+                setSelectedItemId(created.id);
+              }}
+              onCancel={() => setCreatingInCat(null)}
+              onError={setError}
+            />
+          ) : selectedItem ? (
+            <ItemDetail
+              key={selectedItem.id}
+              item={selectedItem}
+              category={selectedCat}
+              staff={staff}
+              busy={togglingIds.has(selectedItem.id)}
+              modifierGroups={modGroupsByItem[selectedItem.id] || []}
+              onToggle86={() => toggle86(selectedItem)}
+              onSaved={applyItem}
+              onVariantSaved={applyVariant}
+              onError={setError}
+            />
+          ) : (
+            <div className="menued__empty">
+              <div className="menued__empty-title">No items yet</div>
+              <div className="menued__empty-sub">Add one from a category on the left</div>
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }
 
-function ItemRow({ item, staff, busy, onToggle86, onEdit, onVariantSaved, onError }) {
+// ---------- Detail panel: existing item ----------
+function ItemDetail({ item, category, staff, busy, modifierGroups, onToggle86, onSaved, onVariantSaved, onError }) {
+  const [draft, setDraft] = useState(() => ({
+    name: item.name,
+    description: item.description || "",
+    base_price: String(item.base_price),
+  }));
+  const [saving, setSaving] = useState(false);
   const [addingVariant, setAddingVariant] = useState(false);
   const hasVariants = item.variants.length > 0;
 
-  return (
-    <div className={`menumgr-item${item.active ? "" : " menumgr-item--inactive"}`}>
-      <div className="menumgr-item__row">
-        <div className="menumgr-item__info">
-          <span className="menumgr-item__name">{item.name}</span>
-          {!item.active && <span className="menumgr-item__badge">INACTIVE</span>}
-          {item.description && (
-            <span className="menumgr-item__desc">{item.description}</span>
-          )}
-        </div>
-        <span className="menumgr-item__price">
-          {hasVariants ? `${item.variants.length} options` : fmtPrice(item.base_price)}
-        </span>
-        <div className="menumgr-item__actions">
-          <button
-            className={`menumgr-item__btn86${item.active ? "" : " menumgr-item__btn86--off"}`}
-            onClick={onToggle86}
-            disabled={busy}
-            title={item.active ? "Mark unavailable (86)" : "Reactivate"}
-          >
-            {busy ? "…" : item.active ? "86 It" : "Reactivate"}
-          </button>
-          <button className="menumgr-item__btn-edit" onClick={onEdit}>
-            Edit
-          </button>
-        </div>
-      </div>
+  // New item selected — reset the draft to match it
+  useEffect(() => {
+    setDraft({
+      name: item.name,
+      description: item.description || "",
+      base_price: String(item.base_price),
+    });
+  }, [item.id, item.name, item.description, item.base_price]);
 
-      {hasVariants && (
-        <div className="menumgr-item__variants">
-          {item.variants.map((v) => (
-            <VariantRow key={v.id} variant={v} staff={staff} onSaved={onVariantSaved} onError={onError} />
-          ))}
-          {addingVariant ? (
-            <VariantForm
-              staff={staff}
-              itemId={item.id}
-              onSaved={(created) => {
-                onVariantSaved(created);
-                setAddingVariant(false);
-              }}
-              onCancel={() => setAddingVariant(false)}
-              onError={onError}
-            />
-          ) : (
-            <button className="menumgr__add-variant" onClick={() => setAddingVariant(true)}>
-              + Add Variant
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
+  const dirty =
+    draft.name !== item.name ||
+    draft.description !== (item.description || "") ||
+    (!hasVariants && draft.base_price !== String(item.base_price));
 
-function VariantRow({ variant, staff, onSaved, onError }) {
-  const [editing, setEditing] = useState(false);
-
-  if (editing) {
-    return (
-      <VariantForm
-        staff={staff}
-        variant={variant}
-        onSaved={(updated) => {
-          onSaved(updated);
-          setEditing(false);
-        }}
-        onCancel={() => setEditing(false)}
-        onError={onError}
-      />
-    );
-  }
-
-  return (
-    <div className="menumgr-variant">
-      <span className="menumgr-variant__name">{variant.name}</span>
-      <span className="menumgr-variant__price">{fmtPrice(variant.price)}</span>
-      <button className="menumgr-variant__edit" onClick={() => setEditing(true)}>
-        Edit
-      </button>
-    </div>
-  );
-}
-
-// Inline variant form — edit (variant set) or add (itemId set)
-function VariantForm({ staff, variant, itemId, onSaved, onCancel, onError }) {
-  const [name, setName] = useState(variant?.name || "");
-  const [price, setPrice] = useState(variant ? String(variant.price) : "");
-  const [saving, setSaving] = useState(false);
+  const discard = () =>
+    setDraft({ name: item.name, description: item.description || "", base_price: String(item.base_price) });
 
   const save = async () => {
-    if (saving) return;
-    setSaving(true);
-    try {
-      const isEdit = !!variant;
-      const res = await fetch(
-        isEdit
-          ? `${API_URL}/api/backoffice/item-variants/${variant.id}`
-          : `${API_URL}/api/backoffice/item-variants`,
-        {
-          method: isEdit ? "PUT" : "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(
-            isEdit
-              ? { staffId: staff.id, name, price: Number(price) }
-              : { staffId: staff.id, item_id: itemId, name, price: Number(price) }
-          ),
-        }
-      );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      onSaved(data);
-    } catch (err) {
-      onError(err.message || "Failed to save variant");
-      setSaving(false);
+    if (saving || !dirty) return;
+    if (!draft.name.trim()) {
+      onError("Item name can't be empty");
+      return;
     }
-  };
-
-  return (
-    <div className="menumgr-variant menumgr-variant--form">
-      <input
-        className="menumgr__input"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="Variant name"
-      />
-      <input
-        className="menumgr__input menumgr__input--price"
-        value={price}
-        onChange={(e) => setPrice(e.target.value)}
-        placeholder="0.00"
-        inputMode="decimal"
-      />
-      <button className="menumgr__save" onClick={save} disabled={saving}>
-        {saving ? "Saving…" : "Save"}
-      </button>
-      <button className="menumgr__cancel" onClick={onCancel} disabled={saving}>
-        Cancel
-      </button>
-    </div>
-  );
-}
-
-function ItemEditModal({ item, staff, onSaved, onClose }) {
-  const [name, setName] = useState(item.name);
-  const [description, setDescription] = useState(item.description || "");
-  const [price, setPrice] = useState(String(item.base_price));
-  const [active, setActive] = useState(item.active);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState(null);
-
-  const save = async () => {
-    if (saving) return;
+    const price = hasVariants ? parseFloat(item.base_price) : Number(draft.base_price);
+    if (!Number.isFinite(price) || price <= 0) {
+      onError("Price must be a positive number");
+      return;
+    }
     setSaving(true);
-    setErr(null);
     try {
       const res = await fetch(`${API_URL}/api/backoffice/menu-items/${item.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           staffId: staff.id,
-          name,
-          description: description.trim() || null,
-          base_price: Number(price),
-          active,
+          name: draft.name.trim(),
+          description: draft.description.trim() || null,
+          base_price: price,
+          active: item.active,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       onSaved(data);
-    } catch (e) {
-      setErr(e.message || "Failed to save");
+      onError(null);
+    } catch (err) {
+      onError(err.message || "Failed to save item");
+    } finally {
       setSaving(false);
     }
   };
 
   return (
-    <ModalShell title={`Edit — ${item.name}`} onClose={onClose}>
-      {err && <div className="menumgr__error">{err}</div>}
-      <label className="menumgr__label">
-        Name
-        <input className="menumgr__input" value={name} onChange={(e) => setName(e.target.value)} />
-      </label>
-      <label className="menumgr__label">
-        Description
-        <textarea
-          className="menumgr__input menumgr__input--area"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          rows={2}
-        />
-      </label>
-      <label className="menumgr__label">
-        Base price
+    <div className="menued__panel">
+      <div className="menued__panel-eyebrow">{category?.name}</div>
+
+      <div className="menued__panel-head">
         <input
-          className="menumgr__input menumgr__input--price"
-          value={price}
-          onChange={(e) => setPrice(e.target.value)}
-          inputMode="decimal"
+          className="menued__name-input"
+          value={draft.name}
+          onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+          placeholder="Item name"
         />
-      </label>
-      <label className="menumgr__toggle-row">
-        <span>Active (available to order)</span>
-        <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
-      </label>
-      <div className="menumgr__modal-actions">
-        <button className="menumgr__cancel" onClick={onClose} disabled={saving}>
-          Cancel
-        </button>
-        <button className="menumgr__save" onClick={save} disabled={saving}>
-          {saving ? "Saving…" : "Save"}
-        </button>
+        <div className="menued__status-cluster">
+          <span className={`menued__status-pill${item.active ? "" : " menued__status-pill--off"}`}>
+            {item.active ? "Active" : "Inactive"}
+          </span>
+          <button className="menued__86-btn" onClick={onToggle86} disabled={busy}>
+            {busy ? "…" : item.active ? "86 It" : "Reactivate"}
+          </button>
+        </div>
       </div>
-    </ModalShell>
+
+      <label className="menued__field-label" htmlFor="menued-desc">
+        Description
+      </label>
+      <textarea
+        id="menued-desc"
+        className="menued__desc-input"
+        value={draft.description}
+        onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
+        placeholder="No description"
+        rows={2}
+      />
+
+      {hasVariants ? (
+        <div className="menued__price-note">Priced by variant — see below</div>
+      ) : (
+        <>
+          <label className="menued__field-label" htmlFor="menued-price">
+            Base price
+          </label>
+          <div className="menued__price-input-wrap">
+            <span className="menued__price-prefix">$</span>
+            <input
+              id="menued-price"
+              className="menued__price-input"
+              value={draft.base_price}
+              onChange={(e) => setDraft((d) => ({ ...d, base_price: e.target.value }))}
+              inputMode="decimal"
+            />
+          </div>
+        </>
+      )}
+
+      {dirty && (
+        <div className="menued__savebar">
+          <span>Unsaved changes</span>
+          <div className="menued__savebar-actions">
+            <button className="menued__cancel" onClick={discard} disabled={saving}>
+              Discard
+            </button>
+            <button className="menued__save" onClick={save} disabled={saving}>
+              {saving ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="menued__section">
+        <div className="menued__section-title">Variants</div>
+        {hasVariants ? (
+          <div className="menued__variant-table">
+            {item.variants.map((v) => (
+              <VariantRow key={v.id} variant={v} staff={staff} onSaved={onVariantSaved} onError={onError} />
+            ))}
+          </div>
+        ) : (
+          <div className="menued__section-empty">No variants — this item has a single price</div>
+        )}
+        {addingVariant ? (
+          <VariantRow
+            staff={staff}
+            itemId={item.id}
+            isNew
+            onSaved={(created) => {
+              onVariantSaved(created);
+              setAddingVariant(false);
+            }}
+            onCancel={() => setAddingVariant(false)}
+            onError={onError}
+          />
+        ) : (
+          <button className="menued__add-variant" onClick={() => setAddingVariant(true)}>
+            + Add variant
+          </button>
+        )}
+      </div>
+
+      {modifierGroups.length > 0 && (
+        <div className="menued__section">
+          <div className="menued__section-title">
+            Modifier Groups <span className="menued__readonly-tag">View only</span>
+          </div>
+          <div className="menued__modgroups">
+            {modifierGroups.map((g) => (
+              <div key={g.id} className="menued__modgroup">
+                <div className="menued__modgroup-name">
+                  {g.name}
+                  {g.required && <span className="menued__modgroup-required">Required</span>}
+                </div>
+                <div className="menued__modgroup-options">
+                  {g.options.map((o) => (
+                    <span key={o.id} className="menued__modgroup-option">
+                      {o.name}
+                      {parseFloat(o.price_delta) > 0 && (
+                        <span className="menued__modgroup-price"> +{fmtPrice(o.price_delta)}</span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
-function ItemAddModal({ categoryId, categoryName, staff, onSaved, onClose }) {
+// One variant row — inline-editable in place, or (isNew) an inline
+// creation row. No modal either way.
+function VariantRow({ variant, itemId, isNew, staff, onSaved, onCancel, onError }) {
+  const [name, setName] = useState(variant?.name || "");
+  const [price, setPrice] = useState(variant ? String(variant.price) : "");
+  const [saving, setSaving] = useState(false);
+
+  const dirty = !isNew && (name !== variant.name || price !== String(variant.price));
+
+  const discard = () => {
+    setName(variant.name);
+    setPrice(String(variant.price));
+  };
+
+  const save = async () => {
+    if (saving) return;
+    if (!name.trim()) {
+      onError("Variant name can't be empty");
+      return;
+    }
+    const p = Number(price);
+    if (!Number.isFinite(p) || p <= 0) {
+      onError("Variant price must be a positive number");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(
+        isNew
+          ? `${API_URL}/api/backoffice/item-variants`
+          : `${API_URL}/api/backoffice/item-variants/${variant.id}`,
+        {
+          method: isNew ? "POST" : "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            isNew
+              ? { staffId: staff.id, item_id: itemId, name: name.trim(), price: p }
+              : { staffId: staff.id, name: name.trim(), price: p }
+          ),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      onSaved(data);
+      onError(null);
+      if (isNew) {
+        setName("");
+        setPrice("");
+      }
+    } catch (err) {
+      onError(err.message || "Failed to save variant");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className={`menued__variant-row${isNew ? " menued__variant-row--new" : ""}`}>
+      <input
+        className="menued__variant-name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Variant name"
+      />
+      <div className="menued__price-input-wrap menued__price-input-wrap--sm">
+        <span className="menued__price-prefix">$</span>
+        <input
+          className="menued__price-input"
+          value={price}
+          onChange={(e) => setPrice(e.target.value)}
+          placeholder="0.00"
+          inputMode="decimal"
+        />
+      </div>
+      {isNew ? (
+        <>
+          <button className="menued__save menued__save--sm" onClick={save} disabled={saving}>
+            {saving ? "…" : "Add"}
+          </button>
+          <button className="menued__cancel menued__cancel--sm" onClick={onCancel} disabled={saving}>
+            Cancel
+          </button>
+        </>
+      ) : (
+        dirty && (
+          <>
+            <button className="menued__save menued__save--sm" onClick={save} disabled={saving}>
+              {saving ? "…" : "Save"}
+            </button>
+            <button className="menued__cancel menued__cancel--sm" onClick={discard} disabled={saving}>
+              Discard
+            </button>
+          </>
+        )
+      )}
+    </div>
+  );
+}
+
+// ---------- Detail panel: creating a new item ----------
+function NewItemDetail({ staff, categoryId, categoryName, onCreated, onCancel, onError }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState("");
   const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState(null);
 
   const save = async () => {
     if (saving) return;
+    if (!name.trim()) {
+      onError("Item name is required");
+      return;
+    }
+    const p = Number(price);
+    if (!Number.isFinite(p) || p <= 0) {
+      onError("Base price must be a positive number");
+      return;
+    }
     setSaving(true);
-    setErr(null);
     try {
       const res = await fetch(`${API_URL}/api/backoffice/menu-items`, {
         method: "POST",
@@ -426,76 +539,72 @@ function ItemAddModal({ categoryId, categoryName, staff, onSaved, onClose }) {
         body: JSON.stringify({
           staffId: staff.id,
           category_id: categoryId,
-          name,
+          name: name.trim(),
           description: description.trim() || null,
-          base_price: Number(price),
+          base_price: p,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      onSaved(data);
-    } catch (e) {
-      setErr(e.message || "Failed to create item");
+      onError(null);
+      onCreated(data);
+    } catch (err) {
+      onError(err.message || "Failed to create item");
       setSaving(false);
     }
   };
 
   return (
-    <ModalShell title={`Add Item — ${categoryName}`} onClose={onClose}>
-      {err && <div className="menumgr__error">{err}</div>}
-      <label className="menumgr__label">
-        Name
+    <div className="menued__panel">
+      <div className="menued__panel-eyebrow">New item in {categoryName}</div>
+
+      <div className="menued__panel-head">
         <input
-          className="menumgr__input"
+          className="menued__name-input"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="e.g. Horchata"
+          placeholder="Item name"
+          autoFocus
         />
-      </label>
-      <label className="menumgr__label">
+      </div>
+
+      <label className="menued__field-label" htmlFor="menued-new-desc">
         Description
-        <textarea
-          className="menumgr__input menumgr__input--area"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          rows={2}
-        />
       </label>
-      <label className="menumgr__label">
+      <textarea
+        id="menued-new-desc"
+        className="menued__desc-input"
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        placeholder="No description"
+        rows={2}
+      />
+
+      <label className="menued__field-label" htmlFor="menued-new-price">
         Base price
+      </label>
+      <div className="menued__price-input-wrap">
+        <span className="menued__price-prefix">$</span>
         <input
-          className="menumgr__input menumgr__input--price"
+          id="menued-new-price"
+          className="menued__price-input"
           value={price}
           onChange={(e) => setPrice(e.target.value)}
           placeholder="0.00"
           inputMode="decimal"
         />
-      </label>
-      <div className="menumgr__modal-actions">
-        <button className="menumgr__cancel" onClick={onClose} disabled={saving}>
-          Cancel
-        </button>
-        <button className="menumgr__save" onClick={save} disabled={saving}>
-          {saving ? "Adding…" : "Add Item"}
-        </button>
       </div>
-    </ModalShell>
-  );
-}
 
-function ModalShell({ title, children, onClose }) {
-  return (
-    <div className="menumgr__overlay" onClick={onClose}>
-      <div className="menumgr__modal" onClick={(e) => e.stopPropagation()}>
-        <div className="menumgr__modal-head">
-          <h3 className="menumgr__modal-title">{title}</h3>
-          <button className="menumgr__modal-close" onClick={onClose} aria-label="Close">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 6L6 18M6 6l12 12" />
-            </svg>
+      <div className="menued__savebar menued__savebar--create">
+        <span>New items start active</span>
+        <div className="menued__savebar-actions">
+          <button className="menued__cancel" onClick={onCancel} disabled={saving}>
+            Cancel
+          </button>
+          <button className="menued__save" onClick={save} disabled={saving}>
+            {saving ? "Creating…" : "Create item"}
           </button>
         </div>
-        <div className="menumgr__modal-body">{children}</div>
       </div>
     </div>
   );

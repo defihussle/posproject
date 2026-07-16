@@ -99,21 +99,39 @@ posproject/
   to be opened once on a kitchen device and left running indefinitely.
 - **Back Office** — separate route `/backoffice`, own PIN login, persistent 
   sidebar nav (`NAV_ITEMS` config in `BackOffice.jsx` — add future sections 
-  there, each with its own allowed-roles list). Owner/admin see Home, Staff 
-  Management, Menu Management and land on Home. **Managers see Staff 
-  Management ONLY — Home is hidden from their nav entirely, not just 
-  blocked** — and land there directly. Cashier/kitchen blocked with a 
-  message. Home is pure-display stat cards (sales summary, top sellers, 
-  staff performance) via `/api/backoffice/stats/*` (owner/admin only, 
-  role checked server-side); Reports/Orders sections not yet added to the 
-  nav.
+  there, each with its own allowed-roles list). **Owner/admin ONLY** — every 
+  `/api/backoffice/*` route requires owner/admin server-side 
+  (`requireBackofficeStaff`'s default). **Manager has NO Back Office access 
+  at all** (revoked — previously had Staff Management only); PIN login 
+  rejects manager with "Access Restricted." Owner/admin see Home, Staff 
+  Management, Menu Management and land on Home. Cashier/kitchen also 
+  blocked with a message. Home is pure-display stat cards (sales summary, 
+  top sellers, staff performance) via `/api/backoffice/stats/*`; 
+  Reports/Orders sections not yet added to the nav.
+- **Manage Menu** — POS-reachable menu editor at `/manage-menu`, owner/admin 
+  only, opened from Order Entry's account dropdown (full page, not a modal). 
+  Renders the same `MenuManager` component and hits the same 
+  `/api/backoffice/menu*` / `/api/backoffice/item-variants*` routes as Back 
+  Office's Menu Management section — one editor, two entry points, kept in 
+  sync automatically since it's the same component. Shopify-product-editor-
+  inspired: browsable category/item list on the left, inline-editable detail 
+  panel (name/description/price, variants table, read-only modifier groups) 
+  on the right. No hard-delete for menu items (same "deactivate only" 
+  pattern as staff) — 86/Reactivate is the only lifecycle action.
 - **Staff management hierarchy** (enforced server-side in /api/backoffice/
   staff routes AND mirrored in UI button-hiding): only owners can act on 
   owner rows or assign the owner/admin role; owner+admin can act on admin 
-  rows; owner/admin/manager can act on manager/cashier/kitchen rows. 
-  Deactivation only (active=false), never hard-delete — staff rows are 
+  rows. Deactivation only (active=false), never hard-delete — staff rows are 
   referenced by historical orders. PINs: 4 digits, bcrypt-hashed server-side, 
   never returned/logged, unique among active staff (login matches globally).
+- **POS staff quick-add** — `POST /api/staff/quick-add` (deliberately 
+  separate from `/api/backoffice/staff`, so it isn't swept up by the Back 
+  Office role restriction above), owner/admin/manager. This is Manager's 
+  ONE remaining staff capability post-revocation: an add-only modal from 
+  Order Entry's account dropdown ("Staff Management" — same label, POS 
+  context). No list/edit/deactivate/PIN-reset there; those are Back-Office-
+  only now. `StaffAddForm` (in `StaffManager.jsx`) is shared by both 
+  surfaces via an `endpoint` prop.
 - Theme defaults to **Light**, only owners can toggle dark mode 
   (app-wide setting, in the account dropdown menu next to the staff name 
   on Order Entry — NOT visible to non-owner roles at all)

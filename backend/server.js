@@ -1108,14 +1108,22 @@ app.post("/api/backoffice/item-variants", async (req, res) => {
 });
 
 // --------------- Back Office: staff management ---------------
-// All routes verify the REQUESTER's role server-side (owner/admin/manager),
-// then apply hierarchy protection based on the TARGET row's current role:
-//   target owner   → only an owner may act on it
-//   target admin   → only owner or admin (managers can't touch admin rows)
-//   target manager/cashier/kitchen → owner, admin, or manager
+// Back Office access (this section) is owner/admin ONLY — Manager's Back
+// Office access was fully revoked. List/edit/deactivate/PIN-reset all
+// require the REQUESTER to be owner/admin server-side, then apply hierarchy
+// protection based on the TARGET row's current role:
+//   target owner → only an owner may act on it
+//   target admin → only owner or admin
+//   target manager/cashier/kitchen → owner or admin (manager can no longer
+//     reach these routes at all, so its old "manager can act on
+//     manager/cashier/kitchen" branch in canManageTarget below is now
+//     unreachable via these routes — left as-is since it's still correct,
+//     just moot here)
 // Raw PINs are hashed server-side and never logged, echoed, or returned.
+// Manager's ONE surviving staff capability is POST /api/staff/quick-add
+// (add-only, outside /api/backoffice — see STAFF_MANAGER_ROLES below).
 
-const STAFF_MANAGER_ROLES = ["owner", "admin", "manager"];
+const STAFF_MANAGER_ROLES = ["owner", "admin", "manager"]; // used ONLY by POST /api/staff/quick-add
 const STAFF_ROLES = ["owner", "admin", "manager", "cashier", "kitchen"];
 // Columns safe to return — pin_hash is NEVER selected.
 const STAFF_SAFE_COLS =
@@ -1157,10 +1165,13 @@ async function assertPinAvailable(pin, excludeId = null) {
 }
 
 // GET /api/backoffice/staff?staffId=...
-// All staff, active AND inactive, without pin_hash.
+// All staff, active AND inactive, without pin_hash. Full Back Office staff
+// list — owner/admin only (Back Office access was fully revoked from
+// Manager; their only remaining staff capability is the separate POS
+// quick-add route below).
 app.get("/api/backoffice/staff", async (req, res) => {
   try {
-    await requireBackofficeStaff(req.query.staffId, STAFF_MANAGER_ROLES);
+    await requireBackofficeStaff(req.query.staffId);
     const { rows } = await pool.query(
       `SELECT ${STAFF_SAFE_COLS} FROM staff
         ORDER BY active DESC, array_position(ARRAY['owner','admin','manager','cashier','kitchen'], role::text), name`
@@ -1171,12 +1182,18 @@ app.get("/api/backoffice/staff", async (req, res) => {
   }
 });
 
-// POST /api/backoffice/staff
-// Body: { staffId, name, role, hourly_rate, pin }
-app.post("/api/backoffice/staff", async (req, res) => {
+// Shared create-staff logic for the two routes below, which differ ONLY in
+// who's allowed to call them:
+//   POST /api/backoffice/staff  — full Back Office "+ Add Staff", owner/admin
+//   POST /api/staff/quick-add   — POS account-dropdown quick-add modal,
+//                                 owner/admin/manager (Manager's one
+//                                 remaining staff capability post-revocation)
+// Both still run assertRoleAssignable, so Manager can never hand out
+// owner/admin through the quick-add route either.
+async function createStaffMember(req, res, allowedRoles) {
   try {
     const { staffId, name, role, hourly_rate, pin } = req.body || {};
-    const requester = await requireBackofficeStaff(staffId, STAFF_MANAGER_ROLES);
+    const requester = await requireBackofficeStaff(staffId, allowedRoles);
 
     if (typeof name !== "string" || !name.trim()) {
       throw new HttpError(400, "name is required");
@@ -1215,7 +1232,16 @@ app.post("/api/backoffice/staff", async (req, res) => {
   } catch (err) {
     sendHttpError(res, err, "Failed to create staff member");
   }
-});
+}
+
+// POST /api/backoffice/staff — Back Office "+ Add Staff", owner/admin only.
+app.post("/api/backoffice/staff", (req, res) => createStaffMember(req, res, ["owner", "admin"]));
+
+// POST /api/staff/quick-add — POS account-dropdown "Staff Management"
+// quick-add modal, owner/admin/manager. Deliberately NOT under /api/backoffice
+// so it isn't swept up by the Back Office access revocation — this is
+// Manager's one surviving staff action (add-only, no list/edit/PIN-reset).
+app.post("/api/staff/quick-add", (req, res) => createStaffMember(req, res, STAFF_MANAGER_ROLES));
 
 // Fetch the target row + enforce hierarchy, shared by the two PUT routes.
 async function requireManagedTarget(requester, targetId) {
@@ -1241,13 +1267,14 @@ async function requireManagedTarget(requester, targetId) {
 
 // PUT /api/backoffice/staff/:id
 // Body: { staffId, name?, role?, hourly_rate?, active? } — partial update.
-// Hierarchy protection applies to EVERY field, not just `active`.
+// Owner/admin only (Back Office is revoked from Manager). Hierarchy
+// protection still applies to EVERY field, not just `active`.
 // Deactivation = active:false; staff rows are never hard-deleted (historical
 // orders reference them).
 app.put("/api/backoffice/staff/:id", async (req, res) => {
   try {
     const body = req.body || {};
-    const requester = await requireBackofficeStaff(body.staffId, STAFF_MANAGER_ROLES);
+    const requester = await requireBackofficeStaff(body.staffId);
     await requireManagedTarget(requester, req.params.id);
 
     const sets = [];
@@ -1301,10 +1328,11 @@ app.put("/api/backoffice/staff/:id", async (req, res) => {
 
 // PUT /api/backoffice/staff/:id/pin
 // Body: { staffId, pin } — validate, hash server-side, never echo the pin.
+// Owner/admin only (Back Office is revoked from Manager).
 app.put("/api/backoffice/staff/:id/pin", async (req, res) => {
   try {
     const { staffId, pin } = req.body || {};
-    const requester = await requireBackofficeStaff(staffId, STAFF_MANAGER_ROLES);
+    const requester = await requireBackofficeStaff(staffId);
     const target = await requireManagedTarget(requester, req.params.id);
 
     validatePin(pin);

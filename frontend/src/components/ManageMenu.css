@@ -1,0 +1,74 @@
+/* ============================================================
+   Manage Menu — POS-side page chrome (top bar only; the editor itself is
+   MenuManager.css, shared with Back Office)
+   ============================================================ */
+
+.managemenu {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+}
+
+.managemenu__topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
+  box-shadow: var(--shadow-soft);
+  flex-shrink: 0;
+}
+
+.managemenu__topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.managemenu__back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border-radius: 50%;
+  color: var(--text-secondary);
+  transition: all 0.12s ease;
+}
+
+.managemenu__back:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+
+.managemenu__logo {
+  height: 34px;
+  width: auto;
+  display: block;
+}
+
+.managemenu__title {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding-left: 14px;
+  border-left: 1px solid var(--border-color);
+}
+
+.managemenu__staff {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.managemenu__body {
+  flex: 1;
+  min-height: 0;
+  padding: 24px;
+  overflow: hidden;
+}
