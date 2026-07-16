@@ -2,15 +2,52 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const cookieParser = require("cookie-parser");
+const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+const { generateSecret: generateTotpSecret, generateURI: generateTotpUri, verify: verifyTotpToken } = require("otplib");
+const QRCode = require("qrcode");
 const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+const SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET) {
+  throw new Error("SESSION_SECRET env var is required (signs Back Office session cookies)");
+}
+const FRONTEND_URL = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, "");
+
+// Dev frontends run on 5173 (default) or 5174 (if 5173 is taken) — allow
+// both plus whatever FRONTEND_URL is actually configured to in production.
+const ALLOWED_ORIGINS = [...new Set([FRONTEND_URL, "http://localhost:5173", "http://localhost:5174"])];
+
+// Back Office session cookie — httpOnly so client-side JS (and any XSS)
+// can never read it, sameSite=lax so it still rides along on same-site
+// navigation (e.g. following the emailed reset-password link) while being
+// dropped on genuine cross-site requests. `secure` is only forced in
+// production (Render, HTTPS) — over plain http://localhost in dev, a
+// `secure` cookie would silently never be set at all.
+const SESSION_COOKIE_NAME = "bo_session";
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const SESSION_COOKIE_OPTS = {
+  httpOnly: true,
+  sameSite: "lax",
+  secure: IS_PRODUCTION,
+  path: "/",
+};
+const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12h — roughly a shift
+
 // --------------- Middleware ---------------
-app.use(cors());
+app.use(
+  cors({
+    origin: ALLOWED_ORIGINS,
+    credentials: true, // required for the Back Office session cookie to be sent/received cross-origin
+  })
+);
 app.use(express.json());
+app.use(cookieParser());
 
 // --------------- Postgres pool ---------------
 const pool = new Pool({
@@ -26,14 +63,25 @@ class HttpError extends Error {
   }
 }
 
-// --------------- Rate limiter (PIN-guessing protection) ---------------
-// Tracks failed login attempts per IP. After 5 failures within 60s,
-// the IP is blocked for 30s before it can try again.
-const loginAttempts = new Map(); // key: IP, value: { count, firstAttempt, blockedUntil }
+// --------------- Rate limiter (PIN/login-guessing protection) ---------------
+// Tracks failed login attempts per (IP, bucket). After 5 failures within
+// 60s, that IP+bucket is blocked for 30s before it can try again.
+//
+// `bucket` keeps independent counters per login surface — PIN login,
+// Back Office password step, and Back Office TOTP step are rate-limited
+// separately, so hammering one doesn't consume the allowance of another
+// and each is meaningfully protected on its own (a 6-digit TOTP code in
+// particular is guessable in ~1M tries without this).
+const loginAttempts = new Map(); // key: `${ip}::${bucket}`, value: { count, firstAttempt, blockedUntil }
 
-function checkRateLimit(ip) {
+function rateLimitKey(ip, bucket) {
+  return `${ip}::${bucket}`;
+}
+
+function checkRateLimit(ip, bucket = "pin") {
   const now = Date.now();
-  const record = loginAttempts.get(ip);
+  const key = rateLimitKey(ip, bucket);
+  const record = loginAttempts.get(key);
 
   if (!record) return { allowed: true };
 
@@ -45,7 +93,7 @@ function checkRateLimit(ip) {
 
   // Window expired — reset
   if (now - record.firstAttempt > 60_000) {
-    loginAttempts.delete(ip);
+    loginAttempts.delete(key);
     return { allowed: true };
   }
 
@@ -58,19 +106,20 @@ function checkRateLimit(ip) {
   return { allowed: false, retryAfter };
 }
 
-function recordFailedAttempt(ip) {
+function recordFailedAttempt(ip, bucket = "pin") {
   const now = Date.now();
-  const record = loginAttempts.get(ip);
+  const key = rateLimitKey(ip, bucket);
+  const record = loginAttempts.get(key);
 
   if (!record || now - record.firstAttempt > 60_000) {
-    loginAttempts.set(ip, { count: 1, firstAttempt: now, blockedUntil: null });
+    loginAttempts.set(key, { count: 1, firstAttempt: now, blockedUntil: null });
   } else {
     record.count += 1;
   }
 }
 
-function clearAttempts(ip) {
-  loginAttempts.delete(ip);
+function clearAttempts(ip, bucket = "pin") {
+  loginAttempts.delete(rateLimitKey(ip, bucket));
 }
 
 // --------------- Routes ---------------
@@ -964,6 +1013,438 @@ app.patch("/api/orders/:id/status", async (req, res) => {
   }
 });
 
+// --------------- Back Office: authentication (email + password + TOTP) ---------------
+// Replaces PIN login for Back Office ONLY, owner/admin exclusively. Order
+// Entry/KDS PIN login (POST /api/auth/login, above) is a completely
+// separate system and is untouched by any of this — every role, including
+// owner/admin, keeps using their PIN there.
+//
+// Flow:
+//   1. First-time (no email/password yet): the existing PIN proves identity
+//      once (setup-start), then the owner/admin picks an email + password
+//      (setup-complete), then confirms a TOTP app (setup-confirm).
+//   2. Returning login: email + password (login-step1) -> 6-digit TOTP code
+//      (login-step2) -> session cookie issued.
+//   3. If login-step1 succeeds but TOTP was never confirmed (an interrupted
+//      setup), it re-enters the SAME TOTP-setup branch setup-complete would
+//      have used, so nobody gets stuck in a broken in-between state.
+//
+// Three short-lived, stateless JWTs (signed with SESSION_SECRET, never
+// touch the DB) move the caller between these steps before a real session
+// exists:
+//   "account_setup" — proves a PIN-verified owner/admin, setup-start ->
+//                      setup-complete, 10 min
+//   "2fa_setup"      — proves password was just verified and a TOTP secret
+//                      was just (re)generated; used by setup-confirm, 10 min
+//   "2fa_pending"    — proves password was just verified and TOTP is
+//                      already enabled; used by login-step2, 5 min
+// Only a real "session" JWT (issued at the end of setup-confirm/login-
+// step2) goes into the httpOnly cookie, and it's the only kind
+// requireBackofficeSession (below) will ever accept.
+
+const PASSWORD_MIN_LENGTH = 10;
+const TOTP_ISSUER = "Narcos Tacos POS";
+
+function signTempToken(payload, purpose, expiresIn) {
+  return jwt.sign({ ...payload, purpose }, SESSION_SECRET, { expiresIn });
+}
+
+function verifyTempToken(token, purpose) {
+  if (!token || typeof token !== "string") return null;
+  try {
+    const payload = jwt.verify(token, SESSION_SECRET);
+    return payload.purpose === purpose ? payload : null;
+  } catch {
+    return null; // expired/invalid/tampered/wrong-purpose all treated the same
+  }
+}
+
+function issueSession(res, staffId) {
+  const token = jwt.sign({ staffId, purpose: "session" }, SESSION_SECRET, {
+    expiresIn: Math.floor(SESSION_MAX_AGE_MS / 1000),
+  });
+  res.cookie(SESSION_COOKIE_NAME, token, { ...SESSION_COOKIE_OPTS, maxAge: SESSION_MAX_AGE_MS });
+}
+
+function validatePasswordStrength(password) {
+  if (typeof password !== "string" || password.length < PASSWORD_MIN_LENGTH) {
+    throw new HttpError(400, `Password must be at least ${PASSWORD_MIN_LENGTH} characters`);
+  }
+}
+
+function normalizeEmail(email) {
+  if (typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    throw new HttpError(400, "A valid email address is required");
+  }
+  return email.trim().toLowerCase();
+}
+
+async function verifyTotpCode(secret, token) {
+  try {
+    const result = await verifyTotpToken({ secret, token });
+    return !!result?.valid;
+  } catch {
+    return false; // malformed token (wrong length/non-digit) — just "invalid"
+  }
+}
+
+// Starts (or resumes an interrupted) TOTP setup for a staff row that
+// already has email + password_hash: generates a fresh secret, stores it
+// (totp_enabled stays false until setup-confirm verifies a real code
+// against it), and returns everything the frontend needs to render the QR
+// step. Safe to call repeatedly — each call simply issues a new secret,
+// so an abandoned setup never leaves a stale/guessable one lying around.
+async function beginTotpSetup(staff) {
+  const secret = generateTotpSecret();
+  await pool.query("UPDATE staff SET totp_secret = $1 WHERE id = $2", [secret, staff.id]);
+  const otpauthUrl = generateTotpUri({ secret, label: staff.email, issuer: TOTP_ISSUER });
+  const qrCodeDataUrl = await QRCode.toDataURL(otpauthUrl);
+  const tempToken = signTempToken({ staffId: staff.id }, "2fa_setup", "10m");
+  return { stage: "2fa_setup", tempToken, otpauthUrl, qrCodeDataUrl };
+}
+
+function hashResetToken(rawToken) {
+  return crypto.createHash("sha256").update(rawToken).digest("hex");
+}
+
+// Sends via Resend's REST API directly (no SDK — Node's built-in fetch is
+// enough for one simple POST, avoiding an extra dependency for a single
+// call site). Never throws: forgot-password must ALWAYS return its generic
+// success response whether or not the send actually worked, so failures
+// are logged (status code only — never the API key, never the recipient's
+// reset link) and swallowed here.
+async function sendResendEmail({ to, subject, html }) {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    console.warn("RESEND_API_KEY is not set — skipping email send");
+    return;
+  }
+  try {
+    const resp = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: "Narcos Tacos POS <noreply@narcostacos.ca>",
+        to: [to],
+        subject,
+        html,
+      }),
+    });
+    if (!resp.ok) {
+      console.error(`Resend email send failed: HTTP ${resp.status}`);
+    }
+  } catch (err) {
+    console.error("Resend email send failed:", err.message);
+  }
+}
+
+// POST /api/backoffice/auth/setup-start — { pin }
+// One-time bootstrap for an owner/admin who has no email/password yet
+// (every existing owner/admin, until they do this once). Reuses their
+// existing PIN purely to prove "this is really them" — same trust model
+// PIN login already uses everywhere else in this app — then hands back a
+// short-lived token for setup-complete. Rejects accounts that already
+// have a password set (use email+password login, or Forgot Password).
+app.post("/api/backoffice/auth/setup-start", async (req, res) => {
+  const ip = req.ip;
+  const rateCheck = checkRateLimit(ip, "bo-setup-pin");
+  if (!rateCheck.allowed) {
+    return res.status(429).json({ error: "Too many attempts. Try again shortly.", retryAfter: rateCheck.retryAfter });
+  }
+  const { pin } = req.body || {};
+  if (typeof pin !== "string" || !pin) {
+    return res.status(400).json({ error: "PIN is required" });
+  }
+  try {
+    const { rows } = await pool.query(
+      "SELECT id, name, role, pin_hash, password_hash FROM staff WHERE active = true AND role IN ('owner','admin')"
+    );
+    let matched = null;
+    for (const row of rows) {
+      if (await bcrypt.compare(pin, row.pin_hash)) {
+        matched = row;
+        break;
+      }
+    }
+    if (!matched) {
+      recordFailedAttempt(ip, "bo-setup-pin");
+      return res.status(401).json({ error: "PIN not recognized" });
+    }
+    clearAttempts(ip, "bo-setup-pin");
+
+    if (matched.password_hash) {
+      return res.status(409).json({
+        error: "This account already has a Back Office login — use email + password, or Forgot Password to reset it.",
+      });
+    }
+
+    const tempToken = signTempToken({ staffId: matched.id }, "account_setup", "10m");
+    res.json({ tempToken, name: matched.name });
+  } catch (err) {
+    console.error("Back Office setup-start error:", err.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// POST /api/backoffice/auth/setup-complete — { tempToken, email, password }
+// Sets the email + password this account will log in with going forward,
+// then immediately starts TOTP setup (same shape as login-step1's
+// not-yet-enabled branch) so the frontend can go straight into the QR step.
+app.post("/api/backoffice/auth/setup-complete", async (req, res) => {
+  try {
+    const { tempToken, email, password } = req.body || {};
+    const payload = verifyTempToken(tempToken, "account_setup");
+    if (!payload) throw new HttpError(401, "Setup session expired — please start again with your PIN");
+
+    const { rows } = await pool.query(
+      "SELECT id, name, role, password_hash FROM staff WHERE id = $1 AND active = true AND role IN ('owner','admin')",
+      [payload.staffId]
+    );
+    const staff = rows[0];
+    if (!staff) throw new HttpError(401, "Setup session expired — please start again with your PIN");
+    if (staff.password_hash) throw new HttpError(409, "This account already has a Back Office login set up");
+
+    const email_ = normalizeEmail(email);
+    validatePasswordStrength(password);
+
+    const { rows: existing } = await pool.query(
+      "SELECT id FROM staff WHERE lower(email) = $1 AND id != $2",
+      [email_, staff.id]
+    );
+    if (existing.length > 0) throw new HttpError(409, "That email is already in use");
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    await pool.query("UPDATE staff SET email = $1, password_hash = $2 WHERE id = $3", [
+      email_,
+      passwordHash,
+      staff.id,
+    ]);
+
+    const setupInfo = await beginTotpSetup({ id: staff.id, email: email_ });
+    res.json(setupInfo);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to complete account setup");
+  }
+});
+
+// POST /api/backoffice/auth/login-step1 — { email, password }
+// Always the same generic error for "no such email", "not owner/admin",
+// and "wrong password" — never reveals which one it was.
+app.post("/api/backoffice/auth/login-step1", async (req, res) => {
+  const ip = req.ip;
+  const rateCheck = checkRateLimit(ip, "bo-password");
+  if (!rateCheck.allowed) {
+    return res.status(429).json({ error: "Too many attempts. Try again shortly.", retryAfter: rateCheck.retryAfter });
+  }
+  const GENERIC_FAIL = "Invalid email or password";
+  const { email, password } = req.body || {};
+  if (typeof email !== "string" || typeof password !== "string" || !email || !password) {
+    return res.status(400).json({ error: GENERIC_FAIL });
+  }
+  try {
+    const { rows } = await pool.query(
+      "SELECT id, name, role, email, password_hash, totp_enabled FROM staff WHERE lower(email) = $1 AND active = true",
+      [email.trim().toLowerCase()]
+    );
+    const staff = rows[0];
+    // Hard backstop: reject anything that isn't owner/admin even though
+    // only owner/admin should ever have a password_hash set at all.
+    if (!staff || !["owner", "admin"].includes(staff.role) || !staff.password_hash) {
+      recordFailedAttempt(ip, "bo-password");
+      return res.status(401).json({ error: GENERIC_FAIL });
+    }
+    const passwordOk = await bcrypt.compare(password, staff.password_hash);
+    if (!passwordOk) {
+      recordFailedAttempt(ip, "bo-password");
+      return res.status(401).json({ error: GENERIC_FAIL });
+    }
+    clearAttempts(ip, "bo-password");
+
+    if (!staff.totp_enabled) {
+      const setupInfo = await beginTotpSetup(staff);
+      return res.json(setupInfo);
+    }
+    const tempToken = signTempToken({ staffId: staff.id }, "2fa_pending", "5m");
+    res.json({ stage: "2fa", tempToken });
+  } catch (err) {
+    console.error("Back Office login-step1 error:", err.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// POST /api/backoffice/auth/setup-confirm — { tempToken, totpCode }
+// Completes a TOTP setup (first-time or resumed): one correct code flips
+// totp_enabled true and issues the real session — same ending as login-step2.
+app.post("/api/backoffice/auth/setup-confirm", async (req, res) => {
+  const ip = req.ip;
+  const rateCheck = checkRateLimit(ip, "bo-totp");
+  if (!rateCheck.allowed) {
+    return res.status(429).json({ error: "Too many attempts. Try again shortly.", retryAfter: rateCheck.retryAfter });
+  }
+  try {
+    const { tempToken, totpCode } = req.body || {};
+    const payload = verifyTempToken(tempToken, "2fa_setup");
+    if (!payload) throw new HttpError(401, "Setup session expired — please log in again");
+
+    const { rows } = await pool.query(
+      "SELECT id, name, role, totp_secret FROM staff WHERE id = $1 AND active = true AND role IN ('owner','admin')",
+      [payload.staffId]
+    );
+    const staff = rows[0];
+    if (!staff || !staff.totp_secret) throw new HttpError(401, "Setup session expired — please log in again");
+
+    const codeOk = await verifyTotpCode(staff.totp_secret, totpCode);
+    if (!codeOk) {
+      recordFailedAttempt(ip, "bo-totp");
+      throw new HttpError(401, "Incorrect code — check your authenticator app and try again");
+    }
+    clearAttempts(ip, "bo-totp");
+
+    await pool.query("UPDATE staff SET totp_enabled = true WHERE id = $1", [staff.id]);
+    issueSession(res, staff.id);
+    res.json({ id: staff.id, name: staff.name, role: staff.role });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to confirm 2FA setup");
+  }
+});
+
+// POST /api/backoffice/auth/login-step2 — { tempToken, totpCode }
+app.post("/api/backoffice/auth/login-step2", async (req, res) => {
+  const ip = req.ip;
+  const rateCheck = checkRateLimit(ip, "bo-totp");
+  if (!rateCheck.allowed) {
+    return res.status(429).json({ error: "Too many attempts. Try again shortly.", retryAfter: rateCheck.retryAfter });
+  }
+  try {
+    const { tempToken, totpCode } = req.body || {};
+    const payload = verifyTempToken(tempToken, "2fa_pending");
+    if (!payload) throw new HttpError(401, "Login session expired — please log in again");
+
+    const { rows } = await pool.query(
+      "SELECT id, name, role, totp_secret, totp_enabled FROM staff WHERE id = $1 AND active = true AND role IN ('owner','admin')",
+      [payload.staffId]
+    );
+    const staff = rows[0];
+    if (!staff || !staff.totp_enabled || !staff.totp_secret) {
+      throw new HttpError(401, "Login session expired — please log in again");
+    }
+
+    const codeOk = await verifyTotpCode(staff.totp_secret, totpCode);
+    if (!codeOk) {
+      recordFailedAttempt(ip, "bo-totp");
+      throw new HttpError(401, "Incorrect code");
+    }
+    clearAttempts(ip, "bo-totp");
+
+    issueSession(res, staff.id);
+    res.json({ id: staff.id, name: staff.name, role: staff.role });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to verify code");
+  }
+});
+
+// POST /api/backoffice/auth/forgot-password — { email }
+// ALWAYS the same generic response, whether or not the email matches an
+// account — never reveals which emails have Back Office access.
+app.post("/api/backoffice/auth/forgot-password", async (req, res) => {
+  const GENERIC = { message: "If that email has a Back Office account, a reset link has been sent." };
+  const ip = req.ip;
+  const rateCheck = checkRateLimit(ip, "bo-forgot");
+  if (!rateCheck.allowed) {
+    // A 429 here only reveals "this IP is being rate-limited," not
+    // anything about the email itself, so it doesn't break the
+    // no-enumeration guarantee above.
+    return res.status(429).json({ error: "Too many attempts. Try again shortly.", retryAfter: rateCheck.retryAfter });
+  }
+
+  const { email } = req.body || {};
+  if (typeof email !== "string" || !email.trim()) {
+    return res.json(GENERIC);
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, email FROM staff
+        WHERE lower(email) = $1 AND active = true
+          AND role IN ('owner','admin') AND password_hash IS NOT NULL`,
+      [email.trim().toLowerCase()]
+    );
+    const staff = rows[0];
+    if (staff) {
+      const rawToken = crypto.randomBytes(32).toString("hex");
+      const expiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+      await pool.query(
+        "UPDATE staff SET reset_token = $1, reset_token_expiry = $2 WHERE id = $3",
+        [hashResetToken(rawToken), expiry, staff.id]
+      );
+      const resetUrl = `${FRONTEND_URL}/backoffice/reset-password?token=${rawToken}`;
+      await sendResendEmail({
+        to: staff.email,
+        subject: "Reset your Narcos Tacos Back Office password",
+        html: `<p>Hi ${staff.name},</p>
+<p>Someone requested a password reset for your Narcos Tacos Back Office login. Click below to set a new password — this link expires in 1 hour.</p>
+<p><a href="${resetUrl}">${resetUrl}</a></p>
+<p>If you didn't request this, you can safely ignore this email — your password hasn't changed.</p>`,
+      });
+    }
+    recordFailedAttempt(ip, "bo-forgot"); // counts toward the rate limit regardless of match, by design
+    res.json(GENERIC);
+  } catch (err) {
+    console.error("forgot-password error:", err.message);
+    res.json(GENERIC); // never let a server error leak through as a different response
+  }
+});
+
+// POST /api/backoffice/auth/reset-password — { token, newPassword }
+app.post("/api/backoffice/auth/reset-password", async (req, res) => {
+  try {
+    const { token, newPassword } = req.body || {};
+    if (typeof token !== "string" || !token) {
+      throw new HttpError(400, "Reset token is required");
+    }
+    validatePasswordStrength(newPassword);
+
+    const { rows } = await pool.query(
+      "SELECT id FROM staff WHERE reset_token = $1 AND reset_token_expiry > now() AND active = true",
+      [hashResetToken(token)]
+    );
+    const staff = rows[0];
+    if (!staff) {
+      throw new HttpError(400, "This reset link is invalid or has expired — request a new one");
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await pool.query(
+      "UPDATE staff SET password_hash = $1, reset_token = NULL, reset_token_expiry = NULL WHERE id = $2",
+      [passwordHash, staff.id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to reset password");
+  }
+});
+
+// POST /api/backoffice/auth/logout
+app.post("/api/backoffice/auth/logout", (req, res) => {
+  res.clearCookie(SESSION_COOKIE_NAME, SESSION_COOKIE_OPTS);
+  res.json({ success: true });
+});
+
+// GET /api/backoffice/auth/me — lets the frontend silently check for an
+// existing valid session on page load/refresh instead of always forcing a
+// fresh login.
+app.get("/api/backoffice/auth/me", async (req, res) => {
+  try {
+    const staff = await requireBackofficeSession(req);
+    res.json({ id: staff.id, name: staff.name, role: staff.role });
+  } catch (err) {
+    sendHttpError(res, err, "Not authenticated");
+  }
+});
+
 // --------------- Back Office: menu management ---------------
 // Every route here re-verifies ON THE SERVER that the caller is an active
 // owner/admin (403 otherwise) — same principle as checkout's server-side
@@ -972,7 +1453,15 @@ app.patch("/api/orders/:id/status", async (req, res) => {
 // Resolve staffId → active staff row with one of `allowedRoles`, or throw
 // 401/403. The requester's role is ALWAYS looked up in the DB — a role sent
 // in the request body/headers is never trusted.
-async function requireBackofficeStaff(staffId, allowedRoles = ["owner", "admin"]) {
+//
+// NOT used by any /api/backoffice/* route anymore — those all require a
+// real Back Office session cookie now (requireBackofficeSession, below).
+// This older helper survives ONLY for POST /api/staff/quick-add, which is
+// deliberately outside /api/backoffice and lives in the PIN-authenticated
+// POS/Order Entry world (no session cookie exists there — Order Entry's
+// PIN login is untouched by this task). Renamed from requireBackofficeStaff
+// to make that boundary obvious at every call site.
+async function requireStaffIdParam(staffId, allowedRoles = ["owner", "admin"]) {
   const denied = `Access restricted to ${allowedRoles.join("/")}`;
   if (!staffId || typeof staffId !== "string") {
     throw new HttpError(401, "staffId is required");
@@ -988,6 +1477,44 @@ async function requireBackofficeStaff(staffId, allowedRoles = ["owner", "admin"]
     throw new HttpError(403, denied);
   }
   const staff = rows[0];
+  if (!staff || !allowedRoles.includes(staff.role)) {
+    throw new HttpError(403, denied);
+  }
+  return staff;
+}
+
+// Resolve the Back Office session cookie → active staff row with one of
+// `allowedRoles`, or throw 401/403. This is what closes the gap the old
+// staffId-trusting helper left open: every /api/backoffice/* route used to
+// accept whatever staffId the client sent in the query string or body,
+// meaning any browser devtools user could impersonate any staff member by
+// changing that value. Now the ONLY source of identity is SESSION_SECRET-
+// signed JWT in an httpOnly cookie, issued exclusively by a real
+// email+password+TOTP login (see the auth routes above) — nothing in the
+// request body/query is ever consulted for who the caller is.
+function readSessionStaffId(req) {
+  const token = req.cookies?.[SESSION_COOKIE_NAME];
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, SESSION_SECRET);
+    if (payload.purpose !== "session" || !payload.staffId) return null;
+    return payload.staffId;
+  } catch {
+    return null; // expired/invalid/tampered — treat exactly like "not logged in"
+  }
+}
+
+async function requireBackofficeSession(req, allowedRoles = ["owner", "admin"]) {
+  const staffId = readSessionStaffId(req);
+  if (!staffId) {
+    throw new HttpError(401, "Not authenticated — please log in to Back Office");
+  }
+  const { rows } = await pool.query(
+    "SELECT id, name, role, email FROM staff WHERE id = $1 AND active = true",
+    [staffId]
+  );
+  const staff = rows[0];
+  const denied = `Access restricted to ${allowedRoles.join("/")}`;
   if (!staff || !allowedRoles.includes(staff.role)) {
     throw new HttpError(403, denied);
   }
@@ -1012,7 +1539,7 @@ const sendHttpError = (res, err, fallbackMsg) => {
 // modifier groups/options are editable here.
 app.get("/api/backoffice/menu", async (req, res) => {
   try {
-    await requireBackofficeStaff(req.query.staffId);
+    await requireBackofficeSession(req);
 
     const { rows: categories } = await pool.query(
       "SELECT id, name, sort_order FROM menu_categories WHERE active = true ORDER BY sort_order"
@@ -1086,8 +1613,8 @@ function validateItemFields({ name, base_price }) {
 // Body: { staffId, name, description, base_price, active }
 app.put("/api/backoffice/menu-items/:id", async (req, res) => {
   try {
-    const { staffId, description, active } = req.body || {};
-    await requireBackofficeStaff(staffId);
+    const { description, active } = req.body || {};
+    await requireBackofficeSession(req);
     const { name, price } = validateItemFields(req.body || {});
     if (typeof active !== "boolean") {
       throw new HttpError(400, "active must be a boolean");
@@ -1111,8 +1638,8 @@ app.put("/api/backoffice/menu-items/:id", async (req, res) => {
 // Body: { staffId, category_id, name, description, base_price }
 app.post("/api/backoffice/menu-items", async (req, res) => {
   try {
-    const { staffId, category_id, description } = req.body || {};
-    await requireBackofficeStaff(staffId);
+    const { category_id, description } = req.body || {};
+    await requireBackofficeSession(req);
     const { name, price } = validateItemFields(req.body || {});
     if (!category_id || typeof category_id !== "string") {
       throw new HttpError(400, "category_id is required");
@@ -1152,7 +1679,7 @@ function validateVariantFields({ name, price }) {
 // Body: { staffId, name, price }
 app.put("/api/backoffice/item-variants/:id", async (req, res) => {
   try {
-    await requireBackofficeStaff((req.body || {}).staffId);
+    await requireBackofficeSession(req);
     const { name, price } = validateVariantFields(req.body || {});
 
     const { rows } = await pool.query(
@@ -1172,8 +1699,8 @@ app.put("/api/backoffice/item-variants/:id", async (req, res) => {
 // Body: { staffId, item_id, name, price }
 app.post("/api/backoffice/item-variants", async (req, res) => {
   try {
-    const { staffId, item_id } = req.body || {};
-    await requireBackofficeStaff(staffId);
+    const { item_id } = req.body || {};
+    await requireBackofficeSession(req);
     const { name, price } = validateVariantFields(req.body || {});
     if (!item_id || typeof item_id !== "string") {
       throw new HttpError(400, "item_id is required");
@@ -1259,8 +1786,8 @@ function validateOptionFields({ name, price_delta, max_quantity, default_selecte
 app.post("/api/backoffice/modifier-groups", async (req, res) => {
   const client = await pool.connect();
   try {
-    const { staffId, item_id } = req.body || {};
-    await requireBackofficeStaff(staffId);
+    const { item_id } = req.body || {};
+    await requireBackofficeSession(req);
     const { name, min, max } = validateGroupFields(req.body || {});
     if (!item_id || typeof item_id !== "string") {
       throw new HttpError(400, "item_id is required");
@@ -1295,8 +1822,8 @@ app.post("/api/backoffice/modifier-groups", async (req, res) => {
 // Body: { staffId, name, required, min_select, max_select, active }
 app.put("/api/backoffice/modifier-groups/:id", async (req, res) => {
   try {
-    const { staffId, active } = req.body || {};
-    await requireBackofficeStaff(staffId);
+    const { active } = req.body || {};
+    await requireBackofficeSession(req);
     const { name, min, max } = validateGroupFields(req.body || {});
     if (typeof active !== "boolean") {
       throw new HttpError(400, "active must be a boolean");
@@ -1321,7 +1848,7 @@ app.put("/api/backoffice/modifier-groups/:id", async (req, res) => {
 // order history.
 app.delete("/api/backoffice/modifier-groups/:id", async (req, res) => {
   try {
-    await requireBackofficeStaff(req.query.staffId);
+    await requireBackofficeSession(req);
 
     const { rows: refRows } = await pool.query(
       `SELECT count(*)::int AS n FROM order_item_modifiers oim
@@ -1353,7 +1880,7 @@ app.delete("/api/backoffice/modifier-groups/:id", async (req, res) => {
 // other items.
 app.delete("/api/backoffice/item-modifier-groups/:itemId/:groupId", async (req, res) => {
   try {
-    await requireBackofficeStaff(req.query.staffId);
+    await requireBackofficeSession(req);
     const { rows } = await pool.query(
       `DELETE FROM item_modifier_groups WHERE item_id = $1 AND modifier_group_id = $2 RETURNING item_id`,
       [req.params.itemId, req.params.groupId]
@@ -1369,8 +1896,8 @@ app.delete("/api/backoffice/item-modifier-groups/:itemId/:groupId", async (req, 
 // Body: { staffId, group_id, name, price_delta, max_quantity, default_selected }
 app.post("/api/backoffice/modifier-options", async (req, res) => {
   try {
-    const { staffId, group_id } = req.body || {};
-    await requireBackofficeStaff(staffId);
+    const { group_id } = req.body || {};
+    await requireBackofficeSession(req);
     const { name, delta, maxQ } = validateOptionFields(req.body || {});
     if (!group_id || typeof group_id !== "string") {
       throw new HttpError(400, "group_id is required");
@@ -1395,8 +1922,8 @@ app.post("/api/backoffice/modifier-options", async (req, res) => {
 // Body: { staffId, name, price_delta, max_quantity, default_selected, active }
 app.put("/api/backoffice/modifier-options/:id", async (req, res) => {
   try {
-    const { staffId, active } = req.body || {};
-    await requireBackofficeStaff(staffId);
+    const { active } = req.body || {};
+    await requireBackofficeSession(req);
     const { name, delta, maxQ } = validateOptionFields(req.body || {});
     if (typeof active !== "boolean") {
       throw new HttpError(400, "active must be a boolean");
@@ -1421,7 +1948,7 @@ app.put("/api/backoffice/modifier-options/:id", async (req, res) => {
 // deactivate instead.
 app.delete("/api/backoffice/modifier-options/:id", async (req, res) => {
   try {
-    await requireBackofficeStaff(req.query.staffId);
+    await requireBackofficeSession(req);
 
     const { rows: refRows } = await pool.query(
       "SELECT count(*)::int AS n FROM order_item_modifiers WHERE modifier_option_id = $1",
@@ -1509,7 +2036,7 @@ async function assertPinAvailable(pin, excludeId = null) {
 // quick-add route below).
 app.get("/api/backoffice/staff", async (req, res) => {
   try {
-    await requireBackofficeStaff(req.query.staffId);
+    await requireBackofficeSession(req);
     const { rows } = await pool.query(
       `SELECT ${STAFF_SAFE_COLS} FROM staff
         ORDER BY active DESC, array_position(ARRAY['owner','admin','manager','cashier','kitchen'], role::text), name`
@@ -1521,17 +2048,21 @@ app.get("/api/backoffice/staff", async (req, res) => {
 });
 
 // Shared create-staff logic for the two routes below, which differ ONLY in
-// who's allowed to call them:
-//   POST /api/backoffice/staff  — full Back Office "+ Add Staff", owner/admin
+// who's allowed to call them and HOW that requester was authenticated:
+//   POST /api/backoffice/staff  — full Back Office "+ Add Staff", owner/
+//                                 admin only, authenticated via the Back
+//                                 Office session cookie
 //   POST /api/staff/quick-add   — POS account-dropdown quick-add modal,
 //                                 owner/admin/manager (Manager's one
-//                                 remaining staff capability post-revocation)
+//                                 remaining staff capability post-
+//                                 revocation), authenticated via the
+//                                 PIN-login staffId the POS already holds
 // Both still run assertRoleAssignable, so Manager can never hand out
-// owner/admin through the quick-add route either.
-async function createStaffMember(req, res, allowedRoles) {
+// owner/admin through the quick-add route either. `requester` is resolved
+// by the caller (different auth mechanism per route) and passed in.
+async function createStaffMember(req, res, requester) {
   try {
-    const { staffId, name, role, hourly_rate, pin } = req.body || {};
-    const requester = await requireBackofficeStaff(staffId, allowedRoles);
+    const { name, role, hourly_rate, pin, email } = req.body || {};
 
     if (typeof name !== "string" || !name.trim()) {
       throw new HttpError(400, "name is required");
@@ -1547,6 +2078,20 @@ async function createStaffMember(req, res, allowedRoles) {
     validatePin(pin);
     await assertPinAvailable(pin);
 
+    // Email only ever means anything for owner/admin (the only roles that
+    // get Back Office login) — silently dropped for every other role even
+    // if one somehow arrives in the body, matching the frontend never
+    // showing the field outside those two roles. (In practice this branch
+    // is unreachable for manager-initiated quick-add: assertRoleAssignable
+    // above already blocks manager from creating an owner/admin at all.)
+    let emailToStore = null;
+    const isBackofficeRole = role === "owner" || role === "admin";
+    if (isBackofficeRole && typeof email === "string" && email.trim()) {
+      emailToStore = normalizeEmail(email);
+      const { rows: existing } = await pool.query("SELECT id FROM staff WHERE lower(email) = $1", [emailToStore]);
+      if (existing.length > 0) throw new HttpError(409, "That email is already in use");
+    }
+
     // Owners span all locations (location_id NULL, per schema design);
     // everyone else is scoped to the single active location.
     let locationId = null;
@@ -1561,10 +2106,10 @@ async function createStaffMember(req, res, allowedRoles) {
     const pinHash = await bcrypt.hash(pin, 10);
     const title = role.charAt(0).toUpperCase() + role.slice(1);
     const { rows } = await pool.query(
-      `INSERT INTO staff (location_id, name, title, pin_hash, role, hourly_rate, active)
-       VALUES ($1, $2, $3, $4, $5, $6, true)
+      `INSERT INTO staff (location_id, name, title, pin_hash, role, hourly_rate, email, active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, true)
        RETURNING ${STAFF_SAFE_COLS}`,
-      [locationId, name.trim(), title, pinHash, role, rate]
+      [locationId, name.trim(), title, pinHash, role, rate, emailToStore]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -1572,14 +2117,31 @@ async function createStaffMember(req, res, allowedRoles) {
   }
 }
 
-// POST /api/backoffice/staff — Back Office "+ Add Staff", owner/admin only.
-app.post("/api/backoffice/staff", (req, res) => createStaffMember(req, res, ["owner", "admin"]));
+// POST /api/backoffice/staff — Back Office "+ Add Staff", owner/admin only,
+// session-cookie authenticated (closes the old staffId-trust gap).
+app.post("/api/backoffice/staff", async (req, res) => {
+  try {
+    const requester = await requireBackofficeSession(req, ["owner", "admin"]);
+    await createStaffMember(req, res, requester);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to create staff member");
+  }
+});
 
 // POST /api/staff/quick-add — POS account-dropdown "Staff Management"
 // quick-add modal, owner/admin/manager. Deliberately NOT under /api/backoffice
 // so it isn't swept up by the Back Office access revocation — this is
 // Manager's one surviving staff action (add-only, no list/edit/PIN-reset).
-app.post("/api/staff/quick-add", (req, res) => createStaffMember(req, res, STAFF_MANAGER_ROLES));
+// Stays staffId-body-authenticated on purpose: Order Entry is PIN-login
+// only and has no Back Office session cookie to send.
+app.post("/api/staff/quick-add", async (req, res) => {
+  try {
+    const requester = await requireStaffIdParam((req.body || {}).staffId, STAFF_MANAGER_ROLES);
+    await createStaffMember(req, res, requester);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to create staff member");
+  }
+});
 
 // Fetch the target row + enforce hierarchy, shared by the two PUT routes.
 async function requireManagedTarget(requester, targetId) {
@@ -1612,8 +2174,8 @@ async function requireManagedTarget(requester, targetId) {
 app.put("/api/backoffice/staff/:id", async (req, res) => {
   try {
     const body = req.body || {};
-    const requester = await requireBackofficeStaff(body.staffId);
-    await requireManagedTarget(requester, req.params.id);
+    const requester = await requireBackofficeSession(req);
+    const target = await requireManagedTarget(requester, req.params.id);
 
     const sets = [];
     const vals = [];
@@ -1649,6 +2211,30 @@ app.put("/api/backoffice/staff/:id", async (req, res) => {
       sets.push(`active = $${i++}`);
       vals.push(body.active);
     }
+    if (body.email !== undefined) {
+      // The role this row will have AFTER this update — accounts for a
+      // role change happening in the same request. Email only ever means
+      // anything for owner/admin (the only roles with Back Office login);
+      // rejected outright for manager/cashier/kitchen rather than silently
+      // dropped, since this is an explicit edit action.
+      const effectiveRole = body.role !== undefined ? body.role : target.role;
+      if (effectiveRole !== "owner" && effectiveRole !== "admin") {
+        throw new HttpError(400, "email can only be set for owner/admin roles");
+      }
+      if (body.email === null || body.email === "") {
+        sets.push(`email = $${i++}`);
+        vals.push(null);
+      } else {
+        const normalized = normalizeEmail(body.email);
+        const { rows: existing } = await pool.query(
+          "SELECT id FROM staff WHERE lower(email) = $1 AND id != $2",
+          [normalized, target.id]
+        );
+        if (existing.length > 0) throw new HttpError(409, "That email is already in use");
+        sets.push(`email = $${i++}`);
+        vals.push(normalized);
+      }
+    }
     if (sets.length === 0) {
       throw new HttpError(400, "No updatable fields provided");
     }
@@ -1669,8 +2255,8 @@ app.put("/api/backoffice/staff/:id", async (req, res) => {
 // Owner/admin only (Back Office is revoked from Manager).
 app.put("/api/backoffice/staff/:id/pin", async (req, res) => {
   try {
-    const { staffId, pin } = req.body || {};
-    const requester = await requireBackofficeStaff(staffId);
+    const { pin } = req.body || {};
+    const requester = await requireBackofficeSession(req);
     const target = await requireManagedTarget(requester, req.params.id);
 
     validatePin(pin);
@@ -1688,7 +2274,7 @@ app.put("/api/backoffice/staff/:id/pin", async (req, res) => {
 });
 
 // --------------- Back Office: read-only stats ---------------
-// Owner/admin only — requireBackofficeStaff's default allowedRoles is
+// Owner/admin only — requireBackofficeSession's default allowedRoles is
 // exactly ["owner", "admin"], so managers correctly get 403 on all three.
 // All figures are based on completed (status='ready') orders, using
 // completed_at exactly as KDS's history/prep-time endpoint already does.
@@ -1716,7 +2302,7 @@ async function getSingleActiveLocation(client) {
 app.get("/api/backoffice/stats/summary", async (req, res) => {
   const client = await pool.connect();
   try {
-    await requireBackofficeStaff(req.query.staffId);
+    await requireBackofficeSession(req);
     const { range, trunc } = resolveStatsRange(req.query.range);
     const location = await getSingleActiveLocation(client);
 
@@ -1757,7 +2343,7 @@ app.get("/api/backoffice/stats/summary", async (req, res) => {
 app.get("/api/backoffice/stats/top-items", async (req, res) => {
   const client = await pool.connect();
   try {
-    await requireBackofficeStaff(req.query.staffId);
+    await requireBackofficeSession(req);
     const { trunc } = resolveStatsRange(req.query.range);
     const location = await getSingleActiveLocation(client);
 
@@ -1803,7 +2389,7 @@ app.get("/api/backoffice/stats/top-items", async (req, res) => {
 app.get("/api/backoffice/stats/staff-performance", async (req, res) => {
   const client = await pool.connect();
   try {
-    await requireBackofficeStaff(req.query.staffId);
+    await requireBackofficeSession(req);
     const { trunc } = resolveStatsRange(req.query.range);
     const location = await getSingleActiveLocation(client);
 

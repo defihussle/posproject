@@ -27,9 +27,9 @@ export default function HomeDashboard({ staff }) {
     try {
       const qs = `staffId=${staff.id}&range=${range}`;
       const [sumRes, topRes, perfRes] = await Promise.all([
-        fetch(`${API_URL}/api/backoffice/stats/summary?${qs}`),
-        fetch(`${API_URL}/api/backoffice/stats/top-items?${qs}&limit=5`),
-        fetch(`${API_URL}/api/backoffice/stats/staff-performance?${qs}`),
+        fetch(`${API_URL}/api/backoffice/stats/summary?${qs}`, { credentials: "include" }),
+        fetch(`${API_URL}/api/backoffice/stats/top-items?${qs}&limit=5`, { credentials: "include" }),
+        fetch(`${API_URL}/api/backoffice/stats/staff-performance?${qs}`, { credentials: "include" }),
       ]);
       const [sumData, topData, perfData] = await Promise.all([
         sumRes.json(),

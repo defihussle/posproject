@@ -252,6 +252,10 @@
   font-family: var(--font-mono);
 }
 
+.staffmgr__input--email {
+  max-width: 240px;
+}
+
 .staffmgr-row__editform .staffmgr__input {
   width: auto;
 }

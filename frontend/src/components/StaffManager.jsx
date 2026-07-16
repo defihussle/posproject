@@ -33,7 +33,7 @@ export default function StaffManager({ staff }) {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/backoffice/staff?staffId=${staff.id}`);
+      const res = await fetch(`${API_URL}/api/backoffice/staff?staffId=${staff.id}`, { credentials: "include" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setRows(data);
@@ -128,6 +128,7 @@ function StaffRow({ row, me, onSaved, onError }) {
   const put = async (body) => {
     const res = await fetch(`${API_URL}/api/backoffice/staff/${row.id}`, {
       method: "PUT",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ staffId: me.id, ...body }),
     });
@@ -214,11 +215,17 @@ function StaffRow({ row, me, onSaved, onError }) {
 function RowEditForm({ row, me, onSaved, onCancel, onError }) {
   const [role, setRole] = useState(row.role);
   const [rate, setRate] = useState(row.hourly_rate == null ? "" : String(row.hourly_rate));
+  const [email, setEmail] = useState(row.email || "");
   const [saving, setSaving] = useState(false);
   const roles = assignableRoles(me.role);
   // Keep the target's current role selectable even if not assignable by me
   // (e.g. admin editing an admin's rate without changing role).
   const options = roles.includes(row.role) ? roles : [row.role, ...roles];
+  // Email is only ever meaningful for owner/admin (the only roles with
+  // Back Office login) — shown/sent based on the SELECTED role, so
+  // switching a row to owner/admin reveals it immediately, and switching
+  // away hides it again without needing a second save.
+  const isBackofficeRole = role === "owner" || role === "admin";
 
   const save = async () => {
     if (saving) return;
@@ -226,8 +233,10 @@ function RowEditForm({ row, me, onSaved, onCancel, onError }) {
     try {
       const body = { staffId: me.id, hourly_rate: Number(rate) };
       if (role !== row.role) body.role = role;
+      if (isBackofficeRole) body.email = email.trim() || null;
       const res = await fetch(`${API_URL}/api/backoffice/staff/${row.id}`, {
         method: "PUT",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
@@ -257,6 +266,15 @@ function RowEditForm({ row, me, onSaved, onCancel, onError }) {
         inputMode="decimal"
         placeholder="0.00"
       />
+      {isBackofficeRole && (
+        <input
+          className="staffmgr__input staffmgr__input--email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="Back Office email"
+        />
+      )}
       <button className="staffmgr__btn staffmgr__btn--save" onClick={save} disabled={saving}>
         {saving ? "Saving…" : "Save"}
       </button>
@@ -285,6 +303,7 @@ function PinResetPrompt({ row, me, onDone, onError }) {
     try {
       const res = await fetch(`${API_URL}/api/backoffice/staff/${row.id}/pin`, {
         method: "PUT",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ staffId: me.id, pin }),
       });
@@ -343,8 +362,16 @@ export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/back
   const [role, setRole] = useState("cashier");
   const [rate, setRate] = useState("");
   const [pin, setPin] = useState("");
+  const [email, setEmail] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
+  // Email is only ever meaningful for owner/admin (the only roles with
+  // Back Office login) — manager/cashier/kitchen never see this field at
+  // all. From the POS quick-add modal (endpoint="/api/staff/quick-add"),
+  // a manager's `roles` list never includes owner/admin in the first
+  // place (assignableRoles), so this condition can never be true there —
+  // the field is unreachable for manager, not just hidden.
+  const isBackofficeRole = role === "owner" || role === "admin";
 
   const save = async () => {
     if (saving) return;
@@ -357,6 +384,7 @@ export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/back
     try {
       const res = await fetch(`${API_URL}${endpoint}`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           staffId: staff.id,
@@ -364,6 +392,7 @@ export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/back
           role,
           hourly_rate: Number(rate),
           pin,
+          ...(isBackofficeRole ? { email: email.trim() || undefined } : {}),
         }),
       });
       const data = await res.json();
@@ -397,6 +426,18 @@ export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/back
           ))}
         </select>
       </label>
+      {isBackofficeRole && (
+        <label className="staffmgr__label">
+          Back Office email
+          <input
+            className="staffmgr__input staffmgr__input--email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="name@narcostacos.ca"
+          />
+        </label>
+      )}
       <label className="staffmgr__label">
         Hourly rate
         <input

@@ -1,9 +1,10 @@
-import { useState, useCallback, useMemo } from "react";
-import PinLogin from "./PinLogin";
+import { useState, useCallback, useMemo, useEffect } from "react";
+import BackofficeLogin from "./BackofficeLogin";
 import HomeDashboard from "./HomeDashboard";
 import MenuManager from "./MenuManager";
 import StaffManager from "./StaffManager";
 import logoImg from "../assets/narcos-tacos-logo.png";
+import { API_URL } from "../config";
 import "./BackOffice.css";
 
 // Persistent nav config — add future Back Office sections here, each with
@@ -32,6 +33,10 @@ export default function BackOffice() {
   const [staff, setStaff] = useState(null);
   const [denied, setDenied] = useState(false);
   const [activeKey, setActiveKey] = useState(null);
+  // True until the initial GET /auth/me check resolves — avoids flashing
+  // the login screen on every page refresh when a valid session cookie
+  // already exists.
+  const [checkingSession, setCheckingSession] = useState(true);
   // Mobile-only drawer state — collapsed by default; irrelevant on desktop,
   // where the sidebar stays permanently visible regardless of this value
   // (enforced in CSS, see BackOffice.css).
@@ -56,16 +61,48 @@ export default function BackOffice() {
     setActiveKey(firstVisible?.key ?? null);
   }, []);
 
+  // On mount, silently check for an existing valid session cookie (e.g.
+  // after a page refresh) rather than always forcing a fresh login.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/backoffice/auth/me`, { credentials: "include" });
+        if (cancelled) return;
+        if (res.ok) {
+          const staffData = await res.json();
+          handleLogin(staffData);
+        }
+      } catch {
+        // No session / connection error — just fall through to the login screen
+      } finally {
+        if (!cancelled) setCheckingSession(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [handleLogin]);
+
   const handleLogout = useCallback(() => {
+    fetch(`${API_URL}/api/backoffice/auth/logout`, { method: "POST", credentials: "include" }).catch(() => {});
     setStaff(null);
     setDenied(false);
     setActiveKey(null);
     setSidebarOpen(false);
   }, []);
 
-  // Not logged in yet — show PIN screen
+  if (checkingSession) {
+    return (
+      <div className="backoffice__placeholder">
+        <h1 className="backoffice__placeholder-title">Loading…</h1>
+      </div>
+    );
+  }
+
+  // Not logged in yet — show email + password + TOTP screen
   if (!staff && !denied) {
-    return <PinLogin onLogin={handleLogin} />;
+    return <BackofficeLogin onLogin={handleLogin} />;
   }
 
   // Denied — wrong role

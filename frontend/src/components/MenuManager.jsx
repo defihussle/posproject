@@ -31,7 +31,7 @@ export default function MenuManager({ staff }) {
   // endpoint; that's gone now that groups/options are editable in place).
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/backoffice/menu?staffId=${staff.id}`);
+      const res = await fetch(`${API_URL}/api/backoffice/menu?staffId=${staff.id}`, { credentials: "include" });
       const menuData = await res.json();
       if (!res.ok) throw new Error(menuData.error || `HTTP ${res.status}`);
       setMenu(menuData);
@@ -194,6 +194,7 @@ export default function MenuManager({ staff }) {
       setTogglingIds((prev) => new Set(prev).add(item.id));
       try {
         const res = await fetch(`${API_URL}/api/backoffice/menu-items/${item.id}`, {
+      credentials: "include",
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -367,6 +368,7 @@ function ItemDetail({
     setSaving(true);
     try {
       const res = await fetch(`${API_URL}/api/backoffice/menu-items/${item.id}`, {
+      credentials: "include",
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -687,6 +689,7 @@ function NewModifierGroupForm({ staff, itemId, onCreated, onCancel, onError }) {
     setSaving(true);
     try {
       const res = await fetch(`${API_URL}/api/backoffice/modifier-groups`, {
+      credentials: "include",
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -780,6 +783,7 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
 
   const put = async (body) => {
     const res = await fetch(`${API_URL}/api/backoffice/modifier-groups/${group.id}`, {
+      credentials: "include",
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ staffId: staff.id, ...body }),
@@ -1011,6 +1015,7 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
     setSaving(true);
     try {
       const res = await fetch(`${API_URL}/api/backoffice/modifier-options/${option.id}`, {
+      credentials: "include",
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1036,6 +1041,7 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
   const toggleActive = async () => {
     try {
       const res = await fetch(`${API_URL}/api/backoffice/modifier-options/${option.id}`, {
+      credentials: "include",
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1153,6 +1159,7 @@ function NewModifierOptionForm({ staff, groupId, onCreated, onCancel, onError })
     setSaving(true);
     try {
       const res = await fetch(`${API_URL}/api/backoffice/modifier-options`, {
+      credentials: "include",
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1237,6 +1244,7 @@ function NewItemDetail({ staff, categoryId, categoryName, onCreated, onCancel, o
     setSaving(true);
     try {
       const res = await fetch(`${API_URL}/api/backoffice/menu-items`, {
+      credentials: "include",
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

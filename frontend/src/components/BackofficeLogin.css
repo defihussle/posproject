@@ -1,0 +1,179 @@
+/* ============================================================
+   Back Office Login — email + password + TOTP
+   Shares .login-screen / .login-card / .brand-logo / .login-footer
+   with PinLogin.css for a consistent shell; everything below is
+   form-specific.
+   ============================================================ */
+
+.login-card.bol {
+  gap: 20px;
+}
+
+.bol__label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.bol__panel {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.bol__panel-title {
+  font-family: var(--font-headline);
+  font-size: 1rem;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.bol__notice {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  text-align: center;
+  line-height: 1.4;
+}
+
+.bol__hint {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.bol__error {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--red-light);
+  color: var(--red);
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.bol__label-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.bol__input {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 11px 14px;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+
+.bol__input:focus {
+  border-color: var(--red);
+}
+
+.bol__input--pin {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.5em;
+  padding-left: 0.5em; /* re-center the letter-spaced text */
+}
+
+.bol__input--totp {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.35em;
+  padding-left: 0.35em;
+}
+
+.bol__submit {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--red);
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 700;
+  transition: background-color 0.12s ease, opacity 0.12s ease;
+}
+
+.bol__submit:hover:not(:disabled) {
+  background: var(--red-hover);
+}
+
+.bol__submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bol__links {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.bol__link {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-align: center;
+  transition: color 0.12s ease;
+}
+
+.bol__link:hover {
+  color: var(--red);
+}
+
+.bol__qr {
+  align-self: center;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  padding: 8px;
+  background: #fff;
+}
+
+.bol__manual {
+  align-self: center;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.bol__manual summary {
+  cursor: pointer;
+  text-align: center;
+}
+
+.bol__manual-code {
+  display: block;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  letter-spacing: 0.08em;
+  word-break: break-all;
+  text-align: center;
+}

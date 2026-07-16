@@ -5,6 +5,7 @@ import OrderEntry from "./components/OrderEntry";
 import KitchenDisplay from "./components/KitchenDisplay";
 import BackOffice from "./components/BackOffice";
 import ManageMenu from "./components/ManageMenu";
+import ResetPassword from "./components/ResetPassword";
 
 // Roles allowed onto the POS-side "Manage Menu" page (mirrors Back Office's
 // Menu Management access — real enforcement is server-side on every write,
@@ -110,8 +111,12 @@ export default function App() {
             Opened once on a kitchen device and left running. */}
         <Route path="/kds/lawrence-east-4471" element={<KitchenDisplay />} />
 
-        {/* Back Office — has its own PIN login + role gate */}
+        {/* Back Office — has its own email+password+TOTP login + role gate */}
         <Route path="/backoffice" element={<BackOffice />} />
+
+        {/* Reached via the emailed forgot-password link — no auth required
+            to view, the token in the query string is the proof. */}
+        <Route path="/backoffice/reset-password" element={<ResetPassword />} />
 
         {/* Catch-all */}
         <Route
