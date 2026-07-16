@@ -245,11 +245,37 @@
   font-size: 0.85rem;
 }
 
-/* Cart Line Item */
-.oe-cart-line {
-  padding: 12px 0;
+/* Cart Line Item — swipeable. The wrap clips + positions the row over a
+   red delete icon that's revealed as the row slides left (swipe-to-delete,
+   see the CartLine component). */
+.oe-cart-line-wrap {
+  position: relative;
+  overflow: hidden;
   border-bottom: 1px solid var(--border-color);
+}
+
+.oe-cart-line__delete-reveal {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 76px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--red);
+  color: #fff;
+}
+
+.oe-cart-line {
+  position: relative;
+  background: var(--bg-surface);
+  padding: 12px 0;
   animation: fadeIn 0.2s ease-out;
+  transition: transform 0.2s ease;
+  /* Vertical scroll of the cart list passes straight through; horizontal
+     drag (swipe-to-delete) is handled entirely in JS via touch handlers. */
+  touch-action: pan-y;
 }
 
 .oe-cart-line__top {
@@ -329,22 +355,6 @@
   min-width: 20px;
   text-align: center;
   color: var(--text-primary);
-}
-
-.oe-cart-line__remove {
-  margin-left: auto;
-  font-family: var(--font-body);
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  transition: all 0.12s ease;
-}
-
-.oe-cart-line__remove:hover {
-  color: var(--red);
-  background: var(--red-light);
 }
 
 /* Cart Footer */

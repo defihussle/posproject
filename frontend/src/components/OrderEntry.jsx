@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import ItemModal from "./ItemModal";
 import { StaffAddForm } from "./StaffManager";
 import logoImg from "../assets/narcos-tacos-logo.png";
@@ -11,6 +11,11 @@ const STAFF_QUICKADD_ROLES = ["owner", "admin", "manager"];
 
 const TAX_RATE = 0.13; // Ontario HST — display only; the server is the source of truth
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+// Swipe-to-delete tuning (cart line rows) — px of leftward drag.
+const SWIPE_REVEAL_PX = 76; // how far a partial swipe reveals the delete icon
+const SWIPE_DELETE_PX = 140; // swipe past this and release = delete immediately
+const SWIPE_MAX_PX = 220; // hard clamp so a fast/long drag can't overshoot
 
 export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [menu, setMenu] = useState([]);
@@ -350,7 +355,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
             <>
               <div className="oe-cart__header">
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
-                  <h2 className="oe-cart__title">Current Order</h2>
+                  <h2 className="oe-cart__title">Cart</h2>
                   <button 
                     className="oe-cart__collapse-btn" 
                     onClick={() => setCartCollapsed(true)}
@@ -371,55 +376,12 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                   </div>
                 ) : (
                   cart.map((line) => (
-                    <div key={line.cartLineId} className="oe-cart-line">
-                      <div className="oe-cart-line__top">
-                        <div className="oe-cart-line__info">
-                          <div className="oe-cart-line__name">{line.itemName}</div>
-                          {line.variant && (
-                            <div className="oe-cart-line__variant">{line.variant.name}</div>
-                          )}
-                          {line.modifiers.length > 0 && (
-                            <div className="oe-cart-line__mods">
-                              {line.modifiers.map((m) => m.quantity > 1 ? `${m.quantity}× ${m.optionName}` : m.optionName).join(", ")}
-                            </div>
-                          )}
-                          {line.addons.filter((a) => a.includedQty > 0 || a.extraQty > 0).length > 0 && (
-                            <div className="oe-cart-line__mods">
-                              {line.addons.map((a) => {
-                                const parts = [];
-                                if (a.includedQty > 0) parts.push(`${a.addonName} (included)`);
-                                if (a.extraQty > 0) parts.push(`+${a.extraQty} extra ${a.addonName}`);
-                                return parts.join(", ");
-                              }).join("; ")}
-                            </div>
-                          )}
-                        </div>
-                        <div className="oe-cart-line__price">
-                          ${(line.unitPrice * line.quantity).toFixed(2)}
-                        </div>
-                      </div>
-                      <div className="oe-cart-line__controls">
-                        <button
-                          className="oe-cart-line__qty-btn"
-                          onClick={() => adjustQty(line.cartLineId, -1)}
-                        >
-                          −
-                        </button>
-                        <span className="oe-cart-line__qty">{line.quantity}</span>
-                        <button
-                          className="oe-cart-line__qty-btn"
-                          onClick={() => adjustQty(line.cartLineId, 1)}
-                        >
-                          +
-                        </button>
-                        <button
-                          className="oe-cart-line__remove"
-                          onClick={() => removeItem(line.cartLineId)}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </div>
+                    <CartLine
+                      key={line.cartLineId}
+                      line={line}
+                      onAdjustQty={adjustQty}
+                      onRemove={removeItem}
+                    />
                   ))
                 )}
               </div>
@@ -569,6 +531,143 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * One cart row — swipe left to reveal a delete icon (tap it to remove), or
+ * swipe far enough and release to delete immediately, matching common
+ * native list conventions. Replaces the old persistent "Remove" button.
+ *
+ * Gesture handling:
+ * - The first ~8px of movement decides the axis (horizontal vs vertical).
+ *   Once locked to vertical, this row does nothing for the rest of the
+ *   gesture — the cart list's normal scroll takes over untouched.
+ * - Horizontal drag only ever moves leftward (rightward attempts clamp to
+ *   the current resting position) and is hard-capped at SWIPE_MAX_PX so a
+ *   fast flick can't overshoot visually.
+ * - Releasing mid-drag always resolves to one of three resting states:
+ *   fully closed, revealed (delete icon showing), or deleted — never stuck
+ *   at an arbitrary offset, per the "no broken state on an incomplete swipe"
+ *   requirement.
+ */
+function CartLine({ line, onAdjustQty, onRemove }) {
+  const [dragX, setDragX] = useState(0);
+  const [revealed, setRevealed] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const touchRef = useRef({ startX: 0, startY: 0, axis: null });
+
+  const handleTouchStart = (e) => {
+    const t = e.touches[0];
+    touchRef.current = { startX: t.clientX, startY: t.clientY, axis: null };
+    setDragging(true);
+  };
+
+  const handleTouchMove = (e) => {
+    const ts = touchRef.current;
+    const t = e.touches[0];
+    const dx = t.clientX - ts.startX;
+    const dy = t.clientY - ts.startY;
+
+    if (ts.axis === null) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return; // too small to tell yet
+      ts.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+    }
+    if (ts.axis !== "x") return; // vertical gesture — let the list scroll normally
+
+    // No preventDefault() here: React attaches touch listeners as passive, so
+    // calling it would just throw and do nothing. `touch-action: pan-y` on
+    // .oe-cart-line (see CSS) is what actually stops the browser from also
+    // scrolling/rubber-banding during a horizontal drag — that's handled at
+    // the compositor level before JS ever runs.
+    const base = revealed ? -SWIPE_REVEAL_PX : 0;
+    setDragX(Math.max(Math.min(base + dx, 0), -SWIPE_MAX_PX));
+  };
+
+  const resolveSwipe = () => {
+    const ts = touchRef.current;
+    if (ts.axis === "x") {
+      if (dragX <= -SWIPE_DELETE_PX) {
+        onRemove(line.cartLineId);
+        return; // row is gone — nothing left to settle
+      }
+      if (dragX <= -SWIPE_REVEAL_PX / 2) {
+        setDragX(-SWIPE_REVEAL_PX);
+        setRevealed(true);
+      } else {
+        setDragX(0);
+        setRevealed(false);
+      }
+    }
+    touchRef.current = { startX: 0, startY: 0, axis: null };
+    setDragging(false);
+  };
+
+  return (
+    <div className="oe-cart-line-wrap">
+      <button
+        className="oe-cart-line__delete-reveal"
+        onClick={() => onRemove(line.cartLineId)}
+        aria-label={`Remove ${line.itemName}`}
+        tabIndex={revealed ? 0 : -1}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        </svg>
+      </button>
+
+      <div
+        className="oe-cart-line"
+        style={{ transform: `translateX(${dragX}px)`, transition: dragging ? "none" : undefined }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={resolveSwipe}
+        onTouchCancel={resolveSwipe}
+      >
+        <div className="oe-cart-line__top">
+          <div className="oe-cart-line__info">
+            <div className="oe-cart-line__name">{line.itemName}</div>
+            {line.variant && (
+              <div className="oe-cart-line__variant">{line.variant.name}</div>
+            )}
+            {line.modifiers.length > 0 && (
+              <div className="oe-cart-line__mods">
+                {line.modifiers.map((m) => m.quantity > 1 ? `${m.quantity}× ${m.optionName}` : m.optionName).join(", ")}
+              </div>
+            )}
+            {line.addons.filter((a) => a.includedQty > 0 || a.extraQty > 0).length > 0 && (
+              <div className="oe-cart-line__mods">
+                {line.addons.map((a) => {
+                  const parts = [];
+                  if (a.includedQty > 0) parts.push(`${a.addonName} (included)`);
+                  if (a.extraQty > 0) parts.push(`+${a.extraQty} extra ${a.addonName}`);
+                  return parts.join(", ");
+                }).join("; ")}
+              </div>
+            )}
+          </div>
+          <div className="oe-cart-line__price">
+            ${(line.unitPrice * line.quantity).toFixed(2)}
+          </div>
+        </div>
+        <div className="oe-cart-line__controls">
+          <button
+            className="oe-cart-line__qty-btn"
+            onClick={() => onAdjustQty(line.cartLineId, -1)}
+          >
+            −
+          </button>
+          <span className="oe-cart-line__qty">{line.quantity}</span>
+          <button
+            className="oe-cart-line__qty-btn"
+            onClick={() => onAdjustQty(line.cartLineId, 1)}
+          >
+            +
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

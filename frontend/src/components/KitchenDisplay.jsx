@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { API_URL } from "../config";
+import logoImg from "../assets/narcos-tacos-logo.png";
 import "./KitchenDisplay.css";
 
 const POLL_MS = 5000;
@@ -243,20 +244,38 @@ export default function KitchenDisplay() {
   return (
     <div className="kds">
       <header className="kds__header">
-        <div className="kds__brand">
-          NARCOS <span className="kds__brand-alt">TACOS</span>
-        </div>
-        <div className="kds__header-right">
-          <span className="kds__title">KITCHEN</span>
-          <span className="kds__count">{orders.length}</span>
-          <button
-            className={`kds__fast-btn${fastMode ? " kds__fast-btn--on" : ""}`}
-            onClick={() => setFastMode((v) => !v)}
-          >
-            ⚡ Fast Mode{fastMode ? " ON" : ""}
-          </button>
-          <button className="kds__past-btn" onClick={() => setPastOpen(true)}>
+        <img src={logoImg} alt="NARCOS TACOS" className="kds__logo" />
+
+        {/* Live-status cluster: order count + Fast Mode are checked constantly
+            during a rush, so they're grouped and given the most visual weight.
+            Past Orders is an occasional lookup, not a live status — demoted to
+            a plain text link, separated by a divider. See CSS file header for
+            the full before/after reasoning. */}
+        <div className="kds__status-cluster">
+          <div className="kds__order-count" title="Open orders">
+            <span className="kds__order-count-num">{orders.length}</span>
+            <span className="kds__order-count-label">orders</span>
+          </div>
+
+          <div className="kds__divider" aria-hidden="true" />
+
+          <label className="kds__fast-toggle">
+            <span className="kds__fast-toggle-text">⚡ Fast Mode</span>
+            <span className="kds__switch">
+              <input
+                type="checkbox"
+                checked={fastMode}
+                onChange={() => setFastMode((v) => !v)}
+              />
+              <span className="kds__switch-slider" />
+            </span>
+          </label>
+
+          <button className="kds__past-link" onClick={() => setPastOpen(true)}>
             Past Orders
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6"></polyline>
+            </svg>
           </button>
         </div>
       </header>

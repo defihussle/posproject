@@ -19,13 +19,16 @@
   box-shadow: var(--shadow-soft);
 }
 
-.backoffice__brand {
+.backoffice__header-left {
   display: flex;
-  align-items: baseline;
-  gap: 4px;
-  font-family: var(--font-headline);
-  font-size: 1rem;
-  letter-spacing: 0.04em;
+  align-items: center;
+  gap: 12px;
+}
+
+.backoffice__logo {
+  height: 34px;
+  width: auto;
+  display: block;
 }
 
 .backoffice__label {
@@ -35,7 +38,18 @@
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  margin-left: 12px;
+}
+
+/* Hamburger — desktop: hidden (sidebar is always visible, nothing to open) */
+.backoffice__hamburger {
+  display: none;
+  color: var(--text-primary);
+  padding: 4px;
+  border-radius: var(--radius-sm);
+}
+
+.backoffice__hamburger:hover {
+  background: var(--bg-surface-hover);
 }
 
 .backoffice__right {
@@ -104,6 +118,62 @@
 .backoffice__navitem--active {
   background: var(--red-light);
   color: var(--red);
+}
+
+/* Backdrop behind the mobile drawer — hidden entirely on desktop; only
+   takes effect inside the max-width media query below. */
+.backoffice__sidebar-backdrop {
+  display: none;
+}
+
+/* ---------- Responsive: mobile drawer ----------
+   Desktop (everything above) is untouched — sidebar stays permanently
+   visible exactly as before. Below 768px, the sidebar becomes an off-canvas
+   drawer behind a hamburger button: collapsed by default, slides in at a
+   max of ~1/4 of the viewport width (never a full-screen takeover), with a
+   backdrop to dismiss. Role-based nav visibility (which items appear) is
+   unchanged — this only changes how the nav is shown/hidden. */
+@media (max-width: 767px) {
+  .backoffice__hamburger {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .backoffice__sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 210;
+    /* Roughly 1/4 of the viewport, MAXIMUM — never a full-screen takeover.
+       Real iPads (the actual target hardware) are >=768px wide in portrait
+       and never even reach this drawer at all (they get the permanent
+       desktop sidebar above); this path is realistically hit by phones or
+       narrow split-screen windows, where nav labels may wrap to two lines
+       rather than exceed the ~1/4-width cap — an acceptable trade-off for
+       honoring "maximum" literally rather than widening the drawer. */
+    width: 25vw;
+    min-width: 110px;
+    max-width: 300px;
+    border-right: 1px solid var(--border-color);
+    box-shadow: var(--shadow-medium);
+    transform: translateX(-100%);
+    transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .backoffice__sidebar--open {
+    transform: translateX(0);
+  }
+
+  .backoffice__sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: rgba(0, 0, 0, 0.4);
+    animation: fadeIn 0.15s ease-out;
+  }
 }
 
 /* Body */

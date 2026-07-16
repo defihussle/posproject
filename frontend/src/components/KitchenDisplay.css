@@ -29,95 +29,154 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 }
 
-.kds__brand {
-  font-family: var(--font-headline);
-  font-size: 1.6rem;
-  letter-spacing: 0.02em;
-  color: #E8442E;
+.kds__logo {
+  height: 38px;
+  width: auto;
+  display: block;
 }
 
-.kds__brand-alt {
-  color: #1A1A1A;
-}
+/* ---------- Nav bar hierarchy redesign ----------
+   BEFORE: "KITCHEN" label, the order-count badge, the Fast Mode button, and
+   "Past Orders" all sat in one flat row at equal size/weight/border — four
+   same-looking pills, so nothing told you at a glance what mattered most.
 
-.kds__header-right {
+   AFTER: order count and Fast Mode are what a cook actually re-checks every
+   few seconds during a rush, so they're grouped into one elevated cluster
+   with the heaviest visual weight (the count stays the big black pill it
+   already was — that read well — Fast Mode moves from a button-that-changes-
+   color to a proper toggle switch, since it's state you flip and leave, not
+   a repeated tap). "Past Orders" is a once-in-a-while lookup, not a live
+   status, so it's demoted to a plain text link with a small chevron — no
+   border, lighter weight, separated by a divider so it reads as "elsewhere"
+   rather than "one of the same four things." The standalone "KITCHEN" label
+   was dropped: the branded header + a big order count already say what
+   screen this is without a redundant caption competing for attention. */
+.kds__status-cluster {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 20px;
 }
 
-.kds__title {
+.kds__order-count {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  background: #1A1A1A;
+  color: #FFFFFF;
+  border-radius: 9999px;
+  height: 48px;
+  padding: 0 20px;
+}
+
+.kds__order-count-num {
   font-family: var(--font-mono);
-  font-size: 1.1rem;
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.kds__order-count-label {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
   font-weight: 600;
-  letter-spacing: 0.14em;
-  color: #6B6B6B;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.65);
 }
 
-.kds__count {
-  font-family: var(--font-mono);
-  font-size: 1.4rem;
-  font-weight: 700;
-  color: #FFFFFF;
-  background: #1A1A1A;
-  border-radius: 9999px;
-  min-width: 44px;
-  height: 44px;
-  padding: 0 12px;
-  display: inline-flex;
+.kds__divider {
+  width: 1px;
+  height: 32px;
+  background: #E5E5E5;
+}
+
+/* Fast Mode — toggle switch, not a highlighted button. Label sits at rest;
+   the switch itself carries the on/off state so it's unmistakable at a
+   glance without needing to read text or notice a color change. */
+.kds__fast-toggle {
+  display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 12px;
+  cursor: pointer;
+  user-select: none;
 }
 
-.kds__fast-btn {
-  margin-left: 8px;
+.kds__fast-toggle-text {
   font-family: var(--font-body);
-  font-size: 1rem;
+  font-size: 1.05rem;
   font-weight: 700;
   color: #1A1A1A;
-  background: #FFFFFF;
-  border: 2px solid #1A1A1A;
-  border-radius: 9999px;
-  height: 44px;
-  padding: 0 20px;
+}
+
+.kds__switch {
+  position: relative;
+  display: inline-block;
+  width: 52px;
+  height: 30px;
+  flex-shrink: 0;
+}
+
+.kds__switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.kds__switch-slider {
+  position: absolute;
+  inset: 0;
   cursor: pointer;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  background-color: #D9D9D6;
+  transition: background-color 0.2s ease;
+  border-radius: 9999px;
 }
 
-.kds__fast-btn:hover {
-  background: #1A1A1A;
-  color: #FFFFFF;
+.kds__switch-slider::before {
+  position: absolute;
+  content: "";
+  height: 24px;
+  width: 24px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #FFFFFF;
+  transition: transform 0.2s ease;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
-/* Toggle is ON — brand red, unmistakable from across the kitchen */
-.kds__fast-btn--on,
-.kds__fast-btn--on:hover {
-  background: #E8442E;
-  border-color: #E8442E;
-  color: #FFFFFF;
+.kds__switch input:checked + .kds__switch-slider {
+  background-color: #E8442E;
 }
 
-.kds__past-btn {
-  margin-left: 8px;
+.kds__switch input:checked + .kds__switch-slider::before {
+  transform: translateX(22px);
+}
+
+.kds__switch input:focus-visible + .kds__switch-slider {
+  outline: 2px solid #1A1A1A;
+  outline-offset: 2px;
+}
+
+/* Past Orders — deliberately the lightest-weight control in the header:
+   no border, no fill, just text + a small chevron. It's a navigation action
+   you reach for occasionally, not a status you track continuously. */
+.kds__past-link {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-family: var(--font-body);
-  font-size: 1rem;
-  font-weight: 700;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #6B6B6B;
+  padding: 8px 4px;
+  transition: color 0.12s ease;
+}
+
+.kds__past-link:hover {
   color: #1A1A1A;
-  background: #FFFFFF;
-  border: 2px solid #1A1A1A;
-  border-radius: 9999px;
-  height: 44px;
-  padding: 0 20px;
-  cursor: pointer;
-  transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-.kds__past-btn:hover {
-  background: #1A1A1A;
-  color: #FFFFFF;
-}
-
-.kds__past-btn:active {
+.kds__past-link:active {
   transform: scale(0.97);
 }
 
