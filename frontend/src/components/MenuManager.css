@@ -503,55 +503,182 @@
   color: var(--red);
 }
 
-/* ---------- Modifier groups (read-only) ---------- */
+/* ---------- Modifier groups (full CRUD) ---------- */
 .menued__modgroups {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
+  margin-bottom: 10px;
 }
 
-.menued__modgroup-name {
+.menued__modgroup {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  background: var(--bg-primary);
+}
+
+.menued__modgroup--new {
+  border-style: dashed;
+  background: var(--bg-surface);
+}
+
+.menued__modgroup--inactive {
+  opacity: 0.55;
+}
+
+.menued__modgroup-formrow {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-family: var(--font-body);
-  font-size: 0.82rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
-.menued__modgroup-required {
-  font-family: var(--font-mono);
-  font-size: 0.6rem;
+.menued__modgroup-formrow:last-child {
+  margin-bottom: 0;
+}
+
+.menued__modgroup-nameinput {
+  flex: 1;
+  min-width: 140px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+}
+
+.menued__modgroup-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* Small variants of existing controls, reused for the denser group/option rows */
+.menued__status-pill--sm {
+  font-size: 0.6rem;
+  padding: 3px 8px;
+}
+
+.menued__86-btn--sm {
+  padding: 5px 10px;
+  font-size: 0.68rem;
+}
+
+.menued__add-variant--sm {
+  font-size: 0.72rem;
+}
+
+.menued__inline-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.menued__inline-check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--red);
+}
+
+.menued__minmax {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.menued__minmax--tight {
+  font-size: 0.62rem;
+}
+
+.menued__minmax-input {
+  width: 44px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 6px 6px;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+
+.menued__minmax-input:focus {
+  border-color: var(--red);
+}
+
+/* Calm text-link actions (remove-from-item / deactivate) — not buttons with
+   fills, so they read as lightweight, reversible actions. Only the actual
+   "Delete group"/"Remove" (permanent) gets the red tint, and even then it's
+   plain text, not a filled danger button — consistent with 86/Reactivate's
+   non-alarming treatment elsewhere in this editor. */
+.menued__text-link {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+
+.menued__text-link:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+}
+
+.menued__text-link--danger:hover {
   color: var(--red);
   background: var(--red-light);
-  border-radius: var(--radius-full);
-  padding: 2px 8px;
 }
 
-.menued__modgroup-options {
+.menued__modgroup-optionlist {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 10px;
+  margin-top: 10px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.menued__option-row {
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  transition: background-color 0.12s ease;
 }
 
-.menued__modgroup-option {
-  font-family: var(--font-body);
-  font-size: 0.78rem;
-  font-weight: 500;
-  color: var(--text-secondary);
+.menued__option-row:hover {
   background: var(--bg-surface-hover);
-  border-radius: var(--radius-full);
-  padding: 5px 12px;
 }
 
-.menued__modgroup-price {
-  font-family: var(--font-mono);
-  color: var(--text-muted);
+.menued__option-row--new {
+  background: var(--bg-surface);
+  border: 1px dashed var(--border-color);
+}
+
+.menued__option-row--inactive {
+  opacity: 0.5;
+}
+
+.menued__option-row .menued__variant-name {
+  flex: 1 1 140px;
 }
 
 /* ---------- Empty state ---------- */

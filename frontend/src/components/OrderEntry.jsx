@@ -17,6 +17,21 @@ const MANAGE_MENU_ROLES = ["owner", "admin"];
 const TAX_RATE = 0.13; // Ontario HST — display only; the server is the source of truth
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
+// Discount — available to every role that can check out (owner/admin/
+// manager/cashier), closing the "discounts" capability that was part of
+// the original role design but never built. Presets + a manual custom %;
+// a reason is REQUIRED (server rejects a percent with no valid reason —
+// this list is a client-side mirror, kept in sync with DISCOUNT_REASONS
+// in backend/server.js).
+const DISCOUNT_PRESETS = [10, 20, 50];
+const DISCOUNT_REASONS = [
+  { key: "family", label: "Family" },
+  { key: "friend", label: "Friend" },
+  { key: "employee", label: "Employee" },
+  { key: "neighbouring_store", label: "Neighbouring Store" },
+];
+const DISCOUNT_REASON_LABEL = Object.fromEntries(DISCOUNT_REASONS.map((r) => [r.key, r.label]));
+
 // Swipe-to-delete tuning (cart line rows) — px of leftward drag.
 const SWIPE_REVEAL_PX = 76; // how far a partial swipe reveals the delete icon
 const SWIPE_DELETE_PX = 140; // swipe past this and release = delete immediately
@@ -34,6 +49,11 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [staffModalOpen, setStaffModalOpen] = useState(false);
   const [staffAddedName, setStaffAddedName] = useState(null); // brief success note
+
+  // Discount — { percent, reason } | null. Cleared on successful checkout,
+  // same lifecycle as the cart itself.
+  const [discount, setDiscount] = useState(null);
+  const [discountFormOpen, setDiscountFormOpen] = useState(false);
 
   // Checkout flow state
   const [checkoutOpen, setCheckoutOpen] = useState(false);
@@ -122,16 +142,30 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
     [cart]
   );
 
-  // Tax + total for the checkout screen (display only — server recomputes)
-  const tax = useMemo(() => round2(subtotal * TAX_RATE), [subtotal]);
-  const total = useMemo(() => round2(subtotal + tax), [subtotal, tax]);
+  // Discount + tax + total for the checkout screen — all display only, the
+  // server ALWAYS recomputes from its own subtotal and never trusts a
+  // dollar amount from the client (same principle as item/modifier
+  // pricing). Tax is charged on the discounted amount, matching how HST is
+  // actually applied at point of sale when a % discount is given.
+  const discountAmount = useMemo(
+    () => (discount ? round2(subtotal * (discount.percent / 100)) : 0),
+    [subtotal, discount]
+  );
+  const discountedSubtotal = useMemo(
+    () => round2(subtotal - discountAmount),
+    [subtotal, discountAmount]
+  );
+  const tax = useMemo(() => round2(discountedSubtotal * TAX_RATE), [discountedSubtotal]);
+  const total = useMemo(() => round2(discountedSubtotal + tax), [discountedSubtotal, tax]);
 
   // Map the cart into the /api/orders payload. Only sends WHAT was selected
-  // (ids + quantities) — never prices; the server recomputes those.
+  // (ids + quantities) — never prices; the server recomputes those. Same
+  // for the discount: only percent + reason are sent, never a dollar figure.
   const buildOrderPayload = useCallback(
     (method) => ({
       staffId: staff.id,
       paymentMethod: method,
+      ...(discount ? { discount: { percent: discount.percent, reason: discount.reason } } : {}),
       items: cart.map((line) => ({
         itemId: line.itemId,
         variantId: line.variant ? line.variant.id : null,
@@ -147,7 +181,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
         })),
       })),
     }),
-    [cart, staff.id]
+    [cart, staff.id, discount]
   );
 
   const openCheckout = useCallback(() => {
@@ -178,9 +212,10 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
         if (!res.ok) {
           throw new Error(data.error || "Something went wrong. Please try again.");
         }
-        // Success — clear the cart, show a brief confirmation, auto-dismiss
+        // Success — clear the cart + discount, show a brief confirmation, auto-dismiss
         setConfirmation({ orderNumber: data.order_number });
         setCart([]);
+        setDiscount(null);
         setTimeout(() => {
           setConfirmation(null);
           setCheckoutOpen(false);
@@ -405,10 +440,31 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
 
               {cart.length > 0 && (
                 <div className="oe-cart__footer">
+                  <DiscountControl
+                    discount={discount}
+                    open={discountFormOpen}
+                    onOpenChange={setDiscountFormOpen}
+                    onApply={(d) => {
+                      setDiscount(d);
+                      setDiscountFormOpen(false);
+                    }}
+                    onClear={() => setDiscount(null)}
+                  />
+
                   <div className="oe-cart__subtotal">
                     <span className="oe-cart__subtotal-label">Subtotal</span>
                     <span className="oe-cart__subtotal-amount">${subtotal.toFixed(2)}</span>
                   </div>
+                  {discount && (
+                    <div className="oe-cart__subtotal oe-cart__subtotal--discount">
+                      <span className="oe-cart__subtotal-label">
+                        Discount ({discount.percent}%)
+                      </span>
+                      <span className="oe-cart__subtotal-amount">
+                        −${discountAmount.toFixed(2)}
+                      </span>
+                    </div>
+                  )}
                   <button className="oe-cart__checkout-btn" onClick={openCheckout}>
                     Checkout · ${total.toFixed(2)}
                   </button>
@@ -508,6 +564,14 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                     <span>Subtotal</span>
                     <span>${subtotal.toFixed(2)}</span>
                   </div>
+                  {discount && (
+                    <div className="oe-checkout__row oe-checkout__row--discount">
+                      <span>
+                        Discount — {discount.percent}% · {DISCOUNT_REASON_LABEL[discount.reason]}
+                      </span>
+                      <span>−${discountAmount.toFixed(2)}</span>
+                    </div>
+                  )}
                   <div className="oe-checkout__row">
                     <span>Tax (13%)</span>
                     <span>${tax.toFixed(2)}</span>
@@ -687,5 +751,113 @@ function CartLine({ line, onAdjustQty, onRemove }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Cart-level discount control. Three states:
+ *  - nothing applied, panel closed → a plain "+ Add Discount" link
+ *  - applied, panel closed → a compact chip showing percent + reason, with
+ *    Edit (reopens pre-filled) and × (clears immediately) actions
+ *  - panel open → preset buttons (10/20/50%) + a custom % field + the 4
+ *    required reason categories + Apply/Cancel
+ *
+ * A reason is mandatory by construction here: Apply stays disabled until
+ * both a valid percent AND a reason are set, so the cart can never reach
+ * checkout in a "percent but no reason" state — the server enforces the
+ * same rule independently as the real backstop.
+ */
+function DiscountControl({ discount, open, onOpenChange, onApply, onClear }) {
+  const [percent, setPercent] = useState("");
+  const [reason, setReason] = useState(null);
+
+  // Opening the panel seeds it from whatever's currently applied (or blank)
+  useEffect(() => {
+    if (open) {
+      setPercent(discount ? String(discount.percent) : "");
+      setReason(discount ? discount.reason : null);
+    }
+  }, [open, discount]);
+
+  const numericPercent = Number(percent);
+  const canApply = percent !== "" && numericPercent > 0 && numericPercent <= 100 && !!reason;
+
+  if (open) {
+    return (
+      <div className="oe-discount-panel">
+        <div className="oe-discount-panel__title">Apply Discount</div>
+
+        <div className="oe-discount-presets">
+          {DISCOUNT_PRESETS.map((p) => (
+            <button
+              key={p}
+              className={`oe-discount-preset${numericPercent === p ? " oe-discount-preset--active" : ""}`}
+              onClick={() => setPercent(String(p))}
+            >
+              {p}%
+            </button>
+          ))}
+          <div className="oe-discount-custom">
+            <input
+              className="oe-discount-custom-input"
+              value={percent}
+              onChange={(e) => setPercent(e.target.value.replace(/[^0-9.]/g, ""))}
+              placeholder="Custom"
+              inputMode="decimal"
+            />
+            <span className="oe-discount-custom-suffix">%</span>
+          </div>
+        </div>
+
+        <div className="oe-discount-panel__label">Reason — required</div>
+        <div className="oe-discount-reasons">
+          {DISCOUNT_REASONS.map((r) => (
+            <button
+              key={r.key}
+              className={`oe-discount-reason${reason === r.key ? " oe-discount-reason--active" : ""}`}
+              onClick={() => setReason(r.key)}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="oe-discount-panel__actions">
+          <button className="oe-discount-cancel" onClick={() => onOpenChange(false)}>
+            Cancel
+          </button>
+          <button
+            className="oe-discount-apply"
+            disabled={!canApply}
+            onClick={() => onApply({ percent: numericPercent, reason })}
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (discount) {
+    return (
+      <div className="oe-discount-chip">
+        <span className="oe-discount-chip__icon">🏷</span>
+        <span className="oe-discount-chip__text">
+          {discount.percent}% off — {DISCOUNT_REASON_LABEL[discount.reason]}
+        </span>
+        <button className="oe-discount-chip__edit" onClick={() => onOpenChange(true)}>
+          Edit
+        </button>
+        <button className="oe-discount-chip__remove" onClick={onClear} aria-label="Remove discount">
+          ×
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button className="oe-discount-add" onClick={() => onOpenChange(true)}>
+      + Add Discount
+    </button>
   );
 }

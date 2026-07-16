@@ -386,6 +386,249 @@
   color: var(--text-primary);
 }
 
+/* Discount row in the subtotal breakdown — same shape as Subtotal, but
+   green to read as money coming OFF, and a smaller amount size since it's
+   secondary to the subtotal/total figures either side of it. */
+.oe-cart__subtotal--discount .oe-cart__subtotal-label,
+.oe-cart__subtotal--discount .oe-cart__subtotal-amount {
+  color: var(--green);
+}
+
+.oe-cart__subtotal--discount .oe-cart__subtotal-amount {
+  font-size: 1rem;
+}
+
+/* ---------- Discount control (cart footer) ---------- */
+.oe-discount-add {
+  align-self: flex-start;
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  padding: 4px 0;
+  transition: color 0.12s ease;
+}
+
+.oe-discount-add:hover {
+  color: var(--red);
+}
+
+.oe-discount-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--green-light);
+}
+
+.oe-discount-chip__icon {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.oe-discount-chip__text {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--green);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oe-discount-chip__edit {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--green);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: background-color 0.12s ease;
+}
+
+.oe-discount-chip__edit:hover {
+  background: rgba(52, 168, 83, 0.18);
+}
+
+.oe-discount-chip__remove {
+  font-family: var(--font-body);
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--green);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.12s ease;
+}
+
+.oe-discount-chip__remove:hover {
+  background: rgba(52, 168, 83, 0.25);
+}
+
+/* Inline discount panel — presets + custom % + required reason */
+.oe-discount-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  animation: fadeIn 0.15s ease-out;
+}
+
+.oe-discount-panel__title {
+  font-family: var(--font-headline);
+  font-size: 0.82rem;
+  color: var(--text-primary);
+}
+
+.oe-discount-panel__label {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.oe-discount-presets {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.oe-discount-preset {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  transition: all 0.12s ease;
+}
+
+.oe-discount-preset:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.oe-discount-preset--active {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
+
+.oe-discount-custom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0 10px;
+}
+
+.oe-discount-custom-input {
+  width: 52px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  padding: 8px 0;
+  outline: none;
+  text-align: right;
+}
+
+.oe-discount-custom-suffix {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.oe-discount-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.oe-discount-reason {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  padding: 7px 14px;
+  transition: all 0.12s ease;
+}
+
+.oe-discount-reason:hover {
+  border-color: var(--text-primary);
+  color: var(--text-primary);
+}
+
+.oe-discount-reason--active {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  color: #fff;
+}
+
+.oe-discount-panel__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.oe-discount-cancel {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-surface-hover);
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  transition: color 0.12s ease;
+}
+
+.oe-discount-cancel:hover {
+  color: var(--text-primary);
+}
+
+.oe-discount-apply {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #fff;
+  background: var(--red);
+  border-radius: var(--radius-sm);
+  padding: 8px 18px;
+  transition: background-color 0.12s ease, opacity 0.12s ease;
+}
+
+.oe-discount-apply:hover:not(:disabled) {
+  background: var(--red-hover);
+}
+
+.oe-discount-apply:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* Checkout button (cart footer) */
 .oe-cart__checkout-btn {
   width: 100%;
@@ -501,6 +744,12 @@
 
 .oe-checkout__row--total span:last-child {
   font-size: 1.25rem;
+}
+
+.oe-checkout__row--discount span:first-child,
+.oe-checkout__row--discount span:last-child {
+  color: var(--green);
+  font-weight: 600;
 }
 
 .oe-checkout__error {

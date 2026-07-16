@@ -108,6 +108,10 @@ function SalesCard({ summary, loading }) {
               <span className="homedash-stat__value">{fmtMoney(summary.avgOrderValue)}</span>
               <span className="homedash-stat__label">avg order</span>
             </div>
+            <div className="homedash-stat">
+              <span className="homedash-stat__value">{fmtMoney(summary.totalTips)}</span>
+              <span className="homedash-stat__label">total tips</span>
+            </div>
           </div>
         </>
       )}

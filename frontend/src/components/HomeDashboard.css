@@ -105,6 +105,7 @@
 
 .homedash-card__stats {
   display: flex;
+  flex-wrap: wrap;
   gap: 24px;
 }
 

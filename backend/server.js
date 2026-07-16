@@ -266,8 +266,11 @@ app.post("/api/auth/login", async (req, res) => {
 
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
+const DISCOUNT_REASONS = ["family", "friend", "employee", "neighbouring_store"];
+const DISCOUNT_FLAG_THRESHOLD = 50; // % — not blocked, but logged so it's not silently invisible
+
 app.post("/api/orders", async (req, res) => {
-  const { staffId, paymentMethod, items } = req.body || {};
+  const { staffId, paymentMethod, items, discount } = req.body || {};
 
   // ---- Shape validation (cheap checks before touching the DB) ----
   if (!staffId || typeof staffId !== "string") {
@@ -275,6 +278,39 @@ app.post("/api/orders", async (req, res) => {
   }
   if (paymentMethod !== "cash" && paymentMethod !== "card") {
     return res.status(400).json({ error: "paymentMethod must be 'cash' or 'card'" });
+  }
+
+  // ---- Discount validation ----
+  // Same never-trust-the-client principle as pricing: the client may send a
+  // percent + reason, but never a dollar amount — that's always recomputed
+  // below from the server-side subtotal. If a percent is present, a valid
+  // reason is REQUIRED (checkout is rejected otherwise); if discount is
+  // omitted entirely, no discount is applied.
+  let discountPercent = null;
+  let discountReason = null;
+  if (discount !== undefined && discount !== null) {
+    if (typeof discount !== "object" || Array.isArray(discount)) {
+      return res.status(400).json({ error: "discount must be an object with percent and reason" });
+    }
+    const percent = Number(discount.percent);
+    if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+      return res.status(400).json({ error: "discount.percent must be between 0 and 100" });
+    }
+    if (!DISCOUNT_REASONS.includes(discount.reason)) {
+      return res.status(400).json({
+        error: `discount.reason is required when a discount is applied, and must be one of: ${DISCOUNT_REASONS.join(", ")}`,
+      });
+    }
+    discountPercent = percent;
+    discountReason = discount.reason;
+    if (discountPercent >= DISCOUNT_FLAG_THRESHOLD) {
+      // Not blocked — but logged so a 50%+ discount is never silently
+      // invisible. It's also permanently visible afterward via
+      // orders.discount_percent/discount_reason on the stored order itself.
+      console.warn(
+        `High discount applied: ${discountPercent}% (reason: ${discountReason}) by staffId=${staffId}`
+      );
+    }
   }
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: "Order must contain at least one item" });
@@ -492,17 +528,36 @@ app.post("/api/orders", async (req, res) => {
     }
 
     // ---- Totals ----
+    // subtotal here is the recomputed pre-discount list price. The discount
+    // dollar amount is ALWAYS derived server-side from (subtotal × percent)
+    // — the client only ever supplies the percent + reason, never a dollar
+    // figure. Tax is charged on the discounted amount (matches how HST is
+    // actually applied at point of sale when a % discount is given).
     subtotal = round2(subtotal);
-    const tax = round2(subtotal * taxRate);
+    const discountAmount = discountPercent ? round2(subtotal * (discountPercent / 100)) : 0;
+    const discountedSubtotal = round2(subtotal - discountAmount);
+    const tax = round2(discountedSubtotal * taxRate);
     const tip = 0;
-    const total = round2(subtotal + tax + tip);
+    const total = round2(discountedSubtotal + tax + tip);
 
     // ---- Insert order ----
     const { rows: orderRows } = await client.query(
-      `INSERT INTO orders (location_id, staff_id, status, subtotal, tax, tip, total)
-       VALUES ($1, $2, 'open', $3, $4, $5, $6)
+      `INSERT INTO orders (location_id, staff_id, status, subtotal, tax, tip, total,
+                            discount, discount_percent, discount_reason, discount_applied_by)
+       VALUES ($1, $2, 'open', $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id, order_number`,
-      [location.id, staff.id, subtotal, tax, tip, total]
+      [
+        location.id,
+        staff.id,
+        subtotal,
+        tax,
+        tip,
+        total,
+        discountAmount,
+        discountPercent,
+        discountReason,
+        discountPercent ? staff.id : null,
+      ]
     );
     const order = orderRows[0];
 
@@ -545,6 +600,9 @@ app.post("/api/orders", async (req, res) => {
       id: order.id,
       order_number: order.order_number,
       subtotal,
+      discount: discountAmount,
+      discount_percent: discountPercent,
+      discount_reason: discountReason,
       tax,
       tip,
       total,
@@ -945,8 +1003,13 @@ const sendHttpError = (res, err, fallbackMsg) => {
 };
 
 // GET /api/backoffice/menu?staffId=...
-// Full menu tree INCLUDING inactive items (the public /api/menu/full keeps
-// hiding them) — owners need to see and reactivate 86'd items.
+// Full menu tree INCLUDING inactive items/variants/modifier groups/options
+// (the public /api/menu/full keeps hiding inactive rows) — owners need to
+// see and reactivate 86'd rows at every level, and the Manage Menu editor
+// needs the full picture (including inactive) to actually edit it. This is
+// now the ONE authoritative source for the editor — it used to also fetch
+// modifier data read-only from the public route; that's gone now that
+// modifier groups/options are editable here.
 app.get("/api/backoffice/menu", async (req, res) => {
   try {
     await requireBackofficeStaff(req.query.staffId);
@@ -962,6 +1025,32 @@ app.get("/api/backoffice/menu", async (req, res) => {
       `SELECT id, item_id, name, price, active, sort_order
          FROM item_variants WHERE active = true ORDER BY sort_order`
     );
+    const { rows: itemGroups } = await pool.query(
+      `SELECT img.item_id, mg.id, mg.name, mg.min_select, mg.max_select, mg.required, mg.active
+         FROM item_modifier_groups img
+         JOIN modifier_groups mg ON mg.id = img.modifier_group_id
+        ORDER BY img.sort_order`
+    );
+    const { rows: options } = await pool.query(
+      `SELECT id, group_id, name, price_delta, sort_order, max_quantity, default_selected, active
+         FROM modifier_options ORDER BY sort_order`
+    );
+
+    const optionsByGroup = {};
+    for (const o of options) (optionsByGroup[o.group_id] ||= []).push(o);
+
+    const groupsByItem = {};
+    for (const g of itemGroups) {
+      (groupsByItem[g.item_id] ||= []).push({
+        id: g.id,
+        name: g.name,
+        min_select: g.min_select,
+        max_select: g.max_select,
+        required: g.required,
+        active: g.active,
+        options: optionsByGroup[g.id] || [],
+      });
+    }
 
     const variantsByItem = {};
     for (const v of variants) (variantsByItem[v.item_id] ||= []).push(v);
@@ -971,6 +1060,7 @@ app.get("/api/backoffice/menu", async (req, res) => {
       (itemsByCat[it.category_id] ||= []).push({
         ...it,
         variants: variantsByItem[it.id] || [],
+        modifier_groups: groupsByItem[it.id] || [],
       });
     }
 
@@ -1104,6 +1194,254 @@ app.post("/api/backoffice/item-variants", async (req, res) => {
     res.status(201).json(rows[0]);
   } catch (err) {
     sendHttpError(res, err, "Failed to create variant");
+  }
+});
+
+// --------------- Back Office: modifier group / option management ---------------
+// Same owner/admin-only pattern as every other backoffice route. Modifier
+// groups can be shared across multiple items (e.g. a common "Ingredients"
+// group), so "remove from this item" and "delete the group definition
+// entirely" are deliberately separate actions:
+//   - DELETE /item-modifier-groups/:itemId/:groupId unlinks ONE item, always
+//     safe (never touches order_item_modifiers, never affects other items)
+//   - DELETE /modifier-groups/:id removes the group DEFINITION (cascading to
+//     every item that uses it and all its options) — blocked with a clear
+//     409 if any of its options are referenced by real order history, same
+//     "never hard-delete what orders reference" principle as everywhere
+//     else in this app. Deactivating (active=false) is the way to retire a
+//     referenced group instead.
+// Same delete-vs-deactivate split for individual options.
+
+function validateGroupFields({ name, required, min_select, max_select }) {
+  if (typeof name !== "string" || !name.trim()) {
+    throw new HttpError(400, "name is required");
+  }
+  if (typeof required !== "boolean") {
+    throw new HttpError(400, "required must be a boolean");
+  }
+  const min = Number(min_select);
+  const max = Number(max_select);
+  if (!Number.isInteger(min) || min < 0) {
+    throw new HttpError(400, "min_select must be a non-negative integer");
+  }
+  if (!Number.isInteger(max) || max < 1) {
+    throw new HttpError(400, "max_select must be a positive integer");
+  }
+  if (min > max) {
+    throw new HttpError(400, "min_select cannot be greater than max_select");
+  }
+  return { name: name.trim(), min, max };
+}
+
+function validateOptionFields({ name, price_delta, max_quantity, default_selected }) {
+  if (typeof name !== "string" || !name.trim()) {
+    throw new HttpError(400, "name is required");
+  }
+  const delta = Number(price_delta);
+  if (!Number.isFinite(delta) || delta < 0) {
+    throw new HttpError(400, "price_delta must be a non-negative number");
+  }
+  const maxQ = Number(max_quantity);
+  if (!Number.isInteger(maxQ) || maxQ < 1) {
+    throw new HttpError(400, "max_quantity must be a positive integer");
+  }
+  if (typeof default_selected !== "boolean") {
+    throw new HttpError(400, "default_selected must be a boolean");
+  }
+  return { name: name.trim(), delta, maxQ };
+}
+
+// POST /api/backoffice/modifier-groups
+// Body: { staffId, item_id, name, required, min_select, max_select }
+// Creates a new group AND links it to item_id in one step — this editor is
+// always item-scoped (matches the detail-panel UX), so a brand-new group is
+// always born attached to the item it was created from.
+app.post("/api/backoffice/modifier-groups", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { staffId, item_id } = req.body || {};
+    await requireBackofficeStaff(staffId);
+    const { name, min, max } = validateGroupFields(req.body || {});
+    if (!item_id || typeof item_id !== "string") {
+      throw new HttpError(400, "item_id is required");
+    }
+
+    await client.query("BEGIN");
+    const { rows: itemRows } = await client.query("SELECT id FROM menu_items WHERE id = $1", [item_id]);
+    if (itemRows.length === 0) throw new HttpError(400, "Unknown menu item");
+
+    const { rows } = await client.query(
+      `INSERT INTO modifier_groups (name, min_select, max_select, required, active)
+       VALUES ($1, $2, $3, $4, true)
+       RETURNING id, name, min_select, max_select, required, active`,
+      [name, min, max, req.body.required]
+    );
+    const group = rows[0];
+    await client.query(
+      `INSERT INTO item_modifier_groups (item_id, modifier_group_id) VALUES ($1, $2)`,
+      [item_id, group.id]
+    );
+    await client.query("COMMIT");
+    res.status(201).json({ ...group, item_id, options: [] });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    sendHttpError(res, err, "Failed to create modifier group");
+  } finally {
+    client.release();
+  }
+});
+
+// PUT /api/backoffice/modifier-groups/:id
+// Body: { staffId, name, required, min_select, max_select, active }
+app.put("/api/backoffice/modifier-groups/:id", async (req, res) => {
+  try {
+    const { staffId, active } = req.body || {};
+    await requireBackofficeStaff(staffId);
+    const { name, min, max } = validateGroupFields(req.body || {});
+    if (typeof active !== "boolean") {
+      throw new HttpError(400, "active must be a boolean");
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE modifier_groups SET name = $1, min_select = $2, max_select = $3, required = $4, active = $5
+        WHERE id = $6
+        RETURNING id, name, min_select, max_select, required, active`,
+      [name, min, max, req.body.required, active, req.params.id]
+    );
+    if (rows.length === 0) throw new HttpError(404, "Modifier group not found");
+    res.json(rows[0]);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to update modifier group");
+  }
+});
+
+// DELETE /api/backoffice/modifier-groups/:id?staffId=...
+// Hard-deletes the group DEFINITION (cascades to item_modifier_groups links
+// and modifier_options) — blocked if any of its options appear in real
+// order history.
+app.delete("/api/backoffice/modifier-groups/:id", async (req, res) => {
+  try {
+    await requireBackofficeStaff(req.query.staffId);
+
+    const { rows: refRows } = await pool.query(
+      `SELECT count(*)::int AS n FROM order_item_modifiers oim
+         JOIN modifier_options mo ON mo.id = oim.modifier_option_id
+        WHERE mo.group_id = $1`,
+      [req.params.id]
+    );
+    if (refRows[0].n > 0) {
+      throw new HttpError(
+        409,
+        "This group has been used in past orders and can't be deleted — deactivate it instead"
+      );
+    }
+
+    const { rows } = await pool.query(
+      "DELETE FROM modifier_groups WHERE id = $1 RETURNING id",
+      [req.params.id]
+    );
+    if (rows.length === 0) throw new HttpError(404, "Modifier group not found");
+    res.json({ success: true, id: req.params.id });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to delete modifier group");
+  }
+});
+
+// DELETE /api/backoffice/item-modifier-groups/:itemId/:groupId?staffId=...
+// Unlinks a group from ONE item only — always safe (doesn't touch
+// modifier_options or order history), since the group may still be used by
+// other items.
+app.delete("/api/backoffice/item-modifier-groups/:itemId/:groupId", async (req, res) => {
+  try {
+    await requireBackofficeStaff(req.query.staffId);
+    const { rows } = await pool.query(
+      `DELETE FROM item_modifier_groups WHERE item_id = $1 AND modifier_group_id = $2 RETURNING item_id`,
+      [req.params.itemId, req.params.groupId]
+    );
+    if (rows.length === 0) throw new HttpError(404, "That group isn't linked to this item");
+    res.json({ success: true });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to remove modifier group from item");
+  }
+});
+
+// POST /api/backoffice/modifier-options
+// Body: { staffId, group_id, name, price_delta, max_quantity, default_selected }
+app.post("/api/backoffice/modifier-options", async (req, res) => {
+  try {
+    const { staffId, group_id } = req.body || {};
+    await requireBackofficeStaff(staffId);
+    const { name, delta, maxQ } = validateOptionFields(req.body || {});
+    if (!group_id || typeof group_id !== "string") {
+      throw new HttpError(400, "group_id is required");
+    }
+
+    const { rows: groupRows } = await pool.query("SELECT id FROM modifier_groups WHERE id = $1", [group_id]);
+    if (groupRows.length === 0) throw new HttpError(400, "Unknown modifier group");
+
+    const { rows } = await pool.query(
+      `INSERT INTO modifier_options (group_id, name, price_delta, max_quantity, default_selected, active)
+       VALUES ($1, $2, $3, $4, $5, true)
+       RETURNING id, group_id, name, price_delta, sort_order, max_quantity, default_selected, active`,
+      [group_id, name, delta, maxQ, req.body.default_selected]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to create modifier option");
+  }
+});
+
+// PUT /api/backoffice/modifier-options/:id
+// Body: { staffId, name, price_delta, max_quantity, default_selected, active }
+app.put("/api/backoffice/modifier-options/:id", async (req, res) => {
+  try {
+    const { staffId, active } = req.body || {};
+    await requireBackofficeStaff(staffId);
+    const { name, delta, maxQ } = validateOptionFields(req.body || {});
+    if (typeof active !== "boolean") {
+      throw new HttpError(400, "active must be a boolean");
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE modifier_options
+          SET name = $1, price_delta = $2, max_quantity = $3, default_selected = $4, active = $5
+        WHERE id = $6
+        RETURNING id, group_id, name, price_delta, sort_order, max_quantity, default_selected, active`,
+      [name, delta, maxQ, req.body.default_selected, active, req.params.id]
+    );
+    if (rows.length === 0) throw new HttpError(404, "Modifier option not found");
+    res.json(rows[0]);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to update modifier option");
+  }
+});
+
+// DELETE /api/backoffice/modifier-options/:id?staffId=...
+// Hard-deletes if never used in a real order; blocked (409) if it is —
+// deactivate instead.
+app.delete("/api/backoffice/modifier-options/:id", async (req, res) => {
+  try {
+    await requireBackofficeStaff(req.query.staffId);
+
+    const { rows: refRows } = await pool.query(
+      "SELECT count(*)::int AS n FROM order_item_modifiers WHERE modifier_option_id = $1",
+      [req.params.id]
+    );
+    if (refRows[0].n > 0) {
+      throw new HttpError(
+        409,
+        "This option has been used in past orders and can't be deleted — deactivate it instead"
+      );
+    }
+
+    const { rows } = await pool.query(
+      "DELETE FROM modifier_options WHERE id = $1 RETURNING id",
+      [req.params.id]
+    );
+    if (rows.length === 0) throw new HttpError(404, "Modifier option not found");
+    res.json({ success: true, id: req.params.id });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to delete modifier option");
   }
 });
 
@@ -1383,7 +1721,8 @@ app.get("/api/backoffice/stats/summary", async (req, res) => {
     const location = await getSingleActiveLocation(client);
 
     const { rows } = await client.query(
-      `SELECT COALESCE(SUM(total), 0) AS total_sales, COUNT(*) AS order_count
+      `SELECT COALESCE(SUM(total), 0) AS total_sales, COUNT(*) AS order_count,
+              COALESCE(SUM(tip), 0) AS total_tips
          FROM orders
         WHERE location_id = $1
           AND status = 'ready'
@@ -1397,6 +1736,12 @@ app.get("/api/backoffice/stats/summary", async (req, res) => {
       totalSales,
       orderCount,
       avgOrderValue: orderCount > 0 ? totalSales / orderCount : 0,
+      // Always $0 today — checkout doesn't collect tips yet (orders.tip is
+      // hardcoded to 0 until Stripe Terminal integration lands). This is
+      // display-readiness only: the stat and its plumbing are correct now,
+      // so tips will show up automatically the moment real tip capture is
+      // wired into checkout — no dashboard change needed then.
+      totalTips: parseFloat(rows[0].total_tips),
     });
   } catch (err) {
     sendHttpError(res, err, "Failed to fetch sales summary");
