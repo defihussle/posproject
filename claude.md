@@ -40,19 +40,30 @@ posproject/
     (various migration .sql files, run in chronological order)
   frontend/
     src/
-      components/        — PinLogin.jsx, OrderEntry.jsx, ItemModal.jsx, 
-                            Dashboard.jsx (also doubles as KDS placeholder), 
-                            BackOffice.jsx
+      components/        — PinLogin.jsx (Order Entry/KDS PIN login),
+                            OrderEntry.jsx, ItemModal.jsx,
+                            KitchenDisplay.jsx (KDS, incl. Fast Mode),
+                            BackOffice.jsx (Back Office shell/nav),
+                            BackofficeLogin.jsx + ResetPassword.jsx
+                            (email+password+TOTP login, forgot/reset
+                            password), HomeDashboard.jsx, StaffManager.jsx,
+                            MenuManager.jsx (shared editor, see Auth model)
+                            + ManageMenu.jsx (its POS wrapper)
       assets/             — narcos-tacos-logo.png (official brand logo, 
                             transparent background)
+      config.js           — exports API_URL (from VITE_API_URL, trailing
+                            slash stripped defensively — see Known Gotchas)
       App.jsx             — routing + auth/theme state
 ```
 
 ## Database schema — key tables
 - `locations` — id, name, tax_rate, timezone
-- `staff` — id, location_id, name, title, phone, email, photo_url, pin_hash 
-  (bcrypt via pgcrypto), role (enum: `owner`, `admin`, `manager`, `cashier`, 
-  `kitchen`), hourly_rate, hire_date, active
+- `staff` — id, location_id, name, title, phone, email (unique, case-
+  insensitive index; only ever set for owner/admin — see Auth model), 
+  photo_url, pin_hash (bcrypt via pgcrypto), role (enum: `owner`, `admin`, 
+  `manager`, `cashier`, `kitchen`), hourly_rate, hire_date, active, plus 
+  Back Office auth columns `password_hash`, `totp_secret`, `totp_enabled`, 
+  `reset_token` (SHA-256 hash, not the raw token), `reset_token_expiry`
 - `shifts` — clock in/out records (not yet wired to any UI)
 - `menu_categories`, `menu_items`, `item_variants` (e.g. protein choices, 
   each with own absolute price), `modifier_groups`, `modifier_options` 
@@ -63,7 +74,12 @@ posproject/
 - `ingredients`, `item_ingredients`, `modifier_ingredients` — ingredient-level 
   inventory (schema exists, not yet actively used in UI)
 - `orders` — status enum: `open`, `preparing`, `ready`, `completed`, 
-  `cancelled`
+  `cancelled`; also `discount` (dollar amount, always server-computed — 
+  never trust a client-sent amount), `discount_percent`, `discount_reason` 
+  (one of `family`/`friend`/`employee`/`neighbouring_store`, required 
+  whenever a discount is applied), `discount_applied_by` (staff id), and 
+  `tip` (pre-existing column, now actually read — see Business rules; 
+  currently always `$0` since there's no tip-collection UI yet)
 - `order_items` — status enum: `pending`, `preparing`, `ready`, `served`
 - `order_item_modifiers`, `order_item_addons` — line-level modifier/addon 
   records, both support `quantity`
@@ -80,10 +96,29 @@ posproject/
 - Payments are currently **mocked** (Cash/Card recorded, no real processor) 
   — real integration will be **Stripe Terminal** (BBPOS WisePOS E reader) 
   when that phase happens
+- **Discounts** — cart-level, in Order Entry's checkout flow, available to 
+  **all roles** (owner/admin/manager/cashier). Preset percentages 
+  (10/20/50%) plus a custom percentage; a reason is **required** whenever a 
+  discount is applied, from a fixed set — `family`, `friend`, `employee`, 
+  `neighbouring_store` (enforced server-side via CHECK constraint, checkout 
+  rejected without one). Same never-trust-the-client principle as pricing: 
+  the client sends only a percent + reason, never a dollar amount — the 
+  actual discount is always recomputed server-side from the live subtotal 
+  at checkout (a tampered/forged dollar amount in the request is ignored).
+- **Tips** — `orders.tip` is tracked and summed as a "Total Tips" stat on 
+  the Back Office Home dashboard, but there is **no tip-collection UI 
+  anywhere on the POS yet** — that's intentionally deferred until real 
+  Stripe Terminal integration, where tipping will happen on the physical 
+  terminal's own screen, not in this app. Expect `tip` to read `$0` on 
+  every order until that phase.
 
 ## Auth model
-- Every staff member (owner/admin/manager/cashier/kitchen) has a unique 
-  4-digit PIN, bcrypt-hashed, checked via `POST /api/auth/login`
+- **Order Entry/KDS** — every staff member (owner/admin/manager/cashier/
+  kitchen) has a unique 4-digit PIN, bcrypt-hashed, checked via 
+  `POST /api/auth/login`. This is completely separate from Back Office's 
+  login below (different route, different credentials, different session 
+  mechanism) and is unaffected by anything there — including for owner/
+  admin, who use their PIN here and email+password+TOTP there.
 - Role permissions:
   - **Owner**: full access, only role that can create staff/appoint 
     admin/manager roles, can toggle app-wide light/dark theme
@@ -97,41 +132,79 @@ posproject/
   **Kitchen does NOT log in at all** — KDS is a no-auth "open book" screen 
   at a deliberately non-guessable route (`/kds/lawrence-east-4471`), meant 
   to be opened once on a kitchen device and left running indefinitely.
-- **Back Office** — separate route `/backoffice`, own PIN login, persistent 
-  sidebar nav (`NAV_ITEMS` config in `BackOffice.jsx` — add future sections 
-  there, each with its own allowed-roles list). **Owner/admin ONLY** — every 
-  `/api/backoffice/*` route requires owner/admin server-side 
-  (`requireBackofficeStaff`'s default). **Manager has NO Back Office access 
-  at all** (revoked — previously had Staff Management only); PIN login 
-  rejects manager with "Access Restricted." Owner/admin see Home, Staff 
-  Management, Menu Management and land on Home. Cashier/kitchen also 
-  blocked with a message. Home is pure-display stat cards (sales summary, 
-  top sellers, staff performance) via `/api/backoffice/stats/*`; 
-  Reports/Orders sections not yet added to the nav.
+- **Back Office** — separate route `/backoffice`, persistent sidebar nav 
+  (`NAV_ITEMS` config in `BackOffice.jsx` — add future sections there, each 
+  with its own allowed-roles list). **Owner/admin ONLY, authenticated via 
+  email + password + TOTP 2FA** (`BackofficeLogin.jsx`) — NOT the PIN used 
+  above. A real server-side session (httpOnly, signed JWT cookie, verified 
+  by `requireBackofficeSession` on every `/api/backoffice/*` route) 
+  replaced the old model that trusted whatever `staffId` the client sent; 
+  every Back Office route now re-derives identity from the cookie alone. 
+  **Manager has NO Back Office access at all** (revoked — previously had 
+  Staff Management only) and has no email/password/TOTP of any kind — 
+  Manager's only staff-related capability is the POS quick-add below. 
+  Owner/admin see Home, Staff Management, Menu Management and land on 
+  Home. Cashier/kitchen are blocked with a message (they have no email 
+  either, so there's no login path for them to even attempt). Home is 
+  pure-display stat cards (sales summary, orders, avg order, **Total 
+  Tips**, top sellers, staff performance) via `/api/backoffice/stats/*`, 
+  with a Today/Week/Month range switcher; Reports/Orders sections not yet 
+  added to the nav.
+  - **First-time setup**: an owner/admin with no email/password yet 
+    (currently true for all 3 owners + Test Admin — see staff accounts 
+    below) enters their existing PIN once to prove identity (same trust 
+    model as PIN login elsewhere — nothing new), then picks an email + 
+    password, then scans a QR code to enroll a TOTP authenticator app 
+    (Google Authenticator, Authy, 1Password, etc.). One correct 6-digit 
+    code confirms setup, flips `totp_enabled`, and logs them in. An 
+    interrupted setup (password saved but TOTP never confirmed) resumes 
+    cleanly next login instead of getting stuck.
+  - **Returning login**: email + password, then a 6-digit TOTP code. Both 
+    steps are independently rate-limited.
+  - **Forgot password**: emails a time-limited (1 hour), single-use reset 
+    link via Resend (from `noreply@narcostacos.ca`, domain verified) to 
+    the account's email. Always returns the same generic response whether 
+    or not the email matches an account, so it can't be used to enumerate 
+    who has Back Office access.
 - **Manage Menu** — POS-reachable menu editor at `/manage-menu`, owner/admin 
   only, opened from Order Entry's account dropdown (full page, not a modal). 
   Renders the same `MenuManager` component and hits the same 
-  `/api/backoffice/menu*` / `/api/backoffice/item-variants*` routes as Back 
-  Office's Menu Management section — one editor, two entry points, kept in 
-  sync automatically since it's the same component. Shopify-product-editor-
-  inspired: browsable category/item list on the left, inline-editable detail 
-  panel (name/description/price, variants table, read-only modifier groups) 
-  on the right. No hard-delete for menu items (same "deactivate only" 
-  pattern as staff) — 86/Reactivate is the only lifecycle action.
+  `/api/backoffice/menu*` / `/api/backoffice/item-variants*` / 
+  `/api/backoffice/modifier-groups*` / `/api/backoffice/modifier-options*` 
+  routes as Back Office's Menu Management section — one editor, two entry 
+  points, kept in sync automatically since it's the same component. 
+  Shopify-product-editor-inspired: browsable category/item list on the 
+  left, inline-editable detail panel on the right — name/description/
+  price, variants table, **and modifier groups/options (full CRUD: 
+  create/edit/deactivate/delete — previously view-only)**. No hard-delete 
+  for menu items, or for modifier groups/options actually referenced by 
+  order history (same "deactivate only" pattern as staff) — deleting a 
+  group/option that's been used in a real order is blocked with a 409 
+  suggesting deactivation instead; unused ones hard-delete normally. 
+  86/Reactivate is the only lifecycle action for menu items themselves.
 - **Staff management hierarchy** (enforced server-side in /api/backoffice/
   staff routes AND mirrored in UI button-hiding): only owners can act on 
   owner rows or assign the owner/admin role; owner+admin can act on admin 
   rows. Deactivation only (active=false), never hard-delete — staff rows are 
   referenced by historical orders. PINs: 4 digits, bcrypt-hashed server-side, 
-  never returned/logged, unique among active staff (login matches globally).
+  never returned/logged, unique among active staff (login matches globally). 
+  The add/edit forms have an **email field**, but it's only shown/editable 
+  when the selected role is owner or admin — structurally hidden for 
+  manager/cashier/kitchen (those roles are simply never offered as options 
+  when the field's visibility condition can be true, e.g. Manager's own 
+  role dropdown never includes owner/admin in the first place).
 - **POS staff quick-add** — `POST /api/staff/quick-add` (deliberately 
   separate from `/api/backoffice/staff`, so it isn't swept up by the Back 
   Office role restriction above), owner/admin/manager. This is Manager's 
-  ONE remaining staff capability post-revocation: an add-only modal from 
-  Order Entry's account dropdown ("Staff Management" — same label, POS 
-  context). No list/edit/deactivate/PIN-reset there; those are Back-Office-
-  only now. `StaffAddForm` (in `StaffManager.jsx`) is shared by both 
-  surfaces via an `endpoint` prop.
+  ONE remaining staff capability, and their only POS-side admin capability 
+  of any kind — Manager has no menu/modifier access and no Back Office 
+  access at all: an add-only modal from Order Entry's account dropdown 
+  ("Staff Management" — same label, POS context). No list/edit/deactivate/
+  PIN-reset there; those are Back-Office-only now. `StaffAddForm` (in 
+  `StaffManager.jsx`) is shared by both surfaces via an `endpoint` prop — 
+  the email field above never appears here for Manager, since their role 
+  options never include owner/admin (server-side `assertRoleAssignable` 
+  blocks it too, even if the client were tampered with).
 - Theme defaults to **Light**, only owners can toggle dark mode 
   (app-wide setting, in the account dropdown menu next to the staff name 
   on Order Entry — NOT visible to non-owner roles at all)
@@ -153,26 +226,48 @@ posproject/
 ## What's built and working
 - Full schema, migrated, real 24-item menu seeded with variants/modifiers/
   addons/ingredient checklists
-- Staff auth (PIN login) for owner/admin/manager/cashier roles
+- Staff auth: PIN login (`POST /api/auth/login`) for Order Entry/KDS, all 
+  roles; separate email+password+TOTP login for Back Office, owner/admin 
+  only (see Auth model for both flows)
 - Order Entry: real menu browsing, full item customization modal (variants, 
   modifier groups with min/max/required rules, addons, ingredient 
-  checklists with default-checked items), working cart
+  checklists with default-checked items), working cart, cart-level 
+  discounts (presets + custom %, required reason, server-recomputed), 
+  checkout (`POST /api/orders`) with full server-side price + discount 
+  recomputation and mocked Cash/Card payment
+- KDS (`/kds/lawrence-east-4471`, no auth, opened once and left running): 
+  live order queue polling every 5s (`GET /api/orders`), tap-to-advance 
+  status (open → preparing → ready via `PATCH /api/orders/:id/status`), 
+  color-escalating elapsed timers (green → yellow at 5min → red at 10min), 
+  a Past Orders history view (`GET /api/orders/history`), and **Fast 
+  Mode** — a manual toggle that replaces the ticket grid with an 
+  aggregated rush-hour view: every unique item+variant+exact-modifier-
+  combination across open/preparing orders, shown as one line with a 
+  count, sorted count-descending. View-only (no tap targets) — completing 
+  orders still happens in the normal ticket view; recomputed client-side 
+  from the same polled data, no extra route
+- Back Office (`/backoffice`): Home (sales summary, order count, avg 
+  order, **Total Tips**, top sellers, staff performance — Today/Week/
+  Month range switcher), Staff Management (full CRUD, PIN reset, 
+  hierarchy-enforced, email field for owner/admin), Menu Management (full 
+  CRUD for items, variants, AND modifier groups/options)
+- Manage Menu (`/manage-menu`) — the same editor as Back Office's Menu 
+  Management, reachable from the POS for owner/admin
 
-## What's NOT built yet (as of this file's creation)
-- Checkout / order persistence (`POST /api/orders`) — in progress
-- KDS real build (`GET /api/orders`, `PATCH /api/orders/:id/status`, the 
-  actual KDS screen)
-- Back Office Reports/Orders sections (not yet added to the nav). Home 
-  dashboard, Menu editing, and Staff management ARE built (Home/Menu/Staff 
-  nav sections + /api/backoffice/* routes with server-side role checks; 
-  staff also quick-addable from the Order Entry account dropdown for 
-  owner/admin/manager)
-- Real Stripe Terminal integration
+## What's NOT built yet
+- Back Office Reports/Orders sections (not yet added to the nav)
+- Real Stripe Terminal integration — payments are still mocked (Cash/Card 
+  recorded, no processor), and there's no tip-collection UI anywhere on 
+  the POS yet; both are deferred to this phase, when tipping will happen 
+  on the physical terminal's own screen
 - Change-PIN self-service flow (managers+ can reset PINs via Staff tab; 
   self-service for cashiers not built)
 - Staff accounts: 3 owners (Ali Barakat 1234, Umran Hanifi 1235, Saif Omar 
   1236) + test accounts Test Admin 5001, Test Manager 2001, Test Cashier 
-  3001, Test Kitchen 4001 (seed_test_staff.sql)
+  3001, Test Kitchen 4001 (seed_test_staff.sql). None of the owner/admin 
+  accounts have completed Back Office first-time setup yet (no email/
+  password/TOTP set) — each will hit the first-time setup flow on their 
+  next Back Office visit.
 
 ## Workflow conventions
 - Prompts should be scoped to one complete, testable slice of functionality 
@@ -199,3 +294,18 @@ posproject/
   When inserting or updating text with accented characters via this method, 
   verify the stored value afterward with a `SELECT` query before considering 
   the change done.
+- **Render Static Site SPA routing:** a `frontend/public/_redirects` file 
+  (Netlify-style `/*  /index.html  200`, copied into `dist/` by Vite) is 
+  NOT on its own guaranteed to make Render serve `index.html` for every 
+  client-side route — this broke KDS in production once (every route but 
+  `/` 404'd on direct navigation/refresh). If it recurs, check that the 
+  same rewrite rule is ALSO configured directly in the Render dashboard 
+  (Static Site → Redirects/Rewrites), not just relying on the `_redirects` 
+  file being auto-honored.
+- **Render env vars + Vite builds:** `VITE_*` env vars (e.g. `VITE_API_URL`) 
+  are baked into the JS bundle at BUILD time, not read at runtime. Changing 
+  one in Render's dashboard does nothing until a fresh build/deploy is 
+  manually triggered — unlike a backend service, where an env var change 
+  alone can be enough. Also double-check the value has no trailing slash 
+  (see `config.js`'s defensive strip) before assuming the env var itself 
+  is the problem.
