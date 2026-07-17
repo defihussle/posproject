@@ -260,6 +260,7 @@ function SetupPinForm({ busy, setBusy, error, setError, onVerified, onCancel }) 
       const res = await fetch(`${API_URL}/api/backoffice/auth/setup-start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ pin }),
       });
       const data = await res.json();
@@ -321,6 +322,7 @@ function SetupAccountForm({ name, tempToken, busy, setBusy, error, setError, onS
       const res = await fetch(`${API_URL}/api/backoffice/auth/setup-complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ tempToken, email, password }),
       });
       const data = await res.json();
@@ -485,6 +487,7 @@ function ForgotPasswordForm({ busy, setBusy, error, setError, onSent, onCancel }
       const res = await fetch(`${API_URL}/api/backoffice/auth/forgot-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ email }),
       });
       if (res.status === 429) {

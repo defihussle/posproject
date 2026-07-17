@@ -13,31 +13,67 @@ const bcrypt = require("bcryptjs");
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// Render (and most PaaS) terminate TLS at a proxy in front of this process
+// and forward the original protocol via `X-Forwarded-Proto`. Without this,
+// Express has no way to know the original request was HTTPS — `req.secure`
+// would always read false, which would silently break the cross-site
+// cookie logic below (see sessionCookieOpts).
+app.set("trust proxy", 1);
+
 const SESSION_SECRET = process.env.SESSION_SECRET;
 if (!SESSION_SECRET) {
   throw new Error("SESSION_SECRET env var is required (signs Back Office session cookies)");
 }
 const FRONTEND_URL = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, "");
 
-// Dev frontends run on 5173 (default) or 5174 (if 5173 is taken) — allow
-// both plus whatever FRONTEND_URL is actually configured to in production.
-const ALLOWED_ORIGINS = [...new Set([FRONTEND_URL, "http://localhost:5173", "http://localhost:5174"])];
+// The frontend (pos.narcostacos.ca) and backend (onrender.com) live on
+// different domains, so this MUST be an explicit allowlist with
+// credentials:true, never the wildcard cors() default — a wildcard
+// `Access-Control-Allow-Origin: *` is fundamentally incompatible with
+// credentialed (cookie) requests; browsers refuse to expose the response
+// to the page when both are combined. The known-good production origins
+// are hardcoded here (not just sourced from FRONTEND_URL) so a missing/
+// wrong FRONTEND_URL env var on Render can't silently break Back Office
+// login the way a missing SPA rewrite rule once broke KDS (see Known
+// Gotchas in CLAUDE.md) — FRONTEND_URL is still included too, so a
+// future staging domain only needs an env var, not a code change.
+const ALLOWED_ORIGINS = [
+  ...new Set([
+    FRONTEND_URL,
+    "https://pos.narcostacos.ca", // production frontend (custom domain)
+    "https://narcospos-site.onrender.com", // production frontend (raw Render URL, fallback/testing)
+    "http://localhost:5173", // local dev, default Vite port
+    "http://localhost:5174", // local dev, Vite's fallback port if 5173 is taken
+  ]),
+];
 
-// Back Office session cookie — httpOnly so client-side JS (and any XSS)
-// can never read it, sameSite=lax so it still rides along on same-site
-// navigation (e.g. following the emailed reset-password link) while being
-// dropped on genuine cross-site requests. `secure` is only forced in
-// production (Render, HTTPS) — over plain http://localhost in dev, a
-// `secure` cookie would silently never be set at all.
 const SESSION_COOKIE_NAME = "bo_session";
-const IS_PRODUCTION = process.env.NODE_ENV === "production";
-const SESSION_COOKIE_OPTS = {
-  httpOnly: true,
-  sameSite: "lax",
-  secure: IS_PRODUCTION,
-  path: "/",
-};
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12h — roughly a shift
+
+// Back Office session cookie flags — httpOnly so client-side JS (and any
+// XSS) can never read it. `secure`/`sameSite` are derived from the ACTUAL
+// request (req.secure, reliable now that `trust proxy` is set above)
+// rather than a NODE_ENV env var that might not be set on the host:
+//   - Local dev (plain http://localhost): secure:false, sameSite:"lax" —
+//     frontend and backend are same-site (both "localhost"), so Lax is
+//     both sufficient and required (a Secure cookie is silently refused
+//     over plain HTTP).
+//   - Production (HTTPS, pos.narcostacos.ca -> onrender.com): secure:true,
+//     sameSite:"none" — these are DIFFERENT SITES (different registrable
+//     domains), and SameSite=Lax is NEVER sent on a cross-site fetch/XHR
+//     (only on top-level navigations) regardless of CORS being correct —
+//     None is required for the cookie to be sent at all here. SameSite=
+//     None is only valid on Secure cookies, hence the two flags moving
+//     together.
+function sessionCookieOpts(req) {
+  const isHttps = req.secure;
+  return {
+    httpOnly: true,
+    secure: isHttps,
+    sameSite: isHttps ? "none" : "lax",
+    path: "/",
+  };
+}
 
 // --------------- Middleware ---------------
 app.use(
@@ -1059,11 +1095,11 @@ function verifyTempToken(token, purpose) {
   }
 }
 
-function issueSession(res, staffId) {
+function issueSession(req, res, staffId) {
   const token = jwt.sign({ staffId, purpose: "session" }, SESSION_SECRET, {
     expiresIn: Math.floor(SESSION_MAX_AGE_MS / 1000),
   });
-  res.cookie(SESSION_COOKIE_NAME, token, { ...SESSION_COOKIE_OPTS, maxAge: SESSION_MAX_AGE_MS });
+  res.cookie(SESSION_COOKIE_NAME, token, { ...sessionCookieOpts(req), maxAge: SESSION_MAX_AGE_MS });
 }
 
 function validatePasswordStrength(password) {
@@ -1304,7 +1340,7 @@ app.post("/api/backoffice/auth/setup-confirm", async (req, res) => {
     clearAttempts(ip, "bo-totp");
 
     await pool.query("UPDATE staff SET totp_enabled = true WHERE id = $1", [staff.id]);
-    issueSession(res, staff.id);
+    issueSession(req, res, staff.id);
     res.json({ id: staff.id, name: staff.name, role: staff.role });
   } catch (err) {
     sendHttpError(res, err, "Failed to confirm 2FA setup");
@@ -1339,7 +1375,7 @@ app.post("/api/backoffice/auth/login-step2", async (req, res) => {
     }
     clearAttempts(ip, "bo-totp");
 
-    issueSession(res, staff.id);
+    issueSession(req, res, staff.id);
     res.json({ id: staff.id, name: staff.name, role: staff.role });
   } catch (err) {
     sendHttpError(res, err, "Failed to verify code");
@@ -1429,7 +1465,9 @@ app.post("/api/backoffice/auth/reset-password", async (req, res) => {
 
 // POST /api/backoffice/auth/logout
 app.post("/api/backoffice/auth/logout", (req, res) => {
-  res.clearCookie(SESSION_COOKIE_NAME, SESSION_COOKIE_OPTS);
+  // clearCookie must be called with matching attributes (path, secure,
+  // sameSite) or some browsers won't actually delete the cookie.
+  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOpts(req));
   res.json({ success: true });
 });
 
