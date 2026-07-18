@@ -100,62 +100,88 @@ class HttpError extends Error {
 }
 
 // --------------- Rate limiter (PIN/login-guessing protection) ---------------
-// Tracks failed login attempts per (IP, bucket). After 5 failures within
-// 60s, that IP+bucket is blocked for 30s before it can try again.
+// Keyed by the IDENTITY being guessed — the PIN string itself, the email,
+// or the staffId behind an already-validated tempToken — NEVER by IP or
+// device. This app runs on a shared counter tablet used by many staff
+// across a shift; one person mistyping (or someone deliberately guessing
+// a DIFFERENT PIN) must never lock out anyone else. This is a deliberate
+// change from an earlier IP-based version, which turned out to be
+// completely non-functional in production (Render's real proxy chain
+// meant `req.ip` couldn't be trusted as a stable per-client identifier —
+// see the trust-proxy note near `app.set("trust proxy", ...)` above).
+// Keying by identity sidesteps that dependency entirely: it doesn't matter
+// what IP a request claims to come from, since the same PIN/email/account
+// is always the same key regardless.
 //
-// `bucket` keeps independent counters per login surface — PIN login,
-// Back Office password step, and Back Office TOTP step are rate-limited
-// separately, so hammering one doesn't consume the allowance of another
-// and each is meaningfully protected on its own (a 6-digit TOTP code in
-// particular is guessable in ~1M tries without this).
-const loginAttempts = new Map(); // key: `${ip}::${bucket}`, value: { count, firstAttempt, blockedUntil }
+// After 3 wrong attempts against the SAME identity within a 5-minute
+// window, that identity specifically is locked for 5 minutes. A correct
+// attempt before the 3rd failure resets its count back to zero — a
+// legitimate staff member who mistyped once or twice isn't penalized once
+// they get it right.
+//
+// `bucket` keeps independent counters per login surface — PIN login, Back
+// Office's password step, and Back Office's TOTP step are rate-limited
+// separately, so hammering one doesn't consume the allowance of another.
+const MAX_ATTEMPTS = 3;
+const ATTEMPT_WINDOW_MS = 5 * 60 * 1000; // 5 min — how long failures accumulate toward the 3-strike limit
+const LOCKOUT_MS = 5 * 60 * 1000; // 5 min lockout once tripped
 
-function rateLimitKey(ip, bucket) {
-  return `${ip}::${bucket}`;
+const loginAttempts = new Map(); // key: `${bucket}::${identity}`, value: { count, firstAttempt, blockedUntil }
+
+function rateLimitKey(identity, bucket) {
+  return `${bucket}::${identity}`;
 }
 
-function checkRateLimit(ip, bucket = "pin") {
+function formatLockoutMessage(retryAfterSeconds) {
+  const minutes = Math.max(1, Math.ceil(retryAfterSeconds / 60));
+  return `Too many attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`;
+}
+
+function checkRateLimit(identity, bucket) {
   const now = Date.now();
-  const key = rateLimitKey(ip, bucket);
+  const key = rateLimitKey(identity, bucket);
   const record = loginAttempts.get(key);
 
   if (!record) return { allowed: true };
 
-  // Currently blocked?
+  // Currently locked out?
   if (record.blockedUntil && now < record.blockedUntil) {
     const retryAfter = Math.ceil((record.blockedUntil - now) / 1000);
     return { allowed: false, retryAfter };
   }
 
-  // Window expired — reset
-  if (now - record.firstAttempt > 60_000) {
+  // Not locked — but if the accumulation window has expired, drop the
+  // stale record so old, spaced-out typos don't count toward a new streak.
+  if (now - record.firstAttempt > ATTEMPT_WINDOW_MS) {
     loginAttempts.delete(key);
-    return { allowed: true };
   }
-
-  // Under the limit?
-  if (record.count < 5) return { allowed: true };
-
-  // Just hit the limit — start 30s block
-  record.blockedUntil = now + 30_000;
-  const retryAfter = 30;
-  return { allowed: false, retryAfter };
+  return { allowed: true };
 }
 
-function recordFailedAttempt(ip, bucket = "pin") {
+// Returns { lockedOut, retryAfter? }. `lockedOut` is true exactly on the
+// attempt that trips the 3rd strike, so the caller can respond with the
+// lockout message immediately — not a generic "wrong" on strike 3 followed
+// by a separate 4th attempt that's the first to discover the lockout.
+function recordFailedAttempt(identity, bucket) {
   const now = Date.now();
-  const key = rateLimitKey(ip, bucket);
+  const key = rateLimitKey(identity, bucket);
   const record = loginAttempts.get(key);
 
-  if (!record || now - record.firstAttempt > 60_000) {
+  if (!record || now - record.firstAttempt > ATTEMPT_WINDOW_MS) {
     loginAttempts.set(key, { count: 1, firstAttempt: now, blockedUntil: null });
-  } else {
-    record.count += 1;
+    return { lockedOut: false };
   }
+
+  record.count += 1;
+  if (record.count >= MAX_ATTEMPTS) {
+    record.blockedUntil = now + LOCKOUT_MS;
+    return { lockedOut: true, retryAfter: Math.ceil(LOCKOUT_MS / 1000) };
+  }
+  return { lockedOut: false };
 }
 
-function clearAttempts(ip, bucket = "pin") {
-  loginAttempts.delete(rateLimitKey(ip, bucket));
+function clearAttempts(identity, bucket) {
+  loginAttempts.delete(rateLimitKey(identity, bucket));
 }
 
 // --------------- Routes ---------------
@@ -169,6 +195,19 @@ app.get("/api/health", async (req, res) => {
     console.error("Health check failed:", err.message);
     res.status(503).json({ status: "error", db: "disconnected" });
   }
+});
+
+// TEMPORARY — trust-proxy investigation only, no secrets exposed (just
+// network/proxy-header diagnostics). Remove before this task is finished.
+app.get("/api/_debug_proxy", (req, res) => {
+  res.json({
+    reqIp: req.ip,
+    reqIps: req.ips,
+    xForwardedFor: req.headers["x-forwarded-for"] || null,
+    cfConnectingIp: req.headers["cf-connecting-ip"] || null,
+    trueClientIp: req.headers["true-client-ip"] || null,
+    socketRemoteAddress: req.socket?.remoteAddress || null,
+  });
 });
 
 // Menu items (flat — kept for backward compatibility)
@@ -285,21 +324,21 @@ app.get("/api/menu/full", async (req, res) => {
 
 // PIN login
 app.post("/api/auth/login", async (req, res) => {
-  const ip = req.ip;
-
-  // Rate-limit check
-  const rateCheck = checkRateLimit(ip);
-  if (!rateCheck.allowed) {
-    return res.status(429).json({
-      success: false,
-      message: "Too many failed attempts. Try again shortly.",
-      retryAfter: rateCheck.retryAfter,
-    });
-  }
-
   const { pin } = req.body;
   if (!pin || typeof pin !== "string") {
     return res.status(400).json({ success: false, message: "PIN is required" });
+  }
+
+  // Rate-limit check — keyed by the PIN itself, not this device, so one
+  // PIN's lockout never affects another staff member on the same shared
+  // tablet (see the rate limiter section above for why).
+  const rateCheck = checkRateLimit(pin, "pin");
+  if (!rateCheck.allowed) {
+    return res.status(429).json({
+      success: false,
+      message: formatLockoutMessage(rateCheck.retryAfter),
+      retryAfter: rateCheck.retryAfter,
+    });
   }
 
   try {
@@ -319,12 +358,19 @@ app.post("/api/auth/login", async (req, res) => {
     }
 
     if (!matchedStaff) {
-      recordFailedAttempt(ip);
+      const attempt = recordFailedAttempt(pin, "pin");
+      if (attempt.lockedOut) {
+        return res.status(429).json({
+          success: false,
+          message: formatLockoutMessage(attempt.retryAfter),
+          retryAfter: attempt.retryAfter,
+        });
+      }
       return res.status(401).json({ success: false, message: "PIN not recognized" });
     }
 
-    // Success — clear rate-limit record for this IP
-    clearAttempts(ip);
+    // Success — reset this PIN's failure count
+    clearAttempts(pin, "pin");
 
     // Return staff info WITHOUT pin_hash
     const { pin_hash, ...staffData } = matchedStaff;
@@ -1185,15 +1231,17 @@ async function sendResendEmail({ to, subject, html }) {
 // short-lived token for setup-complete. Rejects accounts that already
 // have a password set (use email+password login, or Forgot Password).
 app.post("/api/backoffice/auth/setup-start", async (req, res) => {
-  const ip = req.ip;
-  const rateCheck = checkRateLimit(ip, "bo-setup-pin");
-  if (!rateCheck.allowed) {
-    return res.status(429).json({ error: "Too many attempts. Try again shortly.", retryAfter: rateCheck.retryAfter });
-  }
   const { pin } = req.body || {};
   if (typeof pin !== "string" || !pin) {
     return res.status(400).json({ error: "PIN is required" });
   }
+
+  // Keyed by the PIN itself — same reasoning as Order Entry's PIN login.
+  const rateCheck = checkRateLimit(pin, "bo-setup-pin");
+  if (!rateCheck.allowed) {
+    return res.status(429).json({ error: formatLockoutMessage(rateCheck.retryAfter), retryAfter: rateCheck.retryAfter });
+  }
+
   try {
     const { rows } = await pool.query(
       "SELECT id, name, role, pin_hash, password_hash FROM staff WHERE active = true AND role IN ('owner','admin')"
@@ -1206,10 +1254,13 @@ app.post("/api/backoffice/auth/setup-start", async (req, res) => {
       }
     }
     if (!matched) {
-      recordFailedAttempt(ip, "bo-setup-pin");
+      const attempt = recordFailedAttempt(pin, "bo-setup-pin");
+      if (attempt.lockedOut) {
+        return res.status(429).json({ error: formatLockoutMessage(attempt.retryAfter), retryAfter: attempt.retryAfter });
+      }
       return res.status(401).json({ error: "PIN not recognized" });
     }
-    clearAttempts(ip, "bo-setup-pin");
+    clearAttempts(pin, "bo-setup-pin");
 
     if (matched.password_hash) {
       return res.status(409).json({
@@ -1270,34 +1321,43 @@ app.post("/api/backoffice/auth/setup-complete", async (req, res) => {
 // Always the same generic error for "no such email", "not owner/admin",
 // and "wrong password" — never reveals which one it was.
 app.post("/api/backoffice/auth/login-step1", async (req, res) => {
-  const ip = req.ip;
-  const rateCheck = checkRateLimit(ip, "bo-password");
-  if (!rateCheck.allowed) {
-    return res.status(429).json({ error: "Too many attempts. Try again shortly.", retryAfter: rateCheck.retryAfter });
-  }
   const GENERIC_FAIL = "Invalid email or password";
   const { email, password } = req.body || {};
   if (typeof email !== "string" || typeof password !== "string" || !email || !password) {
     return res.status(400).json({ error: GENERIC_FAIL });
   }
+  const normalizedEmail = email.trim().toLowerCase();
+
+  // Keyed by the email itself — same per-identity reasoning as PIN login.
+  const rateCheck = checkRateLimit(normalizedEmail, "bo-password");
+  if (!rateCheck.allowed) {
+    return res.status(429).json({ error: formatLockoutMessage(rateCheck.retryAfter), retryAfter: rateCheck.retryAfter });
+  }
+
   try {
     const { rows } = await pool.query(
       "SELECT id, name, role, email, password_hash, totp_enabled FROM staff WHERE lower(email) = $1 AND active = true",
-      [email.trim().toLowerCase()]
+      [normalizedEmail]
     );
     const staff = rows[0];
     // Hard backstop: reject anything that isn't owner/admin even though
     // only owner/admin should ever have a password_hash set at all.
     if (!staff || !["owner", "admin"].includes(staff.role) || !staff.password_hash) {
-      recordFailedAttempt(ip, "bo-password");
+      const attempt = recordFailedAttempt(normalizedEmail, "bo-password");
+      if (attempt.lockedOut) {
+        return res.status(429).json({ error: formatLockoutMessage(attempt.retryAfter), retryAfter: attempt.retryAfter });
+      }
       return res.status(401).json({ error: GENERIC_FAIL });
     }
     const passwordOk = await bcrypt.compare(password, staff.password_hash);
     if (!passwordOk) {
-      recordFailedAttempt(ip, "bo-password");
+      const attempt = recordFailedAttempt(normalizedEmail, "bo-password");
+      if (attempt.lockedOut) {
+        return res.status(429).json({ error: formatLockoutMessage(attempt.retryAfter), retryAfter: attempt.retryAfter });
+      }
       return res.status(401).json({ error: GENERIC_FAIL });
     }
-    clearAttempts(ip, "bo-password");
+    clearAttempts(normalizedEmail, "bo-password");
 
     if (!staff.totp_enabled) {
       const setupInfo = await beginTotpSetup(staff);
@@ -1315,15 +1375,19 @@ app.post("/api/backoffice/auth/login-step1", async (req, res) => {
 // Completes a TOTP setup (first-time or resumed): one correct code flips
 // totp_enabled true and issues the real session — same ending as login-step2.
 app.post("/api/backoffice/auth/setup-confirm", async (req, res) => {
-  const ip = req.ip;
-  const rateCheck = checkRateLimit(ip, "bo-totp");
-  if (!rateCheck.allowed) {
-    return res.status(429).json({ error: "Too many attempts. Try again shortly.", retryAfter: rateCheck.retryAfter });
-  }
   try {
     const { tempToken, totpCode } = req.body || {};
     const payload = verifyTempToken(tempToken, "2fa_setup");
     if (!payload) throw new HttpError(401, "Setup session expired — please log in again");
+
+    // Keyed by the account (staffId) the already-validated tempToken
+    // belongs to — not IP. A garbage/expired tempToken never reaches here
+    // (rejected above without touching the DB or the rate limiter), so
+    // this only ever tracks guesses against one specific real account.
+    const rateCheck = checkRateLimit(payload.staffId, "bo-totp");
+    if (!rateCheck.allowed) {
+      return res.status(429).json({ error: formatLockoutMessage(rateCheck.retryAfter), retryAfter: rateCheck.retryAfter });
+    }
 
     const { rows } = await pool.query(
       "SELECT id, name, role, totp_secret FROM staff WHERE id = $1 AND active = true AND role IN ('owner','admin')",
@@ -1334,10 +1398,13 @@ app.post("/api/backoffice/auth/setup-confirm", async (req, res) => {
 
     const codeOk = await verifyTotpCode(staff.totp_secret, totpCode);
     if (!codeOk) {
-      recordFailedAttempt(ip, "bo-totp");
+      const attempt = recordFailedAttempt(payload.staffId, "bo-totp");
+      if (attempt.lockedOut) {
+        return res.status(429).json({ error: formatLockoutMessage(attempt.retryAfter), retryAfter: attempt.retryAfter });
+      }
       throw new HttpError(401, "Incorrect code — check your authenticator app and try again");
     }
-    clearAttempts(ip, "bo-totp");
+    clearAttempts(payload.staffId, "bo-totp");
 
     await pool.query("UPDATE staff SET totp_enabled = true WHERE id = $1", [staff.id]);
     issueSession(req, res, staff.id);
@@ -1349,15 +1416,19 @@ app.post("/api/backoffice/auth/setup-confirm", async (req, res) => {
 
 // POST /api/backoffice/auth/login-step2 — { tempToken, totpCode }
 app.post("/api/backoffice/auth/login-step2", async (req, res) => {
-  const ip = req.ip;
-  const rateCheck = checkRateLimit(ip, "bo-totp");
-  if (!rateCheck.allowed) {
-    return res.status(429).json({ error: "Too many attempts. Try again shortly.", retryAfter: rateCheck.retryAfter });
-  }
   try {
     const { tempToken, totpCode } = req.body || {};
     const payload = verifyTempToken(tempToken, "2fa_pending");
     if (!payload) throw new HttpError(401, "Login session expired — please log in again");
+
+    // Keyed by the account (staffId), same as setup-confirm — and
+    // deliberately the SAME "bo-totp" bucket, since both endpoints are
+    // fundamentally "guess a 6-digit code for this account" — sharing the
+    // counter means switching endpoints doesn't reset an attacker's budget.
+    const rateCheck = checkRateLimit(payload.staffId, "bo-totp");
+    if (!rateCheck.allowed) {
+      return res.status(429).json({ error: formatLockoutMessage(rateCheck.retryAfter), retryAfter: rateCheck.retryAfter });
+    }
 
     const { rows } = await pool.query(
       "SELECT id, name, role, totp_secret, totp_enabled FROM staff WHERE id = $1 AND active = true AND role IN ('owner','admin')",
@@ -1370,10 +1441,13 @@ app.post("/api/backoffice/auth/login-step2", async (req, res) => {
 
     const codeOk = await verifyTotpCode(staff.totp_secret, totpCode);
     if (!codeOk) {
-      recordFailedAttempt(ip, "bo-totp");
+      const attempt = recordFailedAttempt(payload.staffId, "bo-totp");
+      if (attempt.lockedOut) {
+        return res.status(429).json({ error: formatLockoutMessage(attempt.retryAfter), retryAfter: attempt.retryAfter });
+      }
       throw new HttpError(401, "Incorrect code");
     }
-    clearAttempts(ip, "bo-totp");
+    clearAttempts(payload.staffId, "bo-totp");
 
     issueSession(req, res, staff.id);
     res.json({ id: staff.id, name: staff.name, role: staff.role });
@@ -1387,18 +1461,20 @@ app.post("/api/backoffice/auth/login-step2", async (req, res) => {
 // account — never reveals which emails have Back Office access.
 app.post("/api/backoffice/auth/forgot-password", async (req, res) => {
   const GENERIC = { message: "If that email has a Back Office account, a reset link has been sent." };
-  const ip = req.ip;
-  const rateCheck = checkRateLimit(ip, "bo-forgot");
-  if (!rateCheck.allowed) {
-    // A 429 here only reveals "this IP is being rate-limited," not
-    // anything about the email itself, so it doesn't break the
-    // no-enumeration guarantee above.
-    return res.status(429).json({ error: "Too many attempts. Try again shortly.", retryAfter: rateCheck.retryAfter });
-  }
-
   const { email } = req.body || {};
   if (typeof email !== "string" || !email.trim()) {
     return res.json(GENERIC);
+  }
+  const normalizedEmail = email.trim().toLowerCase();
+
+  // Keyed by the email itself, same as login-step1. The record is created
+  // unconditionally below regardless of whether the email matches a real
+  // account, so a nonexistent email gets rate-limited identically to a
+  // real one — hitting the lock reveals nothing about whether the account
+  // exists, only that this address has had 3 reset requests recently.
+  const rateCheck = checkRateLimit(normalizedEmail, "bo-forgot");
+  if (!rateCheck.allowed) {
+    return res.status(429).json({ error: formatLockoutMessage(rateCheck.retryAfter), retryAfter: rateCheck.retryAfter });
   }
 
   try {
@@ -1406,7 +1482,7 @@ app.post("/api/backoffice/auth/forgot-password", async (req, res) => {
       `SELECT id, name, email FROM staff
         WHERE lower(email) = $1 AND active = true
           AND role IN ('owner','admin') AND password_hash IS NOT NULL`,
-      [email.trim().toLowerCase()]
+      [normalizedEmail]
     );
     const staff = rows[0];
     if (staff) {
@@ -1426,7 +1502,13 @@ app.post("/api/backoffice/auth/forgot-password", async (req, res) => {
 <p>If you didn't request this, you can safely ignore this email — your password hasn't changed.</p>`,
       });
     }
-    recordFailedAttempt(ip, "bo-forgot"); // counts toward the rate limit regardless of match, by design
+    const attempt = recordFailedAttempt(normalizedEmail, "bo-forgot");
+    if (attempt.lockedOut) {
+      // Still fine to reveal: this only says "this email just hit 3 reset
+      // requests," which is the requester's own action, not evidence the
+      // account exists (nonexistent emails accumulate identically above).
+      return res.status(429).json({ error: formatLockoutMessage(attempt.retryAfter), retryAfter: attempt.retryAfter });
+    }
     res.json(GENERIC);
   } catch (err) {
     console.error("forgot-password error:", err.message);

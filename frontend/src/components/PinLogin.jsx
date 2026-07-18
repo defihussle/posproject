@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import { API_URL } from "../config";
+import { formatDuration } from "../format";
 import "./PinLogin.css";
 
 const KEYPAD_KEYS = [
@@ -20,14 +21,16 @@ export default function PinLogin({ onLogin }) {
   const [error, setError] = useState("");
   const [shaking, setShaking] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [failCount, setFailCount] = useState(0);
   const [lockoutEnd, setLockoutEnd] = useState(null);
   const [lockoutSeconds, setLockoutSeconds] = useState(0);
 
   const isLockedOut = lockoutEnd && Date.now() < lockoutEnd;
   const disabled = loading || isLockedOut;
 
-  // Lockout countdown timer
+  // Lockout countdown timer. Lockout state comes ENTIRELY from the server
+  // now (keyed by the specific PIN, 3 wrong attempts -> 5 min) — this
+  // component just reflects whatever retryAfter the server last reported,
+  // it doesn't independently decide anything is locked.
   useEffect(() => {
     if (!lockoutEnd) return;
 
@@ -36,7 +39,6 @@ export default function PinLogin({ onLogin }) {
       if (remaining <= 0) {
         setLockoutEnd(null);
         setLockoutSeconds(0);
-        setFailCount(0);
         setError("");
       } else {
         setLockoutSeconds(remaining);
@@ -70,25 +72,19 @@ export default function PinLogin({ onLogin }) {
           return;
         }
 
-        // Rate limited
+        // Rate limited — this specific PIN has hit 3 wrong attempts.
+        // Doesn't affect any other PIN on this device.
         if (res.status === 429) {
-          const retryAfter = data.retryAfter || 30;
+          const retryAfter = data.retryAfter || 300;
           setLockoutEnd(Date.now() + retryAfter * 1000);
-          setError("Too many attempts");
+          setError(data.message || "Too many attempts");
           triggerShake();
           return;
         }
 
-        // Wrong PIN
-        const newFailCount = failCount + 1;
-        setFailCount(newFailCount);
-
-        if (newFailCount >= 5) {
-          setLockoutEnd(Date.now() + 30_000);
-          setError("Too many attempts");
-        } else {
-          setError("PIN not recognized");
-        }
+        // Wrong PIN — just a normal miss, no local counting; the server
+        // is the only thing that decides when a PIN is locked out.
+        setError(data.message || "PIN not recognized");
         triggerShake();
       } catch {
         setError("Connection error");
@@ -139,7 +135,7 @@ export default function PinLogin({ onLogin }) {
 
   const getStatusText = () => {
     if (lockoutEnd && lockoutSeconds > 0) {
-      return { text: `Locked out — ${lockoutSeconds}s`, className: "pin-status__text--lockout" };
+      return { text: `Locked out — ${formatDuration(lockoutSeconds)}`, className: "pin-status__text--lockout" };
     }
     if (error) {
       return { text: error, className: "pin-status__text--error" };

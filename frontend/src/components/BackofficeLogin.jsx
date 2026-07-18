@@ -1,6 +1,7 @@
 import { useState } from "react";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import { API_URL } from "../config";
+import { formatDuration } from "../format";
 import "./PinLogin.css";
 import "./BackofficeLogin.css";
 
@@ -189,7 +190,7 @@ function LoginForm({ busy, setBusy, error, setError, onNeedTotp, onNeedTotpSetup
       const data = await res.json();
       if (!res.ok) {
         if (res.status === 429) {
-          setError(`Too many attempts — try again in ${data.retryAfter || 30}s`);
+          setError(data.error || `Too many attempts — try again in ${formatDuration(data.retryAfter || 300)}`);
         } else {
           setError(data.error || "Login failed");
         }
@@ -266,7 +267,7 @@ function SetupPinForm({ busy, setBusy, error, setError, onVerified, onCancel }) 
       const data = await res.json();
       if (!res.ok) {
         if (res.status === 429) {
-          setError(`Too many attempts — try again in ${data.retryAfter || 30}s`);
+          setError(data.error || `Too many attempts — try again in ${formatDuration(data.retryAfter || 300)}`);
         } else {
           setError(data.error || "PIN not recognized");
         }
@@ -412,7 +413,7 @@ function TotpForm({ mode, tempToken, qrCodeDataUrl, otpauthUrl, busy, setBusy, e
       const data = await res.json();
       if (!res.ok) {
         if (res.status === 429) {
-          setError(`Too many attempts — try again in ${data.retryAfter || 30}s`);
+          setError(data.error || `Too many attempts — try again in ${formatDuration(data.retryAfter || 300)}`);
         } else {
           setError(data.error || "Incorrect code");
         }
@@ -492,7 +493,7 @@ function ForgotPasswordForm({ busy, setBusy, error, setError, onSent, onCancel }
       });
       if (res.status === 429) {
         const data = await res.json();
-        setError(`Too many attempts — try again in ${data.retryAfter || 30}s`);
+        setError(data.error || `Too many attempts — try again in ${formatDuration(data.retryAfter || 300)}`);
         return;
       }
       onSent();
