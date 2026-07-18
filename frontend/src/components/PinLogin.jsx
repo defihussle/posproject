@@ -151,8 +151,10 @@ export default function PinLogin({ onLogin }) {
   return (
     <div className="login-screen">
       <div className="login-card">
-        {/* Brand Logo */}
-        <div className="brand-logo">
+        {/* Brand Logo — enlarged on this screen only via brand-logo--pin;
+            Back Office login/reset share brand-logo__img too but stay at
+            the original size (they don't get this modifier class). */}
+        <div className="brand-logo brand-logo--pin">
           <img src={logoImg} alt="NARCOS TACOS" className="brand-logo__img" />
         </div>
 

@@ -217,6 +217,10 @@
   color: var(--green);
 }
 
+.item-modal__option-price--removed {
+  color: var(--text-muted);
+}
+
 /* Quantity stepper-pill (Shopify-style compact visually joined pill) */
 .item-modal__stepper-pill {
   display: flex;
@@ -370,4 +374,57 @@
   font-size: 0.7rem;
   color: var(--red);
   padding: 0 24px 8px;
+}
+
+/* ============================================================
+   Tablet-and-up scaling — see the matching block in OrderEntry.css for
+   context. The modal needs to grow alongside the item grid/cart it's
+   opened from, or it reads as a mismatched, undersized dialog next to
+   everything else at real tablet width.
+   ============================================================ */
+@media (min-width: 900px) {
+  .item-modal {
+    max-width: 560px;
+  }
+
+  .item-modal__name {
+    font-size: 1.35rem;
+  }
+
+  .item-modal__desc {
+    font-size: 0.92rem;
+  }
+
+  .item-modal__base-price {
+    font-size: 1rem;
+  }
+
+  .item-modal__section-title {
+    font-size: 0.95rem;
+  }
+
+  .item-modal__option {
+    padding: 12px 14px;
+  }
+
+  .item-modal__option-name {
+    font-size: 0.92rem;
+  }
+
+  .item-modal__option-price {
+    font-size: 0.85rem;
+  }
+
+  .item-modal__addon-name {
+    font-size: 0.92rem;
+  }
+
+  .item-modal__addon-detail {
+    font-size: 0.75rem;
+  }
+
+  .item-modal__add-btn {
+    font-size: 1rem;
+    padding: 16px;
+  }
 }

@@ -360,15 +360,8 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                       <span className="oe-item-card__desc">{item.description}</span>
                     )}
                     <span className="oe-item-card__price">
-                      ${parseFloat(v.price).toFixed(2)}
+                      ${parseFloat(v.price).toFixed(2)} +tax
                     </span>
-                    <div className="oe-item-card__badges">
-                      {item.addons.length > 0 && (
-                        <span className="oe-item-card__badge oe-item-card__badge--addon">
-                          + free add-on
-                        </span>
-                      )}
-                    </div>
                   </div>
                 ));
               }
@@ -382,14 +375,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                   {item.description && (
                     <span className="oe-item-card__desc">{item.description}</span>
                   )}
-                  <span className="oe-item-card__price">{getPriceDisplay(item)}</span>
-                  <div className="oe-item-card__badges">
-                    {item.addons.length > 0 && (
-                      <span className="oe-item-card__badge oe-item-card__badge--addon">
-                        + free add-on
-                      </span>
-                    )}
-                  </div>
+                  <span className="oe-item-card__price">{getPriceDisplay(item)} +tax</span>
                 </div>
               );
             })}
@@ -713,6 +699,18 @@ function CartLine({ line, onAdjustQty, onRemove }) {
             <div className="oe-cart-line__name">{line.itemName}</div>
             {line.variant && (
               <div className="oe-cart-line__variant">{line.variant.name}</div>
+            )}
+            {/* Removed default ingredients (e.g. "no onion") — same signal
+                KDS shows on the ticket, mirrored here so it isn't only
+                visible after the order's already been sent to the kitchen. */}
+            {line.removedIngredients?.length > 0 && (
+              <div className="oe-cart-line__removed">
+                {line.removedIngredients.map((name) => (
+                  <span key={name} className="oe-cart-line__removed-tag">
+                    NO {name}
+                  </span>
+                ))}
+              </div>
             )}
             {line.modifiers.length > 0 && (
               <div className="oe-cart-line__mods">

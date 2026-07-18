@@ -180,30 +180,6 @@
   margin-top: auto;
 }
 
-.oe-item-card__badges {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-  margin-top: 4px;
-}
-
-.oe-item-card__badge {
-  font-family: var(--font-mono);
-  font-size: 0.55rem;
-  font-weight: 500;
-  padding: 2px 6px;
-  border-radius: var(--radius-full);
-  background: var(--bg-surface-hover);
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.oe-item-card__badge--addon {
-  background: var(--green-light);
-  color: var(--green);
-}
-
 /* ---------- Right: Cart Panel ---------- */
 .oe-cart {
   width: 360px;
@@ -310,6 +286,28 @@
   color: var(--text-muted);
   margin-top: 2px;
   line-height: 1.4;
+}
+
+/* Removed default ingredients — same "loudest thing on the line" treatment
+   as KDS's ticket tags, so a "no onion" is just as hard to miss here as it
+   is in the kitchen. */
+.oe-cart-line__removed {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.oe-cart-line__removed-tag {
+  font-family: var(--font-body);
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--red);
+  border-radius: 4px;
+  padding: 2px 7px;
 }
 
 .oe-cart-line__price {
@@ -1088,4 +1086,123 @@ input:checked + .oe-switch-slider {
 
 input:checked + .oe-switch-slider:before {
   transform: translateX(16px);
+}
+
+/* ============================================================
+   Tablet-and-up scaling
+   ------------------------------------------------------------
+   Everything above reads fine on a narrow/phone-width screen, but real
+   tablet testing showed it looking like a stretched mobile layout on
+   actual hardware (undersized cards, cramped type). This breakpoint scales
+   density up specifically for tablet-range viewports and larger —
+   proportional bumps to card size, type, and spacing, not just a wider
+   container. `.oe-cart:not(.oe-cart--collapsed)` (rather than plain
+   `.oe-cart`) is deliberate: it keeps the collapsed cart's 75px strip
+   width correct here too, instead of this block's higher source-order
+   position silently overriding it at same specificity.
+   ============================================================ */
+@media (min-width: 900px) {
+  .oe-topbar {
+    padding: 16px 28px;
+  }
+
+  .oe-topbar__staff {
+    font-size: 0.92rem;
+  }
+
+  .oe-categories {
+    padding: 16px 28px;
+    gap: 8px;
+  }
+
+  .oe-cat-tab {
+    font-size: 0.95rem;
+    padding: 10px 20px;
+  }
+
+  .oe-items {
+    padding: 22px 28px;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 18px;
+  }
+
+  .oe-item-card {
+    padding: 20px;
+    gap: 8px;
+  }
+
+  .oe-item-card__name {
+    font-size: 1rem;
+  }
+
+  .oe-item-card__desc {
+    font-size: 0.82rem;
+  }
+
+  .oe-item-card__price {
+    font-size: 0.95rem;
+  }
+
+  .oe-cart:not(.oe-cart--collapsed) {
+    width: 420px;
+  }
+
+  .oe-cart__header {
+    padding: 18px 22px;
+  }
+
+  .oe-cart__title {
+    font-size: 1.15rem;
+  }
+
+  .oe-cart__items {
+    padding: 14px 22px;
+  }
+
+  .oe-cart-line__name {
+    font-size: 0.95rem;
+  }
+
+  .oe-cart-line__variant,
+  .oe-cart-line__mods {
+    font-size: 0.8rem;
+  }
+
+  .oe-cart-line__price {
+    font-size: 0.95rem;
+  }
+
+  .oe-cart__footer {
+    padding: 18px 22px;
+  }
+
+  .oe-cart__subtotal-label {
+    font-size: 1rem;
+  }
+
+  .oe-cart__subtotal-amount {
+    font-size: 1.35rem;
+  }
+
+  .oe-cart__checkout-btn {
+    font-size: 1.05rem;
+    padding: 16px 18px;
+  }
+
+  .oe-checkout {
+    max-width: 440px;
+    padding: 26px;
+  }
+
+  .oe-checkout__title {
+    font-size: 1.3rem;
+  }
+
+  .oe-checkout__method {
+    padding: 26px 14px;
+  }
+
+  .oe-checkout__method-icon {
+    font-size: 2rem;
+  }
 }

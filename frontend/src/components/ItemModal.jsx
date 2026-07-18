@@ -156,8 +156,14 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
   const handleAdd = () => {
     if (!canAdd) return;
 
-    // Build selected modifiers list (include quantity)
+    // Build selected modifiers list (include quantity), and separately
+    // track default-included options the customer unchecked (e.g. "no
+    // onion") — mirrors the server's own removed_ingredients logic
+    // (fetchKdsOrders in backend/server.js: a default option with no
+    // matching selection is "removed"), so the cart shows the same signal
+    // KDS does instead of just silently dropping it from the modifier list.
     const selectedModifiers = [];
+    const removedIngredients = [];
     for (const g of item.modifier_groups) {
       for (const opt of g.options) {
         const qty = modSelections[g.id]?.get(opt.id) || 0;
@@ -169,6 +175,8 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
             priceDelta: parseFloat(opt.price_delta),
             quantity: qty,
           });
+        } else if (opt.default_selected) {
+          removedIngredients.push(opt.name);
         }
       }
     }
@@ -195,6 +203,7 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
         ? { id: selectedVariant.id, name: selectedVariant.name, price: parseFloat(selectedVariant.price) }
         : null,
       modifiers: selectedModifiers,
+      removedIngredients,
       addons: selectedAddons,
       unitPrice: computedPrice,
       quantity: 1,
@@ -308,6 +317,28 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
                   }
 
                   // ---- Standard toggle/radio UI ----
+                  // Price/state label, delta === 0 only (a non-zero delta
+                  // always shows its "+$X.XX" regardless of group type):
+                  //  - radio groups (Protein, Format, Base, ...): no label
+                  //    at all — the section's own "Required" badge already
+                  //    says everything that needs saying, and a static
+                  //    "Included" next to every option regardless of which
+                  //    one is picked was actively misleading.
+                  //  - default-selected checkbox options (Onion, Cilantro,
+                  //    ... — starts checked, removable): dynamic
+                  //    Included/Removed reflecting the LIVE toggle state.
+                  //  - non-default checkbox options (e.g. "Choose 3
+                  //    Proteins", nothing pre-checked): unchanged, static
+                  //    "Included" — not a reported bug, left as-is.
+                  let priceLabel = null;
+                  if (delta !== 0) {
+                    priceLabel = `+$${delta.toFixed(2)}`;
+                  } else if (!isRadio && opt.default_selected) {
+                    priceLabel = isSelected ? "Included" : "Removed";
+                  } else if (!isRadio) {
+                    priceLabel = "Included";
+                  }
+
                   return (
                     <div
                       key={opt.id}
@@ -316,9 +347,19 @@ export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
                     >
                       <div className={`item-modal__indicator${isRadio ? "" : " item-modal__indicator--checkbox"}${isSelected ? " item-modal__indicator--selected" : ""}`} />
                       <span className="item-modal__option-name">{opt.name}</span>
-                      <span className={`item-modal__option-price${delta === 0 ? " item-modal__option-price--free" : ""}`}>
-                        {delta === 0 ? "Included" : `+$${delta.toFixed(2)}`}
-                      </span>
+                      {priceLabel && (
+                        <span
+                          className={`item-modal__option-price${
+                            delta !== 0
+                              ? ""
+                              : isSelected
+                              ? " item-modal__option-price--free"
+                              : " item-modal__option-price--removed"
+                          }`}
+                        >
+                          {priceLabel}
+                        </span>
+                      )}
                     </div>
                   );
                 })}

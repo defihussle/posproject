@@ -35,6 +35,14 @@
   display: block;
 }
 
+/* Pre-login PIN screen only (Order Entry/KDS staff login) — noticeably
+   larger than the shared default above, per real-tablet testing. Back
+   Office login/reset share this same .brand-logo/.brand-logo__img shell
+   but don't get this modifier class, so they stay at the original size. */
+.brand-logo--pin .brand-logo__img {
+  max-width: 220px;
+}
+
 /* ---------- PIN Dots ---------- */
 .pin-dots {
   display: flex;
