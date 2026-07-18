@@ -134,9 +134,15 @@ export default function KitchenDisplay() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   // Past Orders overlay toggle.
   const [pastOpen, setPastOpen] = useState(false);
-  // Fast Mode: aggregated rush-hour view. Manual toggle only, view-only —
-  // completing orders still happens in the normal ticket view.
+  // Rush Hour ("Fast Mode" internally): aggregated view. Manual toggle
+  // only, view-only — completing orders still happens in the normal
+  // ticket view. Internal state/class names stay "fast" — only the
+  // user-facing label changed.
   const [fastMode, setFastMode] = useState(false);
+  // Dismissible suggestion banner nudging staff toward Rush Hour once the
+  // queue gets too large to keep shrinking cards. Suggestion only — never
+  // auto-switches the view. Stays dismissed for the rest of this session.
+  const [rushHourBannerDismissed, setRushHourBannerDismissed] = useState(false);
   // Undo last action — single-level.
   const [undoAction, setUndoAction] = useState(null); // { orderId, orderNumber, previousStatus }
   const undoTimer = useRef(null);
@@ -348,7 +354,7 @@ export default function KitchenDisplay() {
     [fetchOrders, clearFailed, markFailed, startUndoTimer]
   );
 
-  // Fast Mode aggregation — pure client-side reshaping of the SAME polled
+  // Rush Hour aggregation — pure client-side reshaping of the SAME polled
   // order data (open/preparing only, no extra fetching). Two lines merge only
   // when item_id + variant_id + the FULL modifier set (option ids AND
   // quantities) match exactly; any difference is a separate line, because the
@@ -390,15 +396,24 @@ export default function KitchenDisplay() {
 
   const orderCountClass = orders.length > 0 ? "kds__badge--active" : "kds__badge--clear";
 
+  // Dynamic card sizing by queue length — keeps the main queue scroll-free
+  // at realistic volumes without cards becoming unreadable. Count-driven,
+  // not viewport-driven, per spec: <=6 full size, 7-8 mildly compact, 9+
+  // reaches the readable floor and stops shrinking further.
+  const orderCount = orders.length;
+  const boardSizeClass =
+    orderCount >= 9 ? " kds__board--compact-2" : orderCount >= 7 ? " kds__board--compact-1" : "";
+  const showRushHourSuggestion = !fastMode && !rushHourBannerDismissed && orderCount > 10;
+
   return (
     <div className="kds">
       <header className="kds__header">
         <img src={logoImg} alt="NARCOS TACOS" className="kds__logo" />
 
-        {/* Nav center: Fast Mode (left) — Order Count Badge (center) — Past Orders (right) */}
+        {/* Nav center: Rush Hour (left) — Order Count Badge (center) — Completed Orders (right) */}
         <nav className="kds__nav">
           <label className="kds__fast-toggle">
-            <span className="kds__fast-toggle-text">Fast Mode</span>
+            <span className="kds__fast-toggle-text">Rush Hour</span>
             <span className="kds__switch">
               <input
                 type="checkbox"
@@ -425,7 +440,31 @@ export default function KitchenDisplay() {
 
       {error && <div className="kds__error">{error}</div>}
 
-      <main className={`kds__board${fastMode ? " kds__board--fast" : ""}`}>
+      {showRushHourSuggestion && (
+        <div className="kds-suggest">
+          <span className="kds-suggest__text">
+            Busy? Try <strong>Rush Hour</strong> for a faster view.
+          </span>
+          <button
+            className="kds-suggest__action"
+            onClick={() => {
+              setFastMode(true);
+              setRushHourBannerDismissed(true);
+            }}
+          >
+            Switch
+          </button>
+          <button
+            className="kds-suggest__dismiss"
+            onClick={() => setRushHourBannerDismissed(true)}
+            aria-label="Dismiss suggestion"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      <main className={`kds__board${fastMode ? " kds__board--fast" : ""}${boardSizeClass}`}>
         {loading ? (
           <div className="kds__empty">Loading orders…</div>
         ) : orders.length === 0 ? (
@@ -435,7 +474,7 @@ export default function KitchenDisplay() {
             <div className="kds__empty-sub">No open orders right now</div>
           </div>
         ) : fastMode ? (
-          /* Fast Mode — aggregated, VIEW-ONLY. No tap targets: orders are
+          /* Rush Hour — aggregated, VIEW-ONLY. No tap targets: orders are
              completed via the normal ticket view. */
           <div className="kds-fast">
             {fastLines.map((line) => (
@@ -565,7 +604,7 @@ function CtaIcon({ status }) {
   );
 }
 
-// One aggregated Fast Mode line: exact make-spec + how many are needed.
+// One aggregated Rush Hour line: exact make-spec + how many are needed.
 // View-only by design — no click handler, no role=button.
 function FastLine({ line, nowMs }) {
   const it = line.sample;

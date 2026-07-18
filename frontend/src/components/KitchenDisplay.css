@@ -13,10 +13,12 @@
    1. AGE (elapsedTier() in KitchenDisplay.jsx, green/yellow/red) —
       lives ONLY on the left accent bar and the elapsed timer badge.
    2. WORKFLOW STAGE (order.status, open/preparing) — lives ONLY on the
-      CTA bar at the bottom (light tint "TAP TO START" vs. solid dark
-      fill "TAP WHEN READY") plus its icon. The small status pill next
-      to the timer is intentionally neutral/colorless — it's a text
-      label, not a second color signal.
+      CTA bar at the bottom (light neutral tint "TAP TO START" vs. solid
+      deep-forest-green fill "TAP WHEN READY") plus its icon. The green
+      used here is intentionally far from the tier's light mint green in
+      lightness/saturation — see the note on .kds-card__cta--preparing.
+      The small status pill next to the timer is intentionally neutral/
+      colorless — it's a text label, not a second color signal.
 
    Do not let tier colors leak into the CTA, or status colors leak into
    the border/timer — that's the whole point of keeping them separate.
@@ -53,7 +55,7 @@
 }
 
 /* ---------- Nav — centered group ----------
-   Layout: Fast Mode (left) — Order Count Badge (dead center) — Past Orders (right).
+   Layout: Rush Hour (left) — Order Count Badge (dead center) — Completed Orders (right).
    The badge is the true visual anchor; flanking controls are secondary. */
 .kds__nav {
   display: flex;
@@ -61,7 +63,7 @@
   gap: 28px;
 }
 
-/* Fast Mode — toggle switch, not a highlighted button. Label sits at rest;
+/* Rush Hour — toggle switch, not a highlighted button. Label sits at rest;
    the switch itself carries the on/off state so it's unmistakable at a
    glance without needing to read text or notice a color change. */
 .kds__fast-toggle {
@@ -203,14 +205,154 @@
   padding: 10px 16px;
 }
 
-/* ---------- Board (card grid) ---------- */
+/* ---------- Rush Hour suggestion banner ----------
+   Gentle, dismissible nudge shown once the queue is too large for cards to
+   keep shrinking (past the --compact-2 floor, ~10+ orders). A suggestion
+   only — "Switch" is a manual tap, never automatic, and dismissing it just
+   makes it go away for the rest of this session. Warm/neutral styling
+   (not the red .kds__error alarm tone) since nothing is actually wrong. */
+.kds-suggest {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 12px 24px;
+  background: #FFF8F0;
+  border-bottom: 1px solid #F0E4D8;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #6B5B45;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.kds-suggest__text strong {
+  color: #E8442E;
+}
+
+.kds-suggest__action {
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #E8442E;
+  background: rgba(232, 68, 46, 0.10);
+  border: none;
+  border-radius: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+  white-space: nowrap;
+}
+
+.kds-suggest__action:hover {
+  background: rgba(232, 68, 46, 0.18);
+}
+
+.kds-suggest__action:active {
+  transform: scale(0.97);
+}
+
+.kds-suggest__dismiss {
+  background: none;
+  border: none;
+  color: #A39176;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+  transition: color 0.12s ease;
+}
+
+.kds-suggest__dismiss:hover {
+  color: #4A3F2E;
+}
+
+/* ---------- Board (card grid) ----------
+   Dynamic sizing by queue length (set in KitchenDisplay.jsx via a modifier
+   class, driven by orders.length — NOT viewport width): up to ~6 orders
+   gets the full, tested-comfortable size below; --compact-1 (~7-8) shrinks
+   modestly; --compact-2 (~9+) is the readable floor — it does NOT keep
+   shrinking past that, a suggestion banner nudges toward Rush Hour instead.
+   All card dimensions are custom properties here so every tier only has to
+   redeclare the handful of values that change, not every rule that uses
+   them. This sizing only ever applies to the main queue's ticket grid —
+   Completed Orders and the Rush Hour aggregated list don't consume these
+   vars, so they're unaffected. */
 .kds__board {
+  --kds-card-min: 360px;
+  --kds-gap: 24px;
+  --kds-pad-x: 32px;
+  --kds-pad-y: 28px;
+  --kds-card-radius: 16px;
+  --kds-top-pad: 16px 18px;
+  --kds-num-size: 2.4rem;
+  --kds-timer-size: 1.6rem;
+  --kds-status-size: 0.82rem;
+  --kds-item-pad: 12px 0;
+  --kds-item-qty-size: 1.5rem;
+  --kds-item-name-size: 1.4rem;
+  --kds-choice-size: 1.02rem;
+  --kds-removed-size: 1.15rem;
+  --kds-added-size: 1.1rem;
+  --kds-addon-size: 1.05rem;
+  --kds-notes-size: 1.05rem;
+  --kds-cta-size: 0.9rem;
+  --kds-cta-pad: 15px 14px;
+
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  gap: 24px;
-  padding: 28px 32px 52px;
+  grid-template-columns: repeat(auto-fill, minmax(var(--kds-card-min), 1fr));
+  gap: var(--kds-gap);
+  padding: var(--kds-pad-y) var(--kds-pad-x) calc(var(--kds-pad-y) + 24px);
   align-content: start;
+}
+
+/* ~7-8 open orders — mild shrink, still comfortably readable */
+.kds__board--compact-1 {
+  --kds-card-min: 300px;
+  --kds-gap: 16px;
+  --kds-pad-x: 24px;
+  --kds-pad-y: 20px;
+  --kds-card-radius: 14px;
+  --kds-top-pad: 12px 14px;
+  --kds-num-size: 2rem;
+  --kds-timer-size: 1.3rem;
+  --kds-status-size: 0.74rem;
+  --kds-item-pad: 9px 0;
+  --kds-item-qty-size: 1.25rem;
+  --kds-item-name-size: 1.2rem;
+  --kds-choice-size: 0.92rem;
+  --kds-removed-size: 1.02rem;
+  --kds-added-size: 0.98rem;
+  --kds-addon-size: 0.95rem;
+  --kds-notes-size: 0.95rem;
+  --kds-cta-size: 0.82rem;
+  --kds-cta-pad: 12px 12px;
+}
+
+/* ~9+ open orders — the readable floor. Does NOT shrink further beyond
+   this regardless of how many more orders arrive; the Rush Hour suggestion
+   banner takes over past ~10 instead of cards getting harder to read. */
+.kds__board--compact-2 {
+  --kds-card-min: 264px;
+  --kds-gap: 12px;
+  --kds-pad-x: 18px;
+  --kds-pad-y: 14px;
+  --kds-card-radius: 12px;
+  --kds-top-pad: 10px 12px;
+  --kds-num-size: 1.7rem;
+  --kds-timer-size: 1.1rem;
+  --kds-status-size: 0.66rem;
+  --kds-item-pad: 7px 0;
+  --kds-item-qty-size: 1.1rem;
+  --kds-item-name-size: 1.05rem;
+  --kds-choice-size: 0.82rem;
+  --kds-removed-size: 0.9rem;
+  --kds-added-size: 0.88rem;
+  --kds-addon-size: 0.85rem;
+  --kds-notes-size: 0.85rem;
+  --kds-cta-size: 0.72rem;
+  --kds-cta-pad: 9px 10px;
 }
 
 /* ---------- Empty / loading ---------- */
@@ -259,7 +401,7 @@
   display: flex;
   flex-direction: column;
   background: #FFFFFF;
-  border-radius: 16px;
+  border-radius: var(--kds-card-radius);
   border: 1px solid #E8E8E6;
   border-left: 6px solid #E8E8E6;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 18px rgba(0, 0, 0, 0.06);
@@ -323,14 +465,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 18px;
+  padding: var(--kds-top-pad);
   background: #FCFCFB;
   border-bottom: 1px solid #F0F0EF;
 }
 
 .kds-card__number {
   font-family: var(--font-mono);
-  font-size: 2.4rem;
+  font-size: var(--kds-num-size);
   font-weight: 700;
   line-height: 1;
   color: #1A1A1A;
@@ -341,7 +483,7 @@
    distinction so it never competes with either color dimension. */
 .kds-card__status {
   font-family: var(--font-mono);
-  font-size: 0.82rem;
+  font-size: var(--kds-status-size);
   font-weight: 700;
   letter-spacing: 0.1em;
   padding: 4px 10px;
@@ -365,7 +507,7 @@
 /* Live elapsed timer — IBM Plex Mono, color-coded by elapsed-time tier */
 .kds-card__timer {
   font-family: var(--font-mono);
-  font-size: 1.6rem;
+  font-size: var(--kds-timer-size);
   font-weight: 700;
   line-height: 1;
   letter-spacing: 0.02em;
@@ -392,7 +534,7 @@
 }
 
 .kds-item {
-  padding: 12px 0;
+  padding: var(--kds-item-pad);
   border-bottom: 1px dashed #ECECEC;
 }
 
@@ -408,7 +550,7 @@
 
 .kds-item__qty {
   font-family: var(--font-mono);
-  font-size: 1.5rem;
+  font-size: var(--kds-item-qty-size);
   font-weight: 700;
   color: #E8442E;
   flex-shrink: 0;
@@ -416,7 +558,7 @@
 
 .kds-item__name {
   font-family: var(--font-body);
-  font-size: 1.4rem;
+  font-size: var(--kds-item-name-size);
   font-weight: 700;
   color: #1A1A1A;
   line-height: 1.2;
@@ -437,7 +579,7 @@
 
 .kds-item__choice {
   font-family: var(--font-body);
-  font-size: 1.02rem;
+  font-size: var(--kds-choice-size);
   font-weight: 700;
   color: #1A1A1A;
   background: #F0F0EF;
@@ -455,7 +597,7 @@
 
 .kds-item__removed-tag {
   font-family: var(--font-body);
-  font-size: 1.15rem;
+  font-size: var(--kds-removed-size);
   font-weight: 800;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -471,7 +613,7 @@
 }
 
 .kds-item__added-line {
-  font-size: 1.1rem;
+  font-size: var(--kds-added-size);
   font-weight: 600;
   color: #1A1A1A;
   line-height: 1.5;
@@ -494,7 +636,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 1.05rem;
+  font-size: var(--kds-addon-size);
   font-weight: 600;
   color: #1A1A1A;
 }
@@ -519,7 +661,7 @@
 /* Free-text notes (e.g. allergies) — distinct, hard to skim past */
 .kds-item__notes {
   margin-top: 10px;
-  font-size: 1.05rem;
+  font-size: var(--kds-notes-size);
   font-weight: 600;
   color: #8A4B00;
   background: #FFF4E5;
@@ -531,9 +673,10 @@
 
 /* ---------- Tap hint / workflow-stage CTA ----------
    This is the ONLY place workflow stage (order.status) is shown by color —
-   see the CARD COLOR MODEL note at the top of this file. Deliberately a
-   different color family (neutral/near-black) than the green/yellow/red
-   tier palette, so the two signals can never be mistaken for each other. */
+   see the CARD COLOR MODEL note at the top of this file. "New" stays
+   neutral; "in progress" uses a deep forest green deliberately far in
+   lightness/saturation from the tier palette's light "fresh" green, so
+   the two signals can never be mistaken for each other. */
 .kds-card__cta {
   margin-top: auto;
   display: flex;
@@ -542,10 +685,10 @@
   gap: 8px;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 0.9rem;
+  font-size: var(--kds-cta-size);
   font-weight: 800;
   letter-spacing: 0.1em;
-  padding: 15px 14px;
+  padding: var(--kds-cta-pad);
   border-top: 1px solid #F0F0EF;
   transition: background-color 0.15s ease, color 0.15s ease;
 }
@@ -556,10 +699,16 @@
   background: #F5F5F4;
 }
 
-/* IN PROGRESS — solid fill, visibly a step further along than "new" */
+/* IN PROGRESS — solid deep-forest-green fill. Deliberately chosen far from
+   the "fresh" elapsed-time tier's light mint green (#34A853 border accent,
+   rgba(52,168,83,0.12) timer badge tint) in BOTH lightness and saturation —
+   a card that's in progress at the fresh age stage must never look like a
+   shade of the same color. If this ever gets "simplified" toward the tier
+   green, that's the dual-color bug again. TAP TO START stays neutral; only
+   this state uses color as its distinguishing signal. */
 .kds-card__cta--preparing {
   color: #FFFFFF;
-  background: #1A1A1A;
+  background: #14532D;
 }
 
 /* ============================================================
@@ -658,7 +807,7 @@
 }
 
 /* ============================================================
-   Fast Mode — aggregated rush-hour view (view-only)
+   Rush Hour — aggregated view (view-only)
    ============================================================ */
 
 /* Single-column list instead of the ticket grid */

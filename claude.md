@@ -42,7 +42,7 @@ posproject/
     src/
       components/        — PinLogin.jsx (Order Entry/KDS PIN login),
                             OrderEntry.jsx, ItemModal.jsx,
-                            KitchenDisplay.jsx (KDS, incl. Fast Mode),
+                            KitchenDisplay.jsx (KDS, incl. Rush Hour),
                             BackOffice.jsx (Back Office shell/nav),
                             BackofficeLogin.jsx + ResetPassword.jsx
                             (email+password+TOTP login, forgot/reset
@@ -239,9 +239,9 @@ posproject/
   live order queue polling every 5s (`GET /api/orders`), tap-to-advance 
   status (open → preparing → ready via `PATCH /api/orders/:id/status`), 
   color-escalating elapsed timers (green → yellow at 5min → red at 10min), 
-  a Past Orders history view (`GET /api/orders/history`), and **Fast 
-  Mode** — a manual toggle that replaces the ticket grid with an 
-  aggregated rush-hour view: every unique item+variant+exact-modifier-
+  a Completed Orders history view (`GET /api/orders/history`), and 
+  **Rush Hour** — a manual toggle that replaces the ticket grid with an 
+  aggregated view: every unique item+variant+exact-modifier-
   combination across open/preparing orders, shown as one line with a 
   count, sorted count-descending. View-only (no tap targets) — completing 
   orders still happens in the normal ticket view; recomputed client-side 
