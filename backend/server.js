@@ -2321,6 +2321,164 @@ app.post("/api/staff/quick-add", async (req, res) => {
   }
 });
 
+// --------------- Self-service "me" routes (Order Entry account dropdown) ---------------
+// Every role, no session cookie (same reasoning as quick-add above: Order
+// Entry is PIN-login only). staffId is trusted from the body/query exactly
+// like every other Order Entry route — the actual protection for the PIN
+// change below is proving you know the CURRENT pin (bcrypt.compare), so a
+// spoofed staffId can't succeed without also knowing that exact account's
+// existing PIN. Clock-in/out/hours are scoped by construction: every query
+// filters on the resolved staffId, so there's no path that returns a
+// DIFFERENT staff member's shifts than whichever staffId was supplied.
+
+// PUT /api/staff/me/pin
+// Body: { staffId, currentPin, newPin } — self-service PIN change. Distinct
+// from PUT /api/backoffice/staff/:id/pin (manager+ resetting SOMEONE ELSE's
+// PIN via a Back Office session) — this one is any valid logged-in staffId
+// changing their OWN pin, no role restriction.
+app.put("/api/staff/me/pin", async (req, res) => {
+  try {
+    const { staffId, currentPin, newPin } = req.body || {};
+    const requester = await requireStaffIdParam(staffId, STAFF_ROLES);
+
+    validatePin(currentPin);
+    validatePin(newPin);
+
+    const { rows } = await pool.query("SELECT pin_hash FROM staff WHERE id = $1", [requester.id]);
+    const currentMatches = rows[0] && (await bcrypt.compare(currentPin, rows[0].pin_hash));
+    if (!currentMatches) {
+      // Generic — never reveals whether staffId itself was the problem vs.
+      // a wrong PIN; requireStaffIdParam above already 403'd unknown ids.
+      throw new HttpError(401, "Current PIN is incorrect");
+    }
+    if (newPin === currentPin) {
+      throw new HttpError(400, "New PIN must be different from your current PIN");
+    }
+    await assertPinAvailable(newPin, requester.id);
+
+    const pinHash = await bcrypt.hash(newPin, 10);
+    await pool.query("UPDATE staff SET pin_hash = $1 WHERE id = $2", [pinHash, requester.id]);
+    res.json({ success: true });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to change PIN");
+  }
+});
+
+// POST /api/staff/me/clock-in
+// Body: { staffId }. Rejects with 409 if this staffId already has an open
+// (unclosed) shift — one active clock-in at a time per person.
+app.post("/api/staff/me/clock-in", async (req, res) => {
+  try {
+    const requester = await requireStaffIdParam((req.body || {}).staffId, STAFF_ROLES);
+
+    const { rows: openRows } = await pool.query(
+      "SELECT id FROM shifts WHERE staff_id = $1 AND clock_out IS NULL",
+      [requester.id]
+    );
+    if (openRows.length > 0) {
+      throw new HttpError(409, "You're already clocked in");
+    }
+
+    // Owners have location_id = NULL (span all locations, per schema
+    // design) — shifts.location_id is NOT NULL, so fall back to the single
+    // active location, same as createStaffMember does for new owner rows.
+    const { rows: staffRows } = await pool.query(
+      "SELECT location_id FROM staff WHERE id = $1",
+      [requester.id]
+    );
+    let locationId = staffRows[0].location_id;
+    if (!locationId) {
+      const location = await getSingleActiveLocation(pool);
+      locationId = location.id;
+    }
+
+    const { rows } = await pool.query(
+      "INSERT INTO shifts (staff_id, location_id, clock_in) VALUES ($1, $2, now()) RETURNING id, clock_in",
+      [requester.id, locationId]
+    );
+    res.status(201).json({ success: true, shift: rows[0] });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to clock in");
+  }
+});
+
+// POST /api/staff/me/clock-out
+// Body: { staffId }. Rejects with 409 if this staffId has no open shift.
+app.post("/api/staff/me/clock-out", async (req, res) => {
+  try {
+    const requester = await requireStaffIdParam((req.body || {}).staffId, STAFF_ROLES);
+
+    const { rows: openRows } = await pool.query(
+      "SELECT id FROM shifts WHERE staff_id = $1 AND clock_out IS NULL ORDER BY clock_in DESC LIMIT 1",
+      [requester.id]
+    );
+    if (openRows.length === 0) {
+      throw new HttpError(409, "You're not clocked in");
+    }
+
+    const { rows } = await pool.query(
+      "UPDATE shifts SET clock_out = now() WHERE id = $1 RETURNING id, clock_in, clock_out",
+      [openRows[0].id]
+    );
+    res.json({ success: true, shift: rows[0] });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to clock out");
+  }
+});
+
+// GET /api/staff/me/hours?staffId=...&range=today|week|month
+// Own shift history + total hours in range, plus whether there's a
+// currently open shift (drives the account dropdown's Clock In/Clock Out
+// toggle — the frontend calls this same route for that check). Always
+// scoped to the resolved staffId; there is no parameter that broadens this
+// to any other staff member's shifts.
+app.get("/api/staff/me/hours", async (req, res) => {
+  try {
+    const requester = await requireStaffIdParam(req.query.staffId, STAFF_ROLES);
+    const { range, trunc } = resolveStatsRange(req.query.range);
+    const location = await getSingleActiveLocation(pool);
+
+    const { rows: shiftRows } = await pool.query(
+      `SELECT id, clock_in, clock_out
+         FROM shifts
+        WHERE staff_id = $1
+          AND clock_in >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
+        ORDER BY clock_in DESC`,
+      [requester.id, trunc, location.timezone]
+    );
+
+    let totalSeconds = 0;
+    const shifts = shiftRows.map((s) => {
+      const clockOutMs = s.clock_out ? new Date(s.clock_out).getTime() : Date.now();
+      const seconds = Math.max(0, (clockOutMs - new Date(s.clock_in).getTime()) / 1000);
+      totalSeconds += seconds;
+      return {
+        id: s.id,
+        clockIn: s.clock_in,
+        clockOut: s.clock_out,
+        seconds: Math.round(seconds),
+      };
+    });
+
+    // Open-shift check is deliberately NOT scoped to the range boundary —
+    // it always reflects real-time truth (a shift that started yesterday
+    // but is still open must still show "Clock Out" today).
+    const { rows: openRows } = await pool.query(
+      "SELECT id, clock_in FROM shifts WHERE staff_id = $1 AND clock_out IS NULL",
+      [requester.id]
+    );
+
+    res.json({
+      range,
+      totalHours: totalSeconds / 3600,
+      shifts,
+      openShift: openRows[0] ? { id: openRows[0].id, clockIn: openRows[0].clock_in } : null,
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch hours");
+  }
+});
+
 // Fetch the target row + enforce hierarchy, shared by the two PUT routes.
 async function requireManagedTarget(requester, targetId) {
   let rows;

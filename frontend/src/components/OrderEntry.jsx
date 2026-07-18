@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import ItemModal from "./ItemModal";
 import { StaffAddForm } from "./StaffManager";
+import ChangePinModal from "./ChangePinModal";
+import MyHoursModal from "./MyHoursModal";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import { API_URL } from "../config";
 import "./OrderEntry.css";
@@ -49,6 +51,71 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [staffModalOpen, setStaffModalOpen] = useState(false);
   const [staffAddedName, setStaffAddedName] = useState(null); // brief success note
+  const [changePinOpen, setChangePinOpen] = useState(false);
+  const [myHoursOpen, setMyHoursOpen] = useState(false);
+
+  // Clock in/out — whether the logged-in staffId currently has an open
+  // shift, driving the dropdown's contextual Clock In/Clock Out label.
+  // null = not checked yet (dropdown never opened this session).
+  const [clockedIn, setClockedIn] = useState(null);
+  const [clockBusy, setClockBusy] = useState(false);
+  const [clockToast, setClockToast] = useState(null); // { text, isError }
+  const clockToastTimer = useRef(null);
+
+  const fetchClockStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/staff/me/hours?staffId=${staff.id}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setClockedIn(!!data.openShift);
+    } catch {
+      // Leave whatever we last knew — a transient failure here shouldn't
+      // flip the dropdown to a wrong state; the next open retries.
+    }
+  }, [staff.id]);
+
+  // Check once on mount, then again every time the dropdown opens (a
+  // staff member could clock in/out, close the dropdown, then reopen it).
+  useEffect(() => {
+    fetchClockStatus();
+  }, [fetchClockStatus]);
+
+  useEffect(() => {
+    if (accountMenuOpen) fetchClockStatus();
+  }, [accountMenuOpen, fetchClockStatus]);
+
+  useEffect(() => {
+    return () => {
+      if (clockToastTimer.current) clearTimeout(clockToastTimer.current);
+    };
+  }, []);
+
+  const showClockToast = useCallback((text, isError = false) => {
+    setClockToast({ text, isError });
+    if (clockToastTimer.current) clearTimeout(clockToastTimer.current);
+    clockToastTimer.current = setTimeout(() => setClockToast(null), 3000);
+  }, []);
+
+  const handleClockToggle = useCallback(async () => {
+    if (clockBusy || clockedIn === null) return;
+    setClockBusy(true);
+    const endpoint = clockedIn ? "clock-out" : "clock-in";
+    try {
+      const res = await fetch(`${API_URL}/api/staff/me/${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ staffId: staff.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setClockedIn(!clockedIn);
+      showClockToast(clockedIn ? "Clocked out" : "Clocked in");
+    } catch (err) {
+      showClockToast(err.message || "Something went wrong", true);
+    } finally {
+      setClockBusy(false);
+    }
+  }, [clockBusy, clockedIn, staff.id, showClockToast]);
 
   // Discount — { percent, reason } | null. Cleared on successful checkout,
   // same lifecycle as the cart itself.
@@ -313,6 +380,35 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                   {(MANAGE_MENU_ROLES.includes(staff.role) || STAFF_QUICKADD_ROLES.includes(staff.role)) && (
                     <div className="oe-account-menu-divider" />
                   )}
+
+                  {/* Self-service — every role, no gating */}
+                  <button
+                    className="oe-account-menu-item"
+                    onClick={handleClockToggle}
+                    disabled={clockBusy || clockedIn === null}
+                  >
+                    {clockedIn ? "Clock Out" : "Clock In"}
+                  </button>
+                  <button
+                    className="oe-account-menu-item"
+                    onClick={() => {
+                      setAccountMenuOpen(false);
+                      setMyHoursOpen(true);
+                    }}
+                  >
+                    My Hours
+                  </button>
+                  <button
+                    className="oe-account-menu-item"
+                    onClick={() => {
+                      setAccountMenuOpen(false);
+                      setChangePinOpen(true);
+                    }}
+                  >
+                    Change PIN
+                  </button>
+                  <div className="oe-account-menu-divider" />
+
                   <button
                     className="oe-account-menu-logout"
                     onClick={() => { setAccountMenuOpen(false); onLogout(); }}
@@ -508,6 +604,25 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
       {/* Brief confirmation after quick-adding staff */}
       {staffAddedName && (
         <div className="oe-staff-added-toast">✓ {staffAddedName} added to staff</div>
+      )}
+
+      {/* Change PIN — every role, self-service */}
+      {changePinOpen && (
+        <ChangePinModal staff={staff} onClose={() => setChangePinOpen(false)} />
+      )}
+
+      {/* My Hours — every role, self-service, Order-Entry-only (not in
+          Back Office, so it works for cashier/kitchen who have no Back
+          Office access at all) */}
+      {myHoursOpen && (
+        <MyHoursModal staff={staff} onClose={() => setMyHoursOpen(false)} />
+      )}
+
+      {/* Clock in/out confirmation */}
+      {clockToast && (
+        <div className={`oe-clock-toast${clockToast.isError ? " oe-clock-toast--error" : ""}`}>
+          {clockToast.isError ? clockToast.text : `✓ ${clockToast.text}`}
+        </div>
       )}
 
       {/* Checkout Modal */}

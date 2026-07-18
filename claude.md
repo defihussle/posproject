@@ -64,7 +64,9 @@ posproject/
   `manager`, `cashier`, `kitchen`), hourly_rate, hire_date, active, plus 
   Back Office auth columns `password_hash`, `totp_secret`, `totp_enabled`, 
   `reset_token` (SHA-256 hash, not the raw token), `reset_token_expiry`
-- `shifts` — clock in/out records (not yet wired to any UI)
+- `shifts` — id, staff_id, location_id, clock_in (default now()), 
+  clock_out (nullable — NULL means the shift is still open). Self-service 
+  clock in/out, Order Entry account dropdown, all roles (see below)
 - `menu_categories`, `menu_items`, `item_variants` (e.g. protein choices, 
   each with own absolute price), `modifier_groups`, `modifier_options` 
   (has `max_quantity` for stepper-style multi-select, `default_selected` 
@@ -253,6 +255,24 @@ posproject/
   CRUD for items, variants, AND modifier groups/options)
 - Manage Menu (`/manage-menu`) — the same editor as Back Office's Menu 
   Management, reachable from the POS for owner/admin
+- Order Entry account dropdown, self-service, every role, no Back Office 
+  equivalent (works for cashier/kitchen too, who have no Back Office 
+  access at all):
+  - **Change PIN** (`PUT /api/staff/me/pin`) — current PIN required and 
+    bcrypt-verified server-side; distinct from the manager+ 
+    `PUT /api/backoffice/staff/:id/pin` route that resets SOMEONE ELSE's 
+    PIN
+  - **Clock In / Clock Out** (`POST /api/staff/me/clock-in` / 
+    `.../clock-out`) — one open shift at a time per person, dropdown 
+    label toggles contextually based on real state (checked on dropdown 
+    open)
+  - **My Hours** (`GET /api/staff/me/hours?range=today|week|month`) — own 
+    shift history + total hours, Today/Week/Month switcher matching Back 
+    Office Home's. Always scoped to the calling staffId; no parameter 
+    broadens it to anyone else's shifts
+  - No break tracking, no manager editing/correction of punches, and 
+    clock status is NOT a gate on order-taking — pure time-tracking 
+    layered on top of PIN-based access, deliberately simple for v1
 
 ## What's NOT built yet
 - Back Office Reports/Orders sections (not yet added to the nav)
@@ -260,8 +280,6 @@ posproject/
   recorded, no processor), and there's no tip-collection UI anywhere on 
   the POS yet; both are deferred to this phase, when tipping will happen 
   on the physical terminal's own screen
-- Change-PIN self-service flow (managers+ can reset PINs via Staff tab; 
-  self-service for cashiers not built)
 - Staff accounts: 3 owners (Ali Barakat 1234, Umran Hanifi 1235, Saif Omar 
   1236) + test accounts Test Admin 5001, Test Manager 2001, Test Cashier 
   3001, Test Kitchen 4001 (seed_test_staff.sql). None of the owner/admin 

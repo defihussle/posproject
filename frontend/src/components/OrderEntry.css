@@ -1005,6 +1005,11 @@
   background: var(--bg-surface-hover);
 }
 
+.oe-account-menu-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Toast after quick-adding staff from the account dropdown */
 .oe-staff-added-toast {
   position: fixed;
@@ -1021,6 +1026,29 @@
   border-radius: var(--radius-full);
   box-shadow: var(--shadow-medium);
   animation: fadeIn 0.2s ease-out;
+}
+
+/* Clock in/out confirmation — same shape as the staff-added toast above,
+   with an error variant for the rejection cases (already clocked in/out). */
+.oe-clock-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
+  background: var(--green);
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 10px 20px;
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-medium);
+  animation: fadeIn 0.2s ease-out;
+}
+
+.oe-clock-toast--error {
+  background: var(--red);
 }
 
 .oe-account-menu-logout {

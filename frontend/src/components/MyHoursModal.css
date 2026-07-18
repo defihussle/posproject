@@ -1,0 +1,120 @@
+/* ============================================================
+   My Hours — Order Entry account dropdown, self-service shift history.
+   Shares StaffManager.css's overlay/modal shell.
+   ============================================================ */
+
+.myhours__modal {
+  max-width: 380px;
+}
+
+.myhours__body {
+  gap: 16px;
+}
+
+/* Range switcher — same segmented-control language as Back Office Home's
+   Today/Week/Month switcher (HomeDashboard.css .homedash__range), kept as
+   its own scoped class here rather than importing a Back Office stylesheet
+   into an Order Entry component. */
+.myhours__range {
+  display: flex;
+  background: var(--bg-surface-hover);
+  border-radius: var(--radius-full);
+  padding: 3px;
+  gap: 2px;
+}
+
+.myhours__range-btn {
+  flex: 1;
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 7px 12px;
+  border-radius: var(--radius-full);
+  color: var(--text-secondary);
+  transition: all 0.12s ease;
+}
+
+.myhours__range-btn:hover {
+  color: var(--text-primary);
+}
+
+.myhours__range-btn--active {
+  background: var(--red);
+  color: #fff;
+}
+
+.myhours__total {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  background: var(--bg-primary);
+  border-radius: var(--radius-md);
+}
+
+.myhours__total-label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.myhours__total-value {
+  font-family: var(--font-mono);
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.myhours__empty {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 12px 0;
+}
+
+.myhours__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.myhours__row {
+  display: grid;
+  grid-template-columns: 62px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 4px;
+  border-bottom: 1px dashed var(--border-color);
+}
+
+.myhours__row:last-child {
+  border-bottom: none;
+}
+
+.myhours__row-date {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.myhours__row-times {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.myhours__row-dur {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--red);
+  white-space: nowrap;
+}
