@@ -13,12 +13,21 @@ const bcrypt = require("bcryptjs");
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// Render (and most PaaS) terminate TLS at a proxy in front of this process
-// and forward the original protocol via `X-Forwarded-Proto`. Without this,
-// Express has no way to know the original request was HTTPS — `req.secure`
-// would always read false, which would silently break the cross-site
-// cookie logic below (see sessionCookieOpts).
-app.set("trust proxy", 1);
+// Render's real request path is TWO hops, not one: Client -> Cloudflare
+// edge -> Render's own internal load balancer -> this process. Confirmed
+// empirically (GET /api/_debug_proxy against production): with
+// `trust proxy: 1`, req.ip resolved to Cloudflare's edge IP
+// (104.23.211.128) instead of the real client (99.226.201.208, matched by
+// the `CF-Connecting-IP`/`True-Client-IP` headers Cloudflare sets) —
+// Render's LB is the actual socket peer (a private 10.x address) but
+// doesn't append itself to X-Forwarded-For, so it still consumes one hop
+// of trust without ever showing up in the header chain. `trust proxy: 1`
+// stops one hop short as a result. `2` correctly lands on the true client.
+// This also governs `req.secure` below (Express reads X-Forwarded-Proto
+// once the immediate socket peer is trusted, which `1` already covered —
+// so the cross-site cookie logic was unaffected by this specific bug, but
+// `req.ip` was not reliable for anything, including rate limiting).
+app.set("trust proxy", 2);
 
 const SESSION_SECRET = process.env.SESSION_SECRET;
 if (!SESSION_SECRET) {
