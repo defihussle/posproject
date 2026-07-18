@@ -415,7 +415,7 @@ export default function KitchenDisplay() {
           </div>
 
           <button className="kds__past-link" onClick={() => setPastOpen(true)}>
-            Past Orders
+            Completed Orders
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="9 18 15 12 9 6"></polyline>
             </svg>
@@ -484,7 +484,9 @@ export default function KitchenDisplay() {
         <span>KDS Active</span>
       </div>
 
-      {pastOpen && <PastOrdersOverlay onClose={() => setPastOpen(false)} />}
+      {pastOpen && (
+        <PastOrdersOverlay onClose={() => setPastOpen(false)} onReverted={fetchOrders} />
+      )}
     </div>
   );
 }
@@ -529,14 +531,37 @@ function OrderCard({ order, nowMs, busy, failed, onAdvance }) {
         ))}
       </div>
 
-      <div className="kds-card__cta">
-        {busy
-          ? "SENDING…"
-          : failed
-          ? "UPDATE FAILED · TAP TO RETRY"
-          : TAP_HINT[order.status] || ""}
+      <div className={`kds-card__cta kds-card__cta--${order.status}`}>
+        {busy ? (
+          "SENDING…"
+        ) : failed ? (
+          "UPDATE FAILED · TAP TO RETRY"
+        ) : (
+          <>
+            <CtaIcon status={order.status} />
+            <span>{TAP_HINT[order.status] || ""}</span>
+          </>
+        )}
       </div>
     </div>
+  );
+}
+
+// Workflow-stage icon for the CTA — reinforces the stage distinction without
+// relying on color alone (a cook glancing at a tray of cards, or anyone with
+// color-vision deficiency, still gets the signal).
+function CtaIcon({ status }) {
+  if (status === "preparing") {
+    return (
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="20 6 9 17 4 12"></polyline>
+      </svg>
+    );
+  }
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <polygon points="6 3 20 12 6 21 6 3"></polygon>
+    </svg>
   );
 }
 
@@ -645,12 +670,18 @@ function ItemBlock({ item }) {
   );
 }
 
-// ---- Past Orders (read-only history) ----
-function PastOrdersOverlay({ onClose }) {
+// ---- Completed Orders (history, with single-level undo) ----
+function PastOrdersOverlay({ onClose, onReverted }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [detail, setDetail] = useState(null); // selected past order
+  const [detail, setDetail] = useState(null); // selected completed order
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoError, setUndoError] = useState(null);
+  // Brief confirmation after a successful undo — no action needed, just
+  // reassurance the order actually moved back to the active queue.
+  const [confirmToast, setConfirmToast] = useState(null); // { orderNumber }
+  const confirmTimer = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -666,7 +697,7 @@ function PastOrdersOverlay({ onClose }) {
           setError(null);
         }
       } catch {
-        if (!cancelled) setError("Couldn't load past orders.");
+        if (!cancelled) setError("Couldn't load completed orders.");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -676,13 +707,54 @@ function PastOrdersOverlay({ onClose }) {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    };
+  }, []);
+
+  const openDetail = useCallback((order) => {
+    setUndoError(null);
+    setDetail(order);
+  }, []);
+
+  // Same revert mechanism as the main queue's undo toast
+  // (PATCH /api/orders/:id/status/revert) — one step back, ready→preparing.
+  const handleUndo = useCallback(
+    async (order) => {
+      setUndoBusy(true);
+      setUndoError(null);
+      try {
+        const res = await fetch(`${API_URL}/api/orders/${order.id}/status/revert`, {
+          method: "PATCH",
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        setRows((prev) => prev.filter((r) => r.id !== order.id));
+        setDetail(null);
+        onReverted?.();
+
+        setConfirmToast({ orderNumber: order.order_number });
+        if (confirmTimer.current) clearTimeout(confirmTimer.current);
+        confirmTimer.current = setTimeout(() => setConfirmToast(null), 4000);
+      } catch (err) {
+        setUndoError(err.message || "Failed to undo");
+      } finally {
+        setUndoBusy(false);
+      }
+    },
+    [onReverted]
+  );
+
   return (
     <div className="kds-past">
       <header className="kds-past__header">
         <button className="kds-past__back" onClick={onClose}>
           ‹ Back to Queue
         </button>
-        <h2 className="kds-past__title">Past Orders</h2>
+        <h2 className="kds-past__title">Completed Orders</h2>
         <span className="kds-past__sub">last {HISTORY_SINCE_HOURS}h</span>
       </header>
 
@@ -706,7 +778,7 @@ function PastOrdersOverlay({ onClose }) {
             </li>
             {rows.map((o) => (
               <li key={o.id}>
-                <button className="kds-past-row" onClick={() => setDetail(o)}>
+                <button className="kds-past-row" onClick={() => openDetail(o)}>
                   <span className="kds-past-row__num">#{o.order_number}</span>
                   <span className="kds-past-row__time">{formatClock(o.completed_at)}</span>
                   <span className="kds-past-row__prep">
@@ -720,12 +792,26 @@ function PastOrdersOverlay({ onClose }) {
         )}
       </div>
 
-      {detail && <PastOrderDetail order={detail} onClose={() => setDetail(null)} />}
+      {detail && (
+        <PastOrderDetail
+          order={detail}
+          onClose={() => setDetail(null)}
+          onUndo={() => handleUndo(detail)}
+          undoBusy={undoBusy}
+          undoError={undoError}
+        />
+      )}
+
+      {confirmToast && (
+        <div className="kds-past-confirm">
+          Order #{confirmToast.orderNumber} returned to the active queue
+        </div>
+      )}
     </div>
   );
 }
 
-function PastOrderDetail({ order, onClose }) {
+function PastOrderDetail({ order, onClose, onUndo, undoBusy, undoError }) {
   return (
     <div className="kds-detail-overlay" onClick={onClose}>
       <div className="kds-detail" onClick={(e) => e.stopPropagation()}>
@@ -749,6 +835,21 @@ function PastOrderDetail({ order, onClose }) {
           {order.items.map((item) => (
             <ItemBlock key={item.id} item={item} />
           ))}
+        </div>
+
+        <div className="kds-detail__actions">
+          {undoError && <div className="kds-detail__undo-error">{undoError}</div>}
+          <button
+            className="kds-detail__undo-btn"
+            onClick={onUndo}
+            disabled={undoBusy}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 7v6h6" />
+              <path d="M21 17a9 9 0 1 0-2.64-6.36L3 13" />
+            </svg>
+            {undoBusy ? "Reverting…" : "Undo — Return to Active Queue"}
+          </button>
         </div>
       </div>
     </div>

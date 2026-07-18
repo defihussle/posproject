@@ -5,13 +5,21 @@
    dark-mode toggle (neutrals are hard-coded to the light palette).
    Brand red #E8442E · success green #34A853.
 
-   CARD COLOR MODEL (v2):
-   ONE source of truth: elapsedTier() in KitchenDisplay.jsx computes
-   a single tier (green / yellow / red) from the order's age. This
-   drives EVERY color on the card: the left accent bar, the timer
-   badge background, and the CTA bar. There is NO separate open-vs-
-   preparing color — the status badge (NEW / IN PROGRESS) uses fixed
-   neutral styling to avoid a second independent color signal.
+   CARD COLOR MODEL (v3):
+   TWO independent signals, each confined to its own zone so they can
+   never drift out of sync (this is what caused the earlier dual-color
+   bug — two things trying to say the same thing in two places):
+
+   1. AGE (elapsedTier() in KitchenDisplay.jsx, green/yellow/red) —
+      lives ONLY on the left accent bar and the elapsed timer badge.
+   2. WORKFLOW STAGE (order.status, open/preparing) — lives ONLY on the
+      CTA bar at the bottom (light tint "TAP TO START" vs. solid dark
+      fill "TAP WHEN READY") plus its icon. The small status pill next
+      to the timer is intentionally neutral/colorless — it's a text
+      label, not a second color signal.
+
+   Do not let tier colors leak into the CTA, or status colors leak into
+   the border/timer — that's the whole point of keeping them separate.
    ============================================================ */
 
 .kds {
@@ -200,8 +208,8 @@
   flex: 1;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  gap: 20px;
-  padding: 24px 28px 48px;
+  gap: 24px;
+  padding: 28px 32px 52px;
   align-content: start;
 }
 
@@ -251,10 +259,10 @@
   display: flex;
   flex-direction: column;
   background: #FFFFFF;
-  border-radius: 14px;
+  border-radius: 16px;
   border: 1px solid #E8E8E6;
   border-left: 6px solid #E8E8E6;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 18px rgba(0, 0, 0, 0.06);
   overflow: hidden;
   cursor: pointer;
   user-select: none;
@@ -263,7 +271,7 @@
 }
 
 .kds-card:hover {
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.10);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06), 0 10px 28px rgba(0, 0, 0, 0.11);
 }
 
 .kds-card:active {
@@ -315,7 +323,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 18px 12px;
+  padding: 16px 18px;
+  background: #FCFCFB;
   border-bottom: 1px solid #F0F0EF;
 }
 
@@ -327,8 +336,9 @@
   color: #1A1A1A;
 }
 
-/* Status badge — fixed neutral styling, NOT colored by elapsed time or status.
-   Uses a subdued pill so it reads as informational, not alarming. */
+/* Status badge — fixed neutral styling, NOT colored by elapsed time OR
+   workflow stage (that signal lives on the CTA bar below). Text-only
+   distinction so it never competes with either color dimension. */
 .kds-card__status {
   font-family: var(--font-mono);
   font-size: 0.82rem;
@@ -336,16 +346,12 @@
   letter-spacing: 0.1em;
   padding: 4px 10px;
   border-radius: 6px;
-}
-
-.kds-card__status--open {
-  background: rgba(232, 68, 46, 0.10);
-  color: #C62828;
+  background: #F0F0EF;
+  color: #6B6B6B;
 }
 
 .kds-card__status--preparing {
-  background: rgba(52, 168, 83, 0.10);
-  color: #2A8C45;
+  color: #3D3D3B;
 }
 
 /* Meta cluster (elapsed timer + status pill) on the right of the card head */
@@ -523,33 +529,37 @@
   line-height: 1.4;
 }
 
-/* ---------- Tap hint ---------- */
+/* ---------- Tap hint / workflow-stage CTA ----------
+   This is the ONLY place workflow stage (order.status) is shown by color —
+   see the CARD COLOR MODEL note at the top of this file. Deliberately a
+   different color family (neutral/near-black) than the green/yellow/red
+   tier palette, so the two signals can never be mistaken for each other. */
 .kds-card__cta {
   margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 0.88rem;
-  font-weight: 700;
+  font-size: 0.9rem;
+  font-weight: 800;
   letter-spacing: 0.1em;
-  padding: 12px 14px;
+  padding: 15px 14px;
   border-top: 1px solid #F0F0EF;
-  color: #6B6B6B;
-  background: #FAFAF9;
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-/* Subtle tier-colored CTA backgrounds */
-.kds-card--t-green .kds-card__cta {
-  color: #2A8C45;
-  background: rgba(52, 168, 83, 0.05);
+/* NEW — light tint, calls for action without alarm */
+.kds-card__cta--open {
+  color: #4A4A48;
+  background: #F5F5F4;
 }
-.kds-card--t-yellow .kds-card__cta {
-  color: #8A5A00;
-  background: rgba(232, 163, 46, 0.06);
-}
-.kds-card--t-red .kds-card__cta {
-  color: #C62828;
-  background: rgba(198, 40, 40, 0.06);
+
+/* IN PROGRESS — solid fill, visibly a step further along than "new" */
+.kds-card__cta--preparing {
+  color: #FFFFFF;
+  background: #1A1A1A;
 }
 
 /* ============================================================
@@ -768,10 +778,14 @@
   animation: fadeIn 0.15s ease-out;
 }
 
+/* Grid, not flex: back button (left) / title (true center) / time window
+   (right) each get their own column, so the title stays dead-center
+   regardless of how wide the flanking elements are. */
 .kds-past__header {
   position: sticky;
   top: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 16px;
   padding: 14px 28px;
@@ -781,6 +795,7 @@
 }
 
 .kds-past__back {
+  justify-self: start;
   font-family: var(--font-body);
   font-size: 1rem;
   font-weight: 700;
@@ -800,12 +815,15 @@
 }
 
 .kds-past__title {
+  justify-self: center;
+  text-align: center;
   font-family: var(--font-headline);
   font-size: 1.5rem;
   color: #1A1A1A;
 }
 
 .kds-past__sub {
+  justify-self: end;
   font-family: var(--font-mono);
   font-size: 0.95rem;
   font-weight: 600;
@@ -975,4 +993,77 @@
 
 .kds-detail__items {
   padding: 6px 22px 20px;
+}
+
+/* ---------- Undo (Completed Orders detail) ----------
+   Same corrective action as the main queue's undo toast, reached from the
+   detail view instead of a timed toast (a completed order may have been
+   sitting here a while, so there's no "just happened" moment to attach a
+   toast to) — a calm, non-alarming outline button, not a red danger style. */
+.kds-detail__actions {
+  padding: 4px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kds-detail__undo-error {
+  font-family: var(--font-body);
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: #C62828;
+  background: rgba(198, 40, 40, 0.08);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.kds-detail__undo-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 700;
+  color: #1A1A1A;
+  background: #FFFFFF;
+  border: 2px solid #1A1A1A;
+  border-radius: 9999px;
+  height: 48px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+
+.kds-detail__undo-btn:hover:not(:disabled) {
+  background: #1A1A1A;
+  color: #FFFFFF;
+}
+
+.kds-detail__undo-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.kds-detail__undo-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Brief confirmation after a successful undo — reuses the undo toast's
+   slide-up animation, no action button needed (the action already happened). */
+.kds-past-confirm {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 70;
+  background: #1A1A1A;
+  color: #FFFFFF;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 600;
+  border-radius: 12px;
+  padding: 12px 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  animation: kdsUndoSlideUp 0.25s ease-out;
+  white-space: nowrap;
 }
