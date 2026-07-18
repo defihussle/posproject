@@ -4,6 +4,14 @@
    high contrast. Always light: this screen ignores the app-wide
    dark-mode toggle (neutrals are hard-coded to the light palette).
    Brand red #E8442E · success green #34A853.
+
+   CARD COLOR MODEL (v2):
+   ONE source of truth: elapsedTier() in KitchenDisplay.jsx computes
+   a single tier (green / yellow / red) from the order's age. This
+   drives EVERY color on the card: the left accent bar, the timer
+   badge background, and the CTA bar. There is NO separate open-vs-
+   preparing color — the status badge (NEW / IN PROGRESS) uses fixed
+   neutral styling to avoid a second independent color signal.
    ============================================================ */
 
 .kds {
@@ -23,71 +31,26 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 28px;
+  padding: 14px 28px;
   background: #FFFFFF;
-  border-bottom: 2px solid #E5E5E5;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid #E5E5E5;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
 }
 
 .kds__logo {
-  height: 38px;
+  height: 36px;
   width: auto;
   display: block;
+  flex-shrink: 0;
 }
 
-/* ---------- Nav bar hierarchy redesign ----------
-   BEFORE: "KITCHEN" label, the order-count badge, the Fast Mode button, and
-   "Past Orders" all sat in one flat row at equal size/weight/border — four
-   same-looking pills, so nothing told you at a glance what mattered most.
-
-   AFTER: order count and Fast Mode are what a cook actually re-checks every
-   few seconds during a rush, so they're grouped into one elevated cluster
-   with the heaviest visual weight (the count stays the big black pill it
-   already was — that read well — Fast Mode moves from a button-that-changes-
-   color to a proper toggle switch, since it's state you flip and leave, not
-   a repeated tap). "Past Orders" is a once-in-a-while lookup, not a live
-   status, so it's demoted to a plain text link with a small chevron — no
-   border, lighter weight, separated by a divider so it reads as "elsewhere"
-   rather than "one of the same four things." The standalone "KITCHEN" label
-   was dropped: the branded header + a big order count already say what
-   screen this is without a redundant caption competing for attention. */
-.kds__status-cluster {
+/* ---------- Nav — centered group ----------
+   Layout: Fast Mode (left) — Order Count Badge (dead center) — Past Orders (right).
+   The badge is the true visual anchor; flanking controls are secondary. */
+.kds__nav {
   display: flex;
   align-items: center;
-  gap: 20px;
-}
-
-.kds__order-count {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  background: #1A1A1A;
-  color: #FFFFFF;
-  border-radius: 9999px;
-  height: 48px;
-  padding: 0 20px;
-}
-
-.kds__order-count-num {
-  font-family: var(--font-mono);
-  font-size: 1.6rem;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.kds__order-count-label {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.65);
-}
-
-.kds__divider {
-  width: 1px;
-  height: 32px;
-  background: #E5E5E5;
+  gap: 28px;
 }
 
 /* Fast Mode — toggle switch, not a highlighted button. Label sits at rest;
@@ -96,23 +59,23 @@
 .kds__fast-toggle {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   cursor: pointer;
   user-select: none;
 }
 
 .kds__fast-toggle-text {
   font-family: var(--font-body);
-  font-size: 1.05rem;
+  font-size: 0.95rem;
   font-weight: 700;
-  color: #1A1A1A;
+  color: #6B6B6B;
 }
 
 .kds__switch {
   position: relative;
   display: inline-block;
-  width: 52px;
-  height: 30px;
+  width: 48px;
+  height: 28px;
   flex-shrink: 0;
 }
 
@@ -134,8 +97,8 @@
 .kds__switch-slider::before {
   position: absolute;
   content: "";
-  height: 24px;
-  width: 24px;
+  height: 22px;
+  width: 22px;
   left: 3px;
   bottom: 3px;
   background-color: #FFFFFF;
@@ -149,12 +112,54 @@
 }
 
 .kds__switch input:checked + .kds__switch-slider::before {
-  transform: translateX(22px);
+  transform: translateX(20px);
 }
 
 .kds__switch input:focus-visible + .kds__switch-slider {
   outline: 2px solid #1A1A1A;
   outline-offset: 2px;
+}
+
+/* ---------- Order count badge — dead center of nav ----------
+   Color-coded by state:
+   - RED (#E8442E) when orders > 0 — needs attention
+   - GREEN (#34A853) when orders === 0 — all caught up
+   Properly centered text, clean pill shape. */
+.kds__badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 22px;
+  border-radius: 9999px;
+  transition: background-color 0.3s ease;
+}
+
+.kds__badge--active {
+  background: #E8442E;
+  color: #FFFFFF;
+}
+
+.kds__badge--clear {
+  background: #34A853;
+  color: #FFFFFF;
+}
+
+.kds__badge-num {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.kds__badge-label {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.8;
 }
 
 /* Past Orders — deliberately the lightest-weight control in the header:
@@ -165,7 +170,7 @@
   align-items: center;
   gap: 4px;
   font-family: var(--font-body);
-  font-size: 0.95rem;
+  font-size: 0.92rem;
   font-weight: 600;
   color: #6B6B6B;
   padding: 8px 4px;
@@ -240,21 +245,16 @@
 }
 
 /* ---------- Order card ----------
-   Two independent border signals, layered so both read at a glance:
-   - INNER thick LEFT border = status (open red / preparing green) — the
-     existing open/preparing distinction, unchanged;
-   - OUTER full ring (outline, wraps all four sides of the card) =
-     elapsed-time tier: green <5min, amber 5–10min, deep maroon >10min.
-     Maroon (not brand red) so the most-urgent tier can't be confused with
-     the open-status red accent. Set by the .kds-card--t-* classes below. */
+   SINGLE color model: elapsedTier() drives the left accent bar (6px) via
+   .kds-card--t-green/yellow/red. No separate open/preparing color. */
 .kds-card {
   display: flex;
   flex-direction: column;
   background: #FFFFFF;
-  border-radius: 16px;
-  border: 2px solid #E5E5E5;
-  border-left: 10px solid #E5E5E5;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.07);
+  border-radius: 14px;
+  border: 1px solid #E8E8E6;
+  border-left: 6px solid #E8E8E6;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03);
   overflow: hidden;
   cursor: pointer;
   user-select: none;
@@ -263,7 +263,7 @@
 }
 
 .kds-card:hover {
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.10);
 }
 
 .kds-card:active {
@@ -271,33 +271,19 @@
 }
 
 .kds-card:focus-visible {
-  /* box-shadow (not outline) so keyboard focus never hides the elapsed-tier ring */
   box-shadow: 0 0 0 3px #1A1A1A, 0 2px 10px rgba(0, 0, 0, 0.07);
 }
 
-/* Open = not started yet → red left accent, white surface (needs attention) */
-.kds-card--open {
-  border-left-color: #E8442E;
-}
-
-/* Preparing = in progress → green left accent + faint green wash */
-.kds-card--preparing {
-  border-left-color: #34A853;
-  background: #F3FBF5;
-}
-
-/* Elapsed-time escalation → full outer ring wrapping the ENTIRE card (all
-   four sides), independent of the inner left status accent. >10min uses deep
-   maroon #7A1F3D — deliberately NOT brand red, so it can't merge visually
-   with the open-status border. Thresholds live in KitchenDisplay.jsx. */
+/* Elapsed-time tiers — drive the left accent bar color.
+   Single source of truth: no open/preparing distinction. */
 .kds-card--t-green {
-  outline: 5px solid #34A853;
+  border-left-color: #34A853;
 }
 .kds-card--t-yellow {
-  outline: 5px solid #E8A32E;
+  border-left-color: #E8A32E;
 }
 .kds-card--t-red {
-  outline: 6px solid #7A1F3D;
+  border-left-color: #C62828;
 }
 
 /* Busy = PATCH in flight → dim + non-interactive */
@@ -315,6 +301,7 @@
 
 .kds-card--failed {
   border-color: #E8442E;
+  border-left-color: #E8442E;
   box-shadow: 0 0 0 4px rgba(232, 68, 46, 0.45), 0 6px 20px rgba(0, 0, 0, 0.12);
   animation: kdsCardFail 0.5s ease-in-out 3;
 }
@@ -328,34 +315,36 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px 12px;
-  border-bottom: 1px solid #EFEFEF;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid #F0F0EF;
 }
 
 .kds-card__number {
   font-family: var(--font-mono);
-  font-size: 2.6rem;
+  font-size: 2.4rem;
   font-weight: 700;
   line-height: 1;
   color: #1A1A1A;
 }
 
+/* Status badge — fixed neutral styling, NOT colored by elapsed time or status.
+   Uses a subdued pill so it reads as informational, not alarming. */
 .kds-card__status {
   font-family: var(--font-mono);
-  font-size: 0.95rem;
+  font-size: 0.82rem;
   font-weight: 700;
   letter-spacing: 0.1em;
-  padding: 6px 12px;
-  border-radius: 9999px;
+  padding: 4px 10px;
+  border-radius: 6px;
 }
 
-.kds-card--open .kds-card__status {
-  background: rgba(232, 68, 46, 0.12);
-  color: #E8442E;
+.kds-card__status--open {
+  background: rgba(232, 68, 46, 0.10);
+  color: #C62828;
 }
 
-.kds-card--preparing .kds-card__status {
-  background: rgba(52, 168, 83, 0.14);
+.kds-card__status--preparing {
+  background: rgba(52, 168, 83, 0.10);
   color: #2A8C45;
 }
 
@@ -370,35 +359,35 @@
 /* Live elapsed timer — IBM Plex Mono, color-coded by elapsed-time tier */
 .kds-card__timer {
   font-family: var(--font-mono);
-  font-size: 1.7rem;
+  font-size: 1.6rem;
   font-weight: 700;
   line-height: 1;
   letter-spacing: 0.02em;
-  padding: 4px 12px;
-  border-radius: 10px;
+  padding: 4px 10px;
+  border-radius: 8px;
   font-variant-numeric: tabular-nums;
 }
 .kds-card__timer--green {
   color: #2A8C45;
-  background: rgba(52, 168, 83, 0.14);
+  background: rgba(52, 168, 83, 0.12);
 }
 .kds-card__timer--yellow {
   color: #8A5A00;
-  background: rgba(232, 163, 46, 0.20);
+  background: rgba(232, 163, 46, 0.16);
 }
 .kds-card__timer--red {
-  color: #7A1F3D;
-  background: rgba(122, 31, 61, 0.14);
+  color: #C62828;
+  background: rgba(198, 40, 40, 0.10);
 }
 
 /* ---------- Items ---------- */
 .kds-card__items {
-  padding: 6px 20px 8px;
+  padding: 6px 18px 8px;
 }
 
 .kds-item {
-  padding: 14px 0;
-  border-bottom: 1px dashed #E5E5E5;
+  padding: 12px 0;
+  border-bottom: 1px dashed #ECECEC;
 }
 
 .kds-item:last-child {
@@ -421,7 +410,7 @@
 
 .kds-item__name {
   font-family: var(--font-body);
-  font-size: 1.45rem;
+  font-size: 1.4rem;
   font-weight: 700;
   color: #1A1A1A;
   line-height: 1.2;
@@ -436,38 +425,38 @@
 .kds-item__choices {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   margin-top: 8px;
 }
 
 .kds-item__choice {
   font-family: var(--font-body);
-  font-size: 1.05rem;
+  font-size: 1.02rem;
   font-weight: 700;
   color: #1A1A1A;
   background: #F0F0EF;
-  border-radius: 8px;
-  padding: 4px 12px;
+  border-radius: 6px;
+  padding: 3px 10px;
 }
 
 /* Removed ingredients — THE loudest thing on the card */
 .kds-item__removed {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   margin-top: 10px;
 }
 
 .kds-item__removed-tag {
   font-family: var(--font-body);
-  font-size: 1.2rem;
+  font-size: 1.15rem;
   font-weight: 800;
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: #FFFFFF;
   background: #E8442E;
-  border-radius: 8px;
-  padding: 5px 12px;
+  border-radius: 6px;
+  padding: 4px 10px;
 }
 
 /* Added modifiers — normal */
@@ -476,7 +465,7 @@
 }
 
 .kds-item__added-line {
-  font-size: 1.15rem;
+  font-size: 1.1rem;
   font-weight: 600;
   color: #1A1A1A;
   line-height: 1.5;
@@ -499,7 +488,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 1.1rem;
+  font-size: 1.05rem;
   font-weight: 600;
   color: #1A1A1A;
 }
@@ -512,19 +501,19 @@
 
 .kds-item__free {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   color: #2A8C45;
-  background: rgba(52, 168, 83, 0.14);
-  border-radius: 6px;
-  padding: 2px 8px;
+  background: rgba(52, 168, 83, 0.12);
+  border-radius: 4px;
+  padding: 2px 6px;
 }
 
 /* Free-text notes (e.g. allergies) — distinct, hard to skim past */
 .kds-item__notes {
   margin-top: 10px;
-  font-size: 1.1rem;
+  font-size: 1.05rem;
   font-weight: 600;
   color: #8A4B00;
   background: #FFF4E5;
@@ -539,21 +528,123 @@
   margin-top: auto;
   text-align: center;
   font-family: var(--font-mono);
-  font-size: 1rem;
+  font-size: 0.88rem;
   font-weight: 700;
-  letter-spacing: 0.12em;
-  padding: 14px;
-  border-top: 1px solid #EFEFEF;
+  letter-spacing: 0.1em;
+  padding: 12px 14px;
+  border-top: 1px solid #F0F0EF;
+  color: #6B6B6B;
+  background: #FAFAF9;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.kds-card--open .kds-card__cta {
-  color: #E8442E;
-  background: rgba(232, 68, 46, 0.06);
-}
-
-.kds-card--preparing .kds-card__cta {
+/* Subtle tier-colored CTA backgrounds */
+.kds-card--t-green .kds-card__cta {
   color: #2A8C45;
-  background: rgba(52, 168, 83, 0.08);
+  background: rgba(52, 168, 83, 0.05);
+}
+.kds-card--t-yellow .kds-card__cta {
+  color: #8A5A00;
+  background: rgba(232, 163, 46, 0.06);
+}
+.kds-card--t-red .kds-card__cta {
+  color: #C62828;
+  background: rgba(198, 40, 40, 0.06);
+}
+
+/* ============================================================
+   Undo Toast — appears briefly after advancing an order
+   ============================================================ */
+
+@keyframes kdsUndoSlideUp {
+  from { transform: translateX(-50%) translateY(20px); opacity: 0; }
+  to { transform: translateX(-50%) translateY(0); opacity: 1; }
+}
+
+.kds-undo {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #1A1A1A;
+  color: #FFFFFF;
+  border-radius: 12px;
+  padding: 12px 16px 12px 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  animation: kdsUndoSlideUp 0.25s ease-out;
+  font-family: var(--font-body);
+}
+
+.kds-undo__text {
+  font-size: 0.95rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.kds-undo__btn {
+  font-family: var(--font-body);
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #E8442E;
+  background: rgba(232, 68, 46, 0.15);
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+  white-space: nowrap;
+}
+
+.kds-undo__btn:hover {
+  background: rgba(232, 68, 46, 0.25);
+}
+
+.kds-undo__btn:active {
+  transform: scale(0.96);
+}
+
+.kds-undo__dismiss {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+  transition: color 0.12s ease;
+}
+
+.kds-undo__dismiss:hover {
+  color: #FFFFFF;
+}
+
+/* ============================================================
+   Device-paired indicator — fixed bottom-right, non-interactive
+   ============================================================ */
+.kds__device-indicator {
+  position: fixed;
+  bottom: 14px;
+  right: 18px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: #A3A3A3;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid #ECECEC;
+  border-radius: 8px;
+  padding: 5px 10px;
+  pointer-events: none;
+  opacity: 0.7;
+  transition: opacity 0.3s ease;
 }
 
 /* ============================================================
@@ -578,11 +669,11 @@
   align-items: center;
   gap: 18px;
   background: #FFFFFF;
-  border: 2px solid #E5E5E5;
-  border-left: 10px solid #E5E5E5;
-  border-radius: 14px;
+  border: 1px solid #E8E8E6;
+  border-left: 6px solid #E8E8E6;
+  border-radius: 12px;
   padding: 16px 20px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.07);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.05);
   animation: fadeIn 0.2s ease-out;
 }
 
@@ -590,7 +681,7 @@
    (based on the OLDEST source order in the aggregate) */
 .kds-fast-line--t-green { border-left-color: #34A853; }
 .kds-fast-line--t-yellow { border-left-color: #E8A32E; }
-.kds-fast-line--t-red { border-left-color: #7A1F3D; }
+.kds-fast-line--t-red { border-left-color: #C62828; }
 
 .kds-fast-line__count {
   font-family: var(--font-mono);
@@ -600,24 +691,24 @@
   min-width: 86px;
   text-align: center;
   padding: 10px 12px;
-  border-radius: 12px;
+  border-radius: 10px;
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
 
 .kds-fast-line__count--green {
   color: #2A8C45;
-  background: rgba(52, 168, 83, 0.14);
+  background: rgba(52, 168, 83, 0.12);
 }
 
 .kds-fast-line__count--yellow {
   color: #8A5A00;
-  background: rgba(232, 163, 46, 0.20);
+  background: rgba(232, 163, 46, 0.16);
 }
 
 .kds-fast-line__count--red {
-  color: #7A1F3D;
-  background: rgba(122, 31, 61, 0.14);
+  color: #C62828;
+  background: rgba(198, 40, 40, 0.10);
 }
 
 .kds-fast-line__what {
@@ -643,17 +734,17 @@
 .kds-fast-line__mods {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .kds-fast-line__mod {
   font-family: var(--font-body);
-  font-size: 1.05rem;
+  font-size: 1.02rem;
   font-weight: 700;
   color: #1A1A1A;
   background: #F0F0EF;
-  border-radius: 8px;
-  padding: 4px 12px;
+  border-radius: 6px;
+  padding: 3px 10px;
 }
 
 /* Removals stay the loudest thing on the line, same as ticket view */
@@ -683,10 +774,10 @@
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 16px 28px;
+  padding: 14px 28px;
   background: #FFFFFF;
-  border-bottom: 2px solid #E5E5E5;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid #E5E5E5;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
 }
 
 .kds-past__back {
@@ -745,9 +836,9 @@
   gap: 12px;
   text-align: left;
   background: #FFFFFF;
-  border: 2px solid #E5E5E5;
-  border-radius: 12px;
-  padding: 18px 20px;
+  border: 1px solid #E8E8E6;
+  border-radius: 10px;
+  padding: 16px 18px;
   cursor: pointer;
   transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.1s ease;
 }
@@ -765,7 +856,7 @@
 .kds-past-row--head {
   background: transparent;
   border: none;
-  padding: 0 20px;
+  padding: 0 18px;
   cursor: default;
 }
 

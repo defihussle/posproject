@@ -1091,6 +1091,68 @@ app.patch("/api/orders/:id/status", async (req, res) => {
   }
 });
 
+// PATCH /api/orders/:id/status/revert
+// Reverses the most recent status change: preparing→open, ready→preparing.
+// Mirrors the forward endpoint's transactional lockstep pattern.
+app.patch("/api/orders/:id/status/revert", async (req, res) => {
+  const { id } = req.params;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows } = await client.query(
+      "SELECT status FROM orders WHERE id = $1 FOR UPDATE",
+      [id]
+    );
+    if (rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    const current = rows[0].status;
+    // Only one step back: preparing→open, ready→preparing
+    const PREV_STATUS = { preparing: "open", ready: "preparing" };
+    const prev = PREV_STATUS[current];
+    if (!prev) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: `Cannot revert order from '${current}' — no previous state`,
+      });
+    }
+
+    // Revert the order. If reverting from 'ready', clear completed_at.
+    if (current === "ready") {
+      await client.query(
+        "UPDATE orders SET status = $1, completed_at = NULL WHERE id = $2",
+        [prev, id]
+      );
+    } else {
+      await client.query("UPDATE orders SET status = $1 WHERE id = $2", [prev, id]);
+    }
+
+    // Cascade to order_items (same lockstep as the forward endpoint).
+    // Mapping: open→pending, preparing→preparing (but we're going back,
+    // so preparing→open means items go back to 'pending').
+    const itemStatus = prev === "open" ? "pending" : "preparing";
+    await client.query("UPDATE order_items SET status = $1 WHERE order_id = $2", [
+      itemStatus,
+      id,
+    ]);
+
+    await client.query("COMMIT");
+
+    const [order] = await fetchKdsOrders(client, [id]);
+    res.json(order);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("KDS status revert failed:", err.message);
+    res.status(500).json({ error: "Failed to revert order status" });
+  } finally {
+    client.release();
+  }
+});
+
 // --------------- Back Office: authentication (email + password + TOTP) ---------------
 // Replaces PIN login for Back Office ONLY, owner/admin exclusively. Order
 // Entry/KDS PIN login (POST /api/auth/login, above) is a completely

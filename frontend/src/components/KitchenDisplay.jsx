@@ -6,13 +6,14 @@ import "./KitchenDisplay.css";
 const POLL_MS = 5000;
 const KDS_STATUSES = "open,preparing";
 const FAIL_FLASH_MS = 2500; // how long a card shows its "update failed" state
+const UNDO_TOAST_MS = 6000; // how long the undo toast stays visible
 
 // --- Elapsed-time escalation thresholds (minutes) — tune here as needed ---
 const ELAPSED_YELLOW_MIN = 5; // green → yellow at/after this many minutes
 const ELAPSED_RED_MIN = 10; //   yellow → red at/after this many minutes
 
 // --- Past Orders window ---
-const HISTORY_SINCE_HOURS = 4;
+const HISTORY_SINCE_HOURS = 6;
 
 // One forward step per tap: open → preparing → ready.
 const NEXT_STATUS = { open: "preparing", preparing: "ready" };
@@ -52,6 +53,67 @@ function formatClock(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+// ---- New-order chime via Web Audio API ----
+// Two quick ascending tones, subtle and non-alarming.
+// Browser autoplay restrictions: AudioContext starts suspended until a user
+// gesture. We attempt to resume() on the first click/touchstart anywhere on
+// the page, then play silently fails until that happens — no errors, no spam.
+let audioCtx = null;
+let audioUnlocked = false;
+
+function ensureAudioCtx() {
+  if (!audioCtx) {
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch {
+      // Web Audio not available — chime will silently no-op.
+      return null;
+    }
+  }
+  return audioCtx;
+}
+
+function unlockAudio() {
+  if (audioUnlocked) return;
+  const ctx = ensureAudioCtx();
+  if (ctx && ctx.state === "suspended") {
+    ctx.resume().catch(() => {});
+  }
+  audioUnlocked = true;
+}
+
+function playChime() {
+  const ctx = ensureAudioCtx();
+  if (!ctx || ctx.state === "suspended") return;
+
+  const now = ctx.currentTime;
+  const gain = ctx.createGain();
+  gain.connect(ctx.destination);
+  gain.gain.setValueAtTime(0.12, now);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+
+  // Tone 1: 523 Hz (C5) — 0.12s
+  const osc1 = ctx.createOscillator();
+  osc1.type = "sine";
+  osc1.frequency.setValueAtTime(523, now);
+  osc1.connect(gain);
+  osc1.start(now);
+  osc1.stop(now + 0.12);
+
+  // Tone 2: 659 Hz (E5) — 0.12s, starts right after tone 1
+  const gain2 = ctx.createGain();
+  gain2.connect(ctx.destination);
+  gain2.gain.setValueAtTime(0.10, now + 0.13);
+  gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+
+  const osc2 = ctx.createOscillator();
+  osc2.type = "sine";
+  osc2.frequency.setValueAtTime(659, now + 0.13);
+  osc2.connect(gain2);
+  osc2.start(now + 0.13);
+  osc2.stop(now + 0.25);
+}
+
 /**
  * Kitchen Display System — live order queue.
  * No auth: this screen is opened once on a kitchen device and left running.
@@ -75,6 +137,24 @@ export default function KitchenDisplay() {
   // Fast Mode: aggregated rush-hour view. Manual toggle only, view-only —
   // completing orders still happens in the normal ticket view.
   const [fastMode, setFastMode] = useState(false);
+  // Undo last action — single-level.
+  const [undoAction, setUndoAction] = useState(null); // { orderId, orderNumber, previousStatus }
+  const undoTimer = useRef(null);
+  // Known order IDs — for detecting genuinely new orders (vs. existing on reload).
+  const knownOrderIds = useRef(null); // null = first load, Set after
+  // Track if initial load is complete for chime gating.
+  const initialLoadDone = useRef(false);
+
+  // Unlock Web Audio on first user interaction anywhere on the KDS.
+  useEffect(() => {
+    const handler = () => unlockAudio();
+    document.addEventListener("click", handler, { once: true, capture: true });
+    document.addEventListener("touchstart", handler, { once: true, capture: true });
+    return () => {
+      document.removeEventListener("click", handler, { capture: true });
+      document.removeEventListener("touchstart", handler, { capture: true });
+    };
+  }, []);
 
   const markFailed = useCallback((orderId) => {
     setFailedIds((prev) => new Set(prev).add(orderId));
@@ -129,6 +209,17 @@ export default function KitchenDisplay() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       // Backend already sorts FIFO (oldest created_at first) — do NOT re-sort.
+
+      // Detect genuinely new orders for the chime. Skip on first load.
+      if (knownOrderIds.current !== null && initialLoadDone.current) {
+        const newIds = data.filter((o) => !knownOrderIds.current.has(o.id));
+        if (newIds.length > 0) {
+          playChime();
+        }
+      }
+      knownOrderIds.current = new Set(data.map((o) => o.id));
+      if (!initialLoadDone.current) initialLoadDone.current = true;
+
       setOrders(data);
       setError(null);
     } catch {
@@ -145,6 +236,55 @@ export default function KitchenDisplay() {
     const id = setInterval(fetchOrders, POLL_MS);
     return () => clearInterval(id);
   }, [fetchOrders]);
+
+  // --- Undo helpers ---
+  const clearUndo = useCallback(() => {
+    setUndoAction(null);
+    if (undoTimer.current) {
+      clearTimeout(undoTimer.current);
+      undoTimer.current = null;
+    }
+  }, []);
+
+  const startUndoTimer = useCallback(
+    (action) => {
+      clearUndo();
+      setUndoAction(action);
+      undoTimer.current = setTimeout(() => {
+        setUndoAction(null);
+        undoTimer.current = null;
+      }, UNDO_TOAST_MS);
+    },
+    [clearUndo]
+  );
+
+  const performUndo = useCallback(async () => {
+    if (!undoAction) return;
+    const { orderId } = undoAction;
+    clearUndo();
+
+    try {
+      const res = await fetch(`${API_URL}/api/orders/${orderId}/status/revert`, {
+        method: "PATCH",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      // Refresh the board
+      fetchOrders();
+    } catch (err) {
+      console.error("Undo failed:", err.message);
+      // Silent fail — the next poll will sync anyway.
+    }
+  }, [undoAction, clearUndo, fetchOrders]);
+
+  // Clean up undo timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (undoTimer.current) clearTimeout(undoTimer.current);
+    };
+  }, []);
 
   const advanceOrder = useCallback(
     async (order) => {
@@ -183,6 +323,13 @@ export default function KitchenDisplay() {
             .map((o) => (o.id === updated.id ? updated : o))
             .filter((o) => o.status === "open" || o.status === "preparing")
         );
+
+        // Offer undo for this action.
+        startUndoTimer({
+          orderId: order.id,
+          orderNumber: order.order_number,
+          previousStatus: order.status,
+        });
       } catch (err) {
         // Show the failure ON the card itself. (A top banner here got wiped
         // instantly by the resync below, so staff never saw it.) The inline
@@ -198,7 +345,7 @@ export default function KitchenDisplay() {
         });
       }
     },
-    [fetchOrders, clearFailed, markFailed]
+    [fetchOrders, clearFailed, markFailed, startUndoTimer]
   );
 
   // Fast Mode aggregation — pure client-side reshaping of the SAME polled
@@ -241,26 +388,17 @@ export default function KitchenDisplay() {
     );
   }, [orders]);
 
+  const orderCountClass = orders.length > 0 ? "kds__badge--active" : "kds__badge--clear";
+
   return (
     <div className="kds">
       <header className="kds__header">
         <img src={logoImg} alt="NARCOS TACOS" className="kds__logo" />
 
-        {/* Live-status cluster: order count + Fast Mode are checked constantly
-            during a rush, so they're grouped and given the most visual weight.
-            Past Orders is an occasional lookup, not a live status — demoted to
-            a plain text link, separated by a divider. See CSS file header for
-            the full before/after reasoning. */}
-        <div className="kds__status-cluster">
-          <div className="kds__order-count" title="Open orders">
-            <span className="kds__order-count-num">{orders.length}</span>
-            <span className="kds__order-count-label">orders</span>
-          </div>
-
-          <div className="kds__divider" aria-hidden="true" />
-
+        {/* Nav center: Fast Mode (left) — Order Count Badge (center) — Past Orders (right) */}
+        <nav className="kds__nav">
           <label className="kds__fast-toggle">
-            <span className="kds__fast-toggle-text">⚡ Fast Mode</span>
+            <span className="kds__fast-toggle-text">Fast Mode</span>
             <span className="kds__switch">
               <input
                 type="checkbox"
@@ -271,13 +409,18 @@ export default function KitchenDisplay() {
             </span>
           </label>
 
+          <div className={`kds__badge ${orderCountClass}`} title="Open orders">
+            <span className="kds__badge-num">{orders.length}</span>
+            <span className="kds__badge-label">orders</span>
+          </div>
+
           <button className="kds__past-link" onClick={() => setPastOpen(true)}>
             Past Orders
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="9 18 15 12 9 6"></polyline>
             </svg>
           </button>
-        </div>
+        </nav>
       </header>
 
       {error && <div className="kds__error">{error}</div>}
@@ -313,6 +456,34 @@ export default function KitchenDisplay() {
         )}
       </main>
 
+      {/* Undo toast — appears after advancing an order, auto-dismisses */}
+      {undoAction && (
+        <div className="kds-undo">
+          <span className="kds-undo__text">
+            #{undoAction.orderNumber} moved to {undoAction.previousStatus === "open" ? "In Progress" : "Ready"}
+          </span>
+          <button className="kds-undo__btn" onClick={performUndo}>
+            Undo
+          </button>
+          <button className="kds-undo__dismiss" onClick={clearUndo} aria-label="Dismiss">
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Device-paired indicator — non-interactive, informational only.
+          Pairing system not built yet; shows a sensible default state.
+          Trivially wirable to real pairing status later. */}
+      <div className="kds__device-indicator" aria-hidden="true">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M5 12.55a11 11 0 0 1 14.08 0" />
+          <path d="M1.42 9a16 16 0 0 1 21.16 0" />
+          <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+          <circle cx="12" cy="20" r="1" fill="currentColor" />
+        </svg>
+        <span>KDS Active</span>
+      </div>
+
       {pastOpen && <PastOrdersOverlay onClose={() => setPastOpen(false)} />}
     </div>
   );
@@ -331,7 +502,7 @@ function OrderCard({ order, nowMs, busy, failed, onAdvance }) {
 
   return (
     <div
-      className={`kds-card kds-card--${order.status} kds-card--t-${tier}${
+      className={`kds-card kds-card--t-${tier}${
         busy ? " kds-card--busy" : ""
       }${failed ? " kds-card--failed" : ""}`}
       role="button"
@@ -346,7 +517,7 @@ function OrderCard({ order, nowMs, busy, failed, onAdvance }) {
           <span className={`kds-card__timer kds-card__timer--${tier}`}>
             {formatMMSS(sec)}
           </span>
-          <span className="kds-card__status">
+          <span className={`kds-card__status kds-card__status--${order.status}`}>
             {STATUS_LABEL[order.status] || order.status}
           </span>
         </div>
