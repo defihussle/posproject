@@ -206,19 +206,6 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
-// TEMPORARY — trust-proxy investigation only, no secrets exposed (just
-// network/proxy-header diagnostics). Remove before this task is finished.
-app.get("/api/_debug_proxy", (req, res) => {
-  res.json({
-    reqIp: req.ip,
-    reqIps: req.ips,
-    xForwardedFor: req.headers["x-forwarded-for"] || null,
-    cfConnectingIp: req.headers["cf-connecting-ip"] || null,
-    trueClientIp: req.headers["true-client-ip"] || null,
-    socketRemoteAddress: req.socket?.remoteAddress || null,
-  });
-});
-
 // Menu items (flat — kept for backward compatibility)
 app.get("/api/menu", async (req, res) => {
   try {
