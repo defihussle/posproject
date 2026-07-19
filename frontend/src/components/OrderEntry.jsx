@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import ItemModal from "./ItemModal";
 import { StaffAddForm } from "./StaffManager";
+import StaffManagementModal from "./StaffManagementModal";
 import ChangePinModal from "./ChangePinModal";
 import MyHoursModal from "./MyHoursModal";
 import ClockCard from "./ClockCard";
@@ -60,7 +61,8 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [cart, setCart] = useState([]);
   const [cartCollapsed, setCartCollapsed] = useState(true);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  const [staffModalOpen, setStaffModalOpen] = useState(false);
+  const [staffModalOpen, setStaffModalOpen] = useState(false); // manager's add-only quick-add — unchanged
+  const [fullStaffManagerOpen, setFullStaffManagerOpen] = useState(false); // owner/admin's full popup
   const [staffAddedName, setStaffAddedName] = useState(null); // brief success note
   const [changePinOpen, setChangePinOpen] = useState(false);
   const [myHoursOpen, setMyHoursOpen] = useState(false);
@@ -348,7 +350,14 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                       className="oe-account-menu-item"
                       onClick={() => {
                         setAccountMenuOpen(false);
-                        setStaffModalOpen(true);
+                        // Owner/admin get the full Back Office StaffManager
+                        // experience in a popup; manager keeps the existing
+                        // add-only quick-add modal, unchanged.
+                        if (MANAGE_MENU_ROLES.includes(staff.role)) {
+                          setFullStaffManagerOpen(true);
+                        } else {
+                          setStaffModalOpen(true);
+                        }
                       }}
                     >
                       Staff Management
@@ -549,8 +558,10 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
         />
       )}
 
-      {/* Staff quick-add modal — add-only by design; list/edit/deactivate/PIN
-          reset live in Back Office, keeping the counter screen simple */}
+      {/* Manager's staff quick-add modal — add-only by design, unchanged.
+          Owner/admin get the full popup below instead; list/edit/
+          deactivate/PIN reset are Manager's one capability this doesn't
+          cover, matching Manager having no Back Office access at all. */}
       {staffModalOpen && (
         <div className="staffmgr__overlay" onClick={() => setStaffModalOpen(false)}>
           <div className="staffmgr__modal" onClick={(e) => e.stopPropagation()}>
@@ -578,6 +589,13 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
             />
           </div>
         </div>
+      )}
+
+      {/* Owner/admin's full Staff Management popup — same StaffManager
+          component/logic as Back Office's Staff tab (list, edit,
+          deactivate, reset PIN, add), plus live clock-in/break status. */}
+      {fullStaffManagerOpen && (
+        <StaffManagementModal staff={staff} onClose={() => setFullStaffManagerOpen(false)} />
       )}
 
       {/* Brief confirmation after quick-adding staff */}

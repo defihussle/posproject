@@ -132,6 +132,30 @@
   padding: 2px 8px;
 }
 
+/* Live clock-in/break status — opt-in (StaffManager's showLiveStatus
+   prop), only shown when the row's staffId currently has an open shift.
+   Same green/amber language as Back Office Home's Live Status card. */
+.staffmgr-row__live {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: var(--radius-full);
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.staffmgr-row__live--working {
+  background: var(--green-light);
+  color: var(--green);
+}
+
+.staffmgr-row__live--on_break {
+  background: rgba(232, 163, 46, 0.16);
+  color: #b0670f;
+}
+
 .staffmgr-row__role {
   font-family: var(--font-mono);
   font-size: 0.72rem;
@@ -306,6 +330,13 @@
 
 .staffmgr__modal--small {
   max-width: 320px;
+}
+
+/* Order Entry's full Staff Management popup (StaffManagementModal.jsx) —
+   the reused Back Office table needs real width, not the narrow form
+   width the base .staffmgr__modal is sized for. */
+.staffmgr__modal--wide {
+  max-width: 920px;
 }
 
 .staffmgr__modal-head {

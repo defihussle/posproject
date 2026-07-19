@@ -46,7 +46,9 @@ posproject/
                             BackOffice.jsx (Back Office shell/nav),
                             BackofficeLogin.jsx + ResetPassword.jsx
                             (email+password+TOTP login, forgot/reset
-                            password), HomeDashboard.jsx, StaffManager.jsx,
+                            password), HomeDashboard.jsx, StaffManager.jsx
+                            (+ StaffManagementModal.jsx, its POS popup
+                            wrapper for owner/admin — see Auth model),
                             MenuManager.jsx (shared editor, see Auth model)
                             + ManageMenu.jsx (its POS wrapper)
       assets/             — narcos-tacos-logo.png (official brand logo, 
@@ -199,18 +201,29 @@ posproject/
   manager/cashier/kitchen (those roles are simply never offered as options 
   when the field's visibility condition can be true, e.g. Manager's own 
   role dropdown never includes owner/admin in the first place).
-- **POS staff quick-add** — `POST /api/staff/quick-add` (deliberately 
-  separate from `/api/backoffice/staff`, so it isn't swept up by the Back 
-  Office role restriction above), owner/admin/manager. This is Manager's 
-  ONE remaining staff capability, and their only POS-side admin capability 
-  of any kind — Manager has no menu/modifier access and no Back Office 
-  access at all: an add-only modal from Order Entry's account dropdown 
-  ("Staff Management" — same label, POS context). No list/edit/deactivate/
-  PIN-reset there; those are Back-Office-only now. `StaffAddForm` (in 
-  `StaffManager.jsx`) is shared by both surfaces via an `endpoint` prop — 
-  the email field above never appears here for Manager, since their role 
-  options never include owner/admin (server-side `assertRoleAssignable` 
-  blocks it too, even if the client were tampered with).
+- **Order Entry's "Staff Management" dropdown entry is role-branched**:
+  - **Manager** — `POST /api/staff/quick-add` (deliberately separate from 
+    `/api/backoffice/staff`, so it isn't swept up by the Back Office role 
+    restriction below), owner/admin/manager. This is Manager's ONE 
+    remaining staff capability, and their only POS-side admin capability 
+    of any kind — Manager has no menu/modifier access and no Back Office 
+    access at all: an add-only modal, unchanged since it was first built. 
+    `StaffAddForm` (in `StaffManager.jsx`) is shared by this and the 
+    owner/admin popup below via an `endpoint` prop — the email field 
+    above never appears here for Manager, since their role options never 
+    include owner/admin (server-side `assertRoleAssignable` blocks it 
+    too, even if the client were tampered with).
+  - **Owner/admin** — `StaffManagementModal.jsx`, a popup (not a page — 
+    same interaction weight as the item customization modal) wrapping 
+    the exact same `StaffManager` component Back Office's Staff tab uses: 
+    full list (including owners), inline edit, deactivate/reactivate, 
+    reset PIN, add. Same `/api/backoffice/staff*` routes, same 
+    owner/admin check, same hierarchy rules — zero duplicated or 
+    weakened logic, one editor with two entry points (same pattern as 
+    Manage Menu/MenuManager below). Adds live clock-in/break status per 
+    row (reuses `GET /api/backoffice/staff/live-status`) via 
+    `StaffManager`'s `showLiveStatus` prop — opt-in and defaulted off, so 
+    Back Office's own Staff tab renders exactly as before, unchanged.
 - Theme defaults to **Light**, only owners can toggle dark mode 
   (app-wide setting, in the account dropdown menu next to the staff name 
   on Order Entry — NOT visible to non-owner roles at all)
@@ -262,6 +275,11 @@ posproject/
   items, variants, AND modifier groups/options)
 - Manage Menu (`/manage-menu`) — the same editor as Back Office's Menu 
   Management, reachable from the POS for owner/admin
+- Order Entry's "Staff Management" dropdown entry, owner/admin — the same 
+  full `StaffManager` component/logic as Back Office's Staff tab (list 
+  incl. owners, inline edit, deactivate/reactivate, reset PIN, add), 
+  shown as a popup instead of a page, plus live clock-in/break status per 
+  row. Manager keeps the original add-only quick-add modal, unchanged
 - Order Entry account dropdown, self-service, every role, no Back Office 
   equivalent for the actions themselves (works for cashier/kitchen too, 
   who have no Back Office access at all — Live Status above is read-only 

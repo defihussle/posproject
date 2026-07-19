@@ -20,16 +20,35 @@ export function canManageTarget(requesterRole, targetRole) {
 
 const fmtRate = (r) => (r == null ? "—" : `$${parseFloat(r).toFixed(2)}/hr`);
 
+const LIVE_STATUS_POLL_MS = 5000; // same cadence as Back Office Home's Live Status card
+
+function fmtSince(iso, nowMs) {
+  const seconds = Math.max(0, Math.floor((nowMs - new Date(iso).getTime()) / 1000));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h === 0) return `${m}m`;
+  return `${h}h ${m}m`;
+}
+
 /**
- * Back Office → Staff tab. List + add + inline edit + deactivate/reactivate
- * + PIN reset. Every control is hidden when the logged-in role lacks
- * hierarchy permission over that row (backend enforces the same rules).
+ * Back Office → Staff tab, AND the POS-reachable full Staff Management
+ * popup for owner/admin (StaffManagementModal.jsx) — one component, two
+ * entry points, same pattern already established for MenuManager/
+ * ManageMenu. List + add + inline edit + deactivate/reactivate + PIN
+ * reset. Every control is hidden when the logged-in role lacks hierarchy
+ * permission over that row (backend enforces the same rules).
+ *
+ * `showLiveStatus` is opt-in (default false) so Back Office's existing
+ * usage here is completely unaffected — no extra fetch, no polling, no
+ * visual change. Only StaffManagementModal passes it, which is where the
+ * task asked for per-row clock-in/break state.
  */
-export default function StaffManager({ staff }) {
+export default function StaffManager({ staff, showLiveStatus = false }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [liveStatus, setLiveStatus] = useState({}); // staffId -> { status, since }
 
   const load = useCallback(async () => {
     try {
@@ -48,6 +67,33 @@ export default function StaffManager({ staff }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Reuses the same read-only route Back Office Home's Live Status card
+  // polls — no new backend surface, and the clock-in/out actions
+  // themselves stay Order-Entry-only regardless of where this table is
+  // shown.
+  const loadLiveStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/backoffice/staff/live-status`, {
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const byId = {};
+      for (const s of data) byId[s.staffId] = { status: s.status, since: s.since };
+      setLiveStatus(byId);
+    } catch {
+      // Non-critical — the table itself still works without it; the next
+      // poll retries.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showLiveStatus) return;
+    loadLiveStatus();
+    const id = setInterval(loadLiveStatus, LIVE_STATUS_POLL_MS);
+    return () => clearInterval(id);
+  }, [showLiveStatus, loadLiveStatus]);
 
   const applyRow = useCallback((updated) => {
     setRows((prev) =>
@@ -85,6 +131,7 @@ export default function StaffManager({ staff }) {
             me={staff}
             onSaved={applyRow}
             onError={setError}
+            live={showLiveStatus ? liveStatus[row.id] : undefined}
           />
         ))}
       </div>
@@ -119,7 +166,7 @@ export default function StaffManager({ staff }) {
   );
 }
 
-function StaffRow({ row, me, onSaved, onError }) {
+function StaffRow({ row, me, onSaved, onError, live }) {
   const [editing, setEditing] = useState(false);
   const [pinPrompt, setPinPrompt] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -155,6 +202,11 @@ function StaffRow({ row, me, onSaved, onError }) {
       <span className="staffmgr-row__name">
         {row.name}
         {row.id === me.id && <span className="staffmgr-row__you">you</span>}
+        {live && (
+          <span className={`staffmgr-row__live staffmgr-row__live--${live.status}`}>
+            {live.status === "on_break" ? "On Break" : "Working"} · {fmtSince(live.since, Date.now())}
+          </span>
+        )}
       </span>
 
       {editing ? (
