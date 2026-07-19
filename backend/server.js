@@ -35,22 +35,36 @@ if (!SESSION_SECRET) {
 }
 const FRONTEND_URL = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, "");
 
-// The frontend (pos.narcostacos.ca) and backend (onrender.com) live on
-// different domains, so this MUST be an explicit allowlist with
-// credentials:true, never the wildcard cors() default — a wildcard
-// `Access-Control-Allow-Origin: *` is fundamentally incompatible with
-// credentialed (cookie) requests; browsers refuse to expose the response
-// to the page when both are combined. The known-good production origins
-// are hardcoded here (not just sourced from FRONTEND_URL) so a missing/
-// wrong FRONTEND_URL env var on Render can't silently break Back Office
-// login the way a missing SPA rewrite rule once broke KDS (see Known
-// Gotchas in CLAUDE.md) — FRONTEND_URL is still included too, so a
-// future staging domain only needs an env var, not a code change.
+// The frontend (pos.narcostacos.ca) and backend (api.narcostacos.ca) now
+// share the same registrable domain — that's what lets the cookie-domain
+// fix below (sessionCookieOpts) turn this into a same-SITE relationship
+// for cookie purposes. It's still an explicit CORS allowlist with
+// credentials:true regardless, since same-site and same-origin are
+// different things and CORS cares about the latter: api.narcostacos.ca
+// and pos.narcostacos.ca are still different origins as far as the
+// browser's CORS check goes, even though they're no longer different
+// sites for SameSite cookie purposes. A wildcard `Access-Control-Allow-
+// Origin: *` is fundamentally incompatible with credentialed (cookie)
+// requests regardless — browsers refuse to expose the response to the
+// page when both are combined. The known-good production origins are
+// hardcoded here (not just sourced from FRONTEND_URL) so a missing/wrong
+// FRONTEND_URL env var on Render can't silently break Back Office login
+// the way a missing SPA rewrite rule once broke KDS (see Known Gotchas in
+// CLAUDE.md) — FRONTEND_URL is still included too, so a future staging
+// domain only needs an env var, not a code change. The raw onrender.com
+// URLs (both frontend's and backend's own) stay listed too — direct
+// access to either must keep working as a debugging fallback; CORS
+// doesn't apply to non-browser requests (curl, Postman) at all, but a
+// browser hitting the raw frontend URL still needs its Origin allowed
+// here, and the backend's own raw URL is included for symmetry/any
+// browser-based testing done directly against it.
 const ALLOWED_ORIGINS = [
   ...new Set([
     FRONTEND_URL,
     "https://pos.narcostacos.ca", // production frontend (custom domain)
     "https://narcospos-site.onrender.com", // production frontend (raw Render URL, fallback/testing)
+    "https://api.narcostacos.ca", // production backend's own custom domain
+    "https://posproject-tnlm.onrender.com", // production backend's raw Render URL, same fallback/testing reasoning
     "http://localhost:5173", // local dev, default Vite port
     "http://localhost:5174", // local dev, Vite's fallback port if 5173 is taken
   ]),
@@ -63,24 +77,48 @@ const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12h — roughly a shift
 // XSS) can never read it. `secure`/`sameSite` are derived from the ACTUAL
 // request (req.secure, reliable now that `trust proxy` is set above)
 // rather than a NODE_ENV env var that might not be set on the host:
-//   - Local dev (plain http://localhost): secure:false, sameSite:"lax" —
-//     frontend and backend are same-site (both "localhost"), so Lax is
-//     both sufficient and required (a Secure cookie is silently refused
-//     over plain HTTP).
-//   - Production (HTTPS, pos.narcostacos.ca -> onrender.com): secure:true,
-//     sameSite:"none" — these are DIFFERENT SITES (different registrable
-//     domains), and SameSite=Lax is NEVER sent on a cross-site fetch/XHR
-//     (only on top-level navigations) regardless of CORS being correct —
-//     None is required for the cookie to be sent at all here. SameSite=
-//     None is only valid on Secure cookies, hence the two flags moving
-//     together.
+//   - Local dev (plain http://localhost): secure:false, sameSite:"lax",
+//     no domain attribute — frontend and backend are same-site (both
+//     "localhost"), so Lax is both sufficient and required (a Secure
+//     cookie is silently refused over plain HTTP), and an explicit domain
+//     is unnecessary (and would need to be "localhost", not
+//     narcostacos.ca, so it's simplest to just leave it unset here).
+//   - Production (HTTPS): secure:true, sameSite:"none" — required
+//     regardless of the domain fix below, since SameSite=Lax is NEVER
+//     sent on a cross-SITE fetch/XHR (only on top-level navigations), and
+//     SameSite=None is only valid on Secure cookies, hence the two flags
+//     moving together.
+//
+// Domain attribute (the actual fix for the mobile Safari bug — Safari is
+// notably stricter than other browsers about cookies on genuinely
+// cross-site requests): frontend and backend now share the registrable
+// domain narcostacos.ca (pos.narcostacos.ca / api.narcostacos.ca), so
+// explicitly setting Domain=.narcostacos.ca makes this a same-SITE
+// relationship instead of cross-site, which is what Safari's stricter
+// cookie policy actually keys off — SameSite=None already told browsers
+// to send it cross-site, but Safari was still dropping/blocking it in
+// practice on mobile, and same-site is the more robust fix regardless of
+// browser-specific cross-site cookie quirks.
+//
+// This can ONLY be set when the response is actually being served from a
+// narcostacos.ca host — a cookie's Domain attribute must match (or be a
+// parent of) the host that set it, or the browser silently drops the
+// Set-Cookie entirely. Requests that reach this same code via the raw
+// Render URL (posproject-tnlm.onrender.com, kept as a debugging fallback
+// — see ALLOWED_ORIGINS above) must NOT get a narcostacos.ca domain
+// attribute, or login over that fallback URL would silently break.
+// req.hostname respects X-Forwarded-Host given `trust proxy` above, so
+// this correctly reflects whichever host the client actually used.
 function sessionCookieOpts(req) {
   const isHttps = req.secure;
+  const host = req.hostname || "";
+  const isNarcosDomain = host === "narcostacos.ca" || host.endsWith(".narcostacos.ca");
   return {
     httpOnly: true,
     secure: isHttps,
     sameSite: isHttps ? "none" : "lax",
     path: "/",
+    ...(isHttps && isNarcosDomain ? { domain: ".narcostacos.ca" } : {}),
   };
 }
 
