@@ -3,30 +3,59 @@
    ============================================================ */
 
 .backoffice {
+  /* Defined here (not on .backoffice__header) so the sibling sidebar/drawer
+     below can also read it — custom properties cascade down the DOM tree,
+     not sideways between siblings. */
+  --header-height: 62px;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
   background: var(--bg-primary);
 }
 
+/* Three-column grid keeps the logo the true visual center of the header
+   regardless of what's in the side columns — the hamburger (mobile only)
+   on the left is mirrored by an equal-width empty column on the right, so
+   removing the old staff-name/Log Out cluster doesn't throw the logo
+   off-center. Both side columns are a fixed width matching the hamburger's
+   footprint, not flexible content, precisely so this balance holds. */
 .backoffice__header {
-  display: flex;
+  height: var(--header-height);
+  display: grid;
+  grid-template-columns: 56px 1fr 56px;
   align-items: center;
-  justify-content: space-between;
-  padding: 16px 24px;
+  padding: 0 16px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border-color);
   box-shadow: var(--shadow-soft);
+  position: relative;
+  z-index: 220; /* always above the drawer (210) and its backdrop (200) —
+                   the hamburger must stay visible/clickable while open */
 }
 
-.backoffice__header-left {
+.backoffice__header-side {
   display: flex;
   align-items: center;
-  gap: 12px;
+  height: 100%;
+}
+
+.backoffice__header-side--left {
+  justify-content: flex-start;
+}
+
+.backoffice__header-side--right {
+  justify-content: flex-end;
+}
+
+.backoffice__header-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
 }
 
 .backoffice__logo {
-  height: 34px;
+  height: 32px;
   width: auto;
   display: block;
 }
@@ -38,47 +67,20 @@
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.1em;
+  white-space: nowrap;
 }
 
 /* Hamburger — desktop: hidden (sidebar is always visible, nothing to open) */
 .backoffice__hamburger {
   display: none;
   color: var(--text-primary);
-  padding: 4px;
+  padding: 6px;
   border-radius: var(--radius-sm);
+  transition: background-color 0.12s ease;
 }
 
 .backoffice__hamburger:hover {
   background: var(--bg-surface-hover);
-}
-
-.backoffice__right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.backoffice__user {
-  font-family: var(--font-body);
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.backoffice__btn {
-  font-family: var(--font-body);
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 6px 14px;
-  border-radius: var(--radius-sm);
-  background: var(--red-light);
-  color: var(--red);
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.backoffice__btn:hover {
-  background: var(--red);
-  color: #fff;
 }
 
 /* ---------- Shell: persistent sidebar + content ---------- */
@@ -93,10 +95,24 @@
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  justify-content: space-between;
+  gap: 8px;
   padding: 20px 12px;
   background: var(--bg-surface);
   border-right: 1px solid var(--border-color);
+  /* Belt-and-suspenders against the nav-label-overflow bug: even with a
+     generous mobile width below, nothing rendered inside the sidebar can
+     ever paint past its own box — this is what actually guarantees a
+     wrapped/overlong label can't bleed into the visible page when the
+     drawer is transformed off-screen. */
+  overflow: hidden;
+}
+
+.backoffice__navlist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .backoffice__navitem {
@@ -108,6 +124,16 @@
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   transition: all 0.15s ease;
+  /* Second line of defense: labels stay on one line and truncate cleanly
+     rather than wrapping — wrapped text was the actual source of the
+     stray-glyph bug (a wrapped second line rendered wider than the button,
+     which the drawer's old "just translateX off-screen" approach didn't
+     clip). Single-line + ellipsis + the container overflow:hidden above
+     makes that class of bug structurally impossible now, not just patched
+     for today's two labels. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .backoffice__navitem:hover {
@@ -116,6 +142,29 @@
 }
 
 .backoffice__navitem--active {
+  background: var(--red-light);
+  color: var(--red);
+}
+
+/* Log Out — bottom of the same nav list (desktop: bottom of the permanent
+   sidebar; mobile: bottom of the drawer), visually set apart by a divider
+   and a quieter, deliberately non-primary treatment (this is a nav list,
+   not a destructive-action button) with the door/arrow icon as an
+   unambiguous "exit" affordance. */
+.backoffice__navfoot {
+  flex-shrink: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+.backoffice__navitem--logout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+}
+
+.backoffice__navitem--logout:hover {
   background: var(--red-light);
   color: var(--red);
 }
@@ -129,10 +178,12 @@
 /* ---------- Responsive: mobile drawer ----------
    Desktop (everything above) is untouched — sidebar stays permanently
    visible exactly as before. Below 768px, the sidebar becomes an off-canvas
-   drawer behind a hamburger button: collapsed by default, slides in at a
-   max of ~1/4 of the viewport width (never a full-screen takeover), with a
-   backdrop to dismiss. Role-based nav visibility (which items appear) is
-   unchanged — this only changes how the nav is shown/hidden. */
+   drawer behind a hamburger button: collapsed by default, slides in as a
+   proper drawer (not squeezed to a sliver), with a backdrop to dismiss.
+   Role-based nav visibility (which items appear) is unchanged — this only
+   changes how the nav is shown/hidden. Real iPads (the actual other target
+   hardware) are >=768px wide in portrait and never even reach this drawer
+   at all — they get the permanent desktop sidebar above. */
 @media (max-width: 767px) {
   .backoffice__hamburger {
     display: flex;
@@ -142,24 +193,24 @@
 
   .backoffice__sidebar {
     position: fixed;
-    top: 0;
+    /* Starts BELOW the header rather than at the very top of the
+       viewport — the header sits at a higher z-index than the drawer (so
+       the hamburger/close icon stays visible and clickable while open),
+       which means if the drawer also started at top:0 its top edge would
+       tuck underneath the opaque header and clip the first nav item. */
+    top: var(--header-height, 62px);
     left: 0;
     bottom: 0;
-    z-index: 210;
-    /* Roughly 1/4 of the viewport, MAXIMUM — never a full-screen takeover.
-       Real iPads (the actual target hardware) are >=768px wide in portrait
-       and never even reach this drawer at all (they get the permanent
-       desktop sidebar above); this path is realistically hit by phones or
-       narrow split-screen windows, where nav labels may wrap to two lines
-       rather than exceed the ~1/4-width cap — an acceptable trade-off for
-       honoring "maximum" literally rather than widening the drawer. */
-    width: 25vw;
-    min-width: 110px;
-    max-width: 300px;
+    z-index: 210; /* below the header (220), above the backdrop (200) */
+    /* A real drawer width — enough for labels to sit comfortably on one
+       line at any phone size, never a full-screen takeover. */
+    width: 78vw;
+    max-width: 320px;
     border-right: 1px solid var(--border-color);
     box-shadow: var(--shadow-medium);
     transform: translateX(-100%);
     transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+    padding-top: 16px;
   }
 
   .backoffice__sidebar--open {
@@ -235,4 +286,23 @@
   font-family: var(--font-body);
   font-size: 0.9rem;
   color: var(--text-secondary);
+}
+
+/* Generic secondary button — used by the Access Restricted screen's
+   "Back to Login" action (the header's own Log Out moved into the nav
+   list above and no longer needs this class). */
+.backoffice__btn {
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--red-light);
+  color: var(--red);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.backoffice__btn:hover {
+  background: var(--red);
+  color: #fff;
 }

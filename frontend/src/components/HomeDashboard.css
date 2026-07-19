@@ -4,11 +4,11 @@
 
 .homedash {
   width: 100%;
-  max-width: 1000px;
+  max-width: 1080px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 22px;
   animation: fadeIn 0.25s ease-out;
 }
 
@@ -16,22 +16,59 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .homedash__title {
   font-family: var(--font-headline);
-  font-size: 1.1rem;
+  font-size: 1.3rem;
   color: var(--text-primary);
 }
 
-.homedash__error {
-  padding: 10px 14px;
-  border-radius: var(--radius-md);
-  background: var(--red-light);
+/* ---------- Error state — replaces the grid entirely on failure ----------
+   Deliberately unmissable: a failed fetch must never be visually
+   indistinguishable from "no sales in this range" (that ambiguity was the
+   actual mobile bug — see HomeDashboard.jsx). Full-width, high-contrast,
+   with a one-tap retry. */
+.homedash__errorstate {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 28px 24px;
+  background: var(--bg-surface);
+  border: 1px solid var(--red);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+  animation: fadeIn 0.2s ease-out;
+}
+
+.homedash__errorstate-title {
+  font-family: var(--font-headline);
+  font-size: 1rem;
   color: var(--red);
+}
+
+.homedash__errorstate-msg {
   font-family: var(--font-body);
-  font-size: 0.8rem;
-  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.homedash__errorstate-retry {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 9px 18px;
+  border-radius: var(--radius-sm);
+  background: var(--red);
+  color: #fff;
+  transition: background-color 0.12s ease;
+}
+
+.homedash__errorstate-retry:hover {
+  background: var(--red-hover);
 }
 
 /* ---------- Range switcher (segmented control) ---------- */
@@ -62,7 +99,12 @@
   color: #fff;
 }
 
-/* ---------- Card grid ---------- */
+/* ---------- Card grid ----------
+   Sales (.homedash-card--hero) spans the full row on its own — it's the
+   one number this screen exists to answer, so it gets a visually distinct
+   treatment (larger padding, a subtle brand-tinted top border, bigger
+   type) rather than competing for attention as just another same-size
+   tile next to Top Sellers/Staff Performance/Live Status underneath. */
 .homedash__grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -72,11 +114,20 @@
 .homedash-card {
   background: var(--bg-surface);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   padding: 20px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+  box-shadow: var(--shadow-soft);
+  transition: box-shadow 0.15s ease;
+}
+
+.homedash-card--hero {
+  grid-column: 1 / -1;
+  padding: 28px 28px 26px;
+  border-top: 3px solid var(--red);
+  box-shadow: var(--shadow-medium);
 }
 
 .homedash-card__title {
@@ -88,6 +139,10 @@
   color: var(--text-muted);
 }
 
+.homedash-card--hero .homedash-card__title {
+  color: var(--red);
+}
+
 .homedash-card__notice {
   font-family: var(--font-mono);
   font-size: 0.8rem;
@@ -97,27 +152,29 @@
 /* ---------- Sales card ---------- */
 .homedash-card__hero {
   font-family: var(--font-mono);
-  font-size: 2.1rem;
+  font-size: 3rem;
   font-weight: 700;
   color: var(--text-primary);
   line-height: 1;
+  letter-spacing: -0.01em;
 }
 
 .homedash-card__stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 24px;
+  gap: 32px;
+  padding-top: 4px;
 }
 
 .homedash-stat {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .homedash-stat__value {
   font-family: var(--font-mono);
-  font-size: 1.15rem;
+  font-size: 1.3rem;
   font-weight: 700;
   color: var(--text-primary);
 }

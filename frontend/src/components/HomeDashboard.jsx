@@ -81,14 +81,29 @@ export default function HomeDashboard({ staff }) {
         </div>
       </div>
 
-      {error && <div className="homedash__error">{error}</div>}
-
-      <div className="homedash__grid">
-        <SalesCard summary={summary} loading={loading} />
-        <TopSellersCard items={topItems} loading={loading} />
-        <StaffPerformanceCard rows={staffPerf} loading={loading} />
-        <LiveStatusCard />
-      </div>
+      {error ? (
+        // A failed fetch must never look like "no sales today" — that was
+        // the actual root cause of stats silently appearing not to load:
+        // once loading finished, the cards had no way to distinguish
+        // "genuinely empty range" from "the request never succeeded," and
+        // defaulted to rendering the same calm empty-state copy either way.
+        // This replaces the whole grid with an unmissable, actionable error
+        // instead of three cards quietly lying about having real data.
+        <div className="homedash__errorstate">
+          <h3 className="homedash__errorstate-title">Couldn't load dashboard data</h3>
+          <p className="homedash__errorstate-msg">{error}</p>
+          <button className="homedash__errorstate-retry" onClick={load}>
+            Try Again
+          </button>
+        </div>
+      ) : (
+        <div className="homedash__grid">
+          <SalesCard summary={summary} loading={loading} />
+          <TopSellersCard items={topItems} loading={loading} />
+          <StaffPerformanceCard rows={staffPerf} loading={loading} />
+          <LiveStatusCard />
+        </div>
+      )}
     </div>
   );
 }
@@ -161,18 +176,21 @@ function LiveStatusCard() {
   );
 }
 
-function CardShell({ title, children }) {
+function CardShell({ title, children, className = "" }) {
   return (
-    <section className="homedash-card">
+    <section className={`homedash-card${className ? ` ${className}` : ""}`}>
       <h3 className="homedash-card__title">{title}</h3>
       {children}
     </section>
   );
 }
 
+// The one number an owner opens this screen to see — given its own visually
+// dominant row (full-width, larger type) rather than sitting as just
+// another tile the same size as Top Sellers/Staff Performance/Live Status.
 function SalesCard({ summary, loading }) {
   return (
-    <CardShell title="Sales">
+    <CardShell title="Sales" className="homedash-card--hero">
       {loading || !summary ? (
         <div className="homedash-card__notice">Loading…</div>
       ) : (

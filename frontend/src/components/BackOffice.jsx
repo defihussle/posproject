@@ -124,30 +124,43 @@ export default function BackOffice() {
 
   return (
     <div className="backoffice">
-      {/* Header */}
+      {/* Header — three-column grid so the logo stays the true visual
+          center regardless of what's in the outer columns (hamburger on
+          mobile, nothing on desktop — no staff name/Log Out here anymore,
+          both moved into the nav list itself, see sidebar below). */}
       <header className="backoffice__header">
-        <div className="backoffice__header-left">
-          {/* Hamburger — hidden on desktop via CSS, opens the mobile drawer */}
+        <div className="backoffice__header-side backoffice__header-side--left">
+          {/* Hamburger — hidden on desktop via CSS. Single SVG whose path
+              swaps between the three-line "menu" glyph and an "X" based on
+              sidebarOpen, so there's always a visible, correct affordance
+              to open OR close the drawer — never a dead/missing icon. */}
           <button
             className="backoffice__hamburger"
-            onClick={() => setSidebarOpen(true)}
-            aria-label="Open navigation menu"
+            onClick={() => setSidebarOpen((v) => !v)}
+            aria-label={sidebarOpen ? "Close navigation menu" : "Open navigation menu"}
+            aria-expanded={sidebarOpen}
           >
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="3" y1="12" x2="21" y2="12"></line>
-              <line x1="3" y1="6" x2="21" y2="6"></line>
-              <line x1="3" y1="18" x2="21" y2="18"></line>
-            </svg>
+            {sidebarOpen ? (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+              </svg>
+            ) : (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="12" x2="21" y2="12"></line>
+                <line x1="3" y1="6" x2="21" y2="6"></line>
+                <line x1="3" y1="18" x2="21" y2="18"></line>
+              </svg>
+            )}
           </button>
+        </div>
+
+        <div className="backoffice__header-center">
           <img src={logoImg} alt="NARCOS TACOS" className="backoffice__logo" />
           <span className="backoffice__label">Back Office</span>
         </div>
-        <div className="backoffice__right">
-          <span className="backoffice__user">{staff.name}</span>
-          <button className="backoffice__btn" onClick={handleLogout}>
-            Log Out
-          </button>
-        </div>
+
+        <div className="backoffice__header-side backoffice__header-side--right" aria-hidden="true" />
       </header>
 
       {/* Persistent nav + content */}
@@ -161,18 +174,34 @@ export default function BackOffice() {
         )}
 
         <nav className={`backoffice__sidebar${sidebarOpen ? " backoffice__sidebar--open" : ""}`}>
-          {visibleNav.map((item) => (
-            <button
-              key={item.key}
-              className={`backoffice__navitem${item.key === activeKey ? " backoffice__navitem--active" : ""}`}
-              onClick={() => {
-                setActiveKey(item.key);
-                setSidebarOpen(false); // no-op on desktop, closes the drawer on mobile
-              }}
-            >
-              {item.label}
+          <div className="backoffice__navlist">
+            {visibleNav.map((item) => (
+              <button
+                key={item.key}
+                className={`backoffice__navitem${item.key === activeKey ? " backoffice__navitem--active" : ""}`}
+                onClick={() => {
+                  setActiveKey(item.key);
+                  setSidebarOpen(false); // no-op on desktop, closes the drawer on mobile
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Log Out lives at the bottom of the nav list itself — same
+              persistent sidebar on desktop, same drawer on mobile — rather
+              than a separate top-bar element. */}
+          <div className="backoffice__navfoot">
+            <button className="backoffice__navitem backoffice__navitem--logout" onClick={handleLogout}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                <polyline points="16 17 21 12 16 7"></polyline>
+                <line x1="21" y1="12" x2="9" y2="12"></line>
+              </svg>
+              Log Out
             </button>
-          ))}
+          </div>
         </nav>
 
         <main className={`backoffice__body${TOP_ALIGNED ? " backoffice__body--top" : ""}`}>

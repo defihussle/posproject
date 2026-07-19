@@ -33,7 +33,7 @@ export default function ManageMenu({ staff }) {
       </div>
 
       <div className="managemenu__body">
-        <MenuManager staff={staff} />
+        <MenuManager staff={staff} showTitle={false} />
       </div>
     </div>
   );

@@ -17,7 +17,7 @@ const fmtPrice = (p) => `$${parseFloat(p).toFixed(2)}`;
  * this file has zero client-side role gating of its own to duplicate, and
  * zero new backend routes.
  */
-export default function MenuManager({ staff }) {
+export default function MenuManager({ staff, showTitle = true }) {
   const [menu, setMenu] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -226,6 +226,12 @@ export default function MenuManager({ staff }) {
 
   return (
     <div className="menued">
+      {showTitle && (
+        <div className="menued__toolbar">
+          <h2 className="menued__title">Menu</h2>
+        </div>
+      )}
+
       {error && <div className="menued__error">{error}</div>}
 
       <div className="menued__shell">
