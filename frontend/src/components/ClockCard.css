@@ -1,0 +1,91 @@
+/* ============================================================
+   Clock In/Out — Order Entry account dropdown, contextual card.
+   Shares StaffManager.css's overlay/modal shell.
+   ============================================================ */
+
+.clockcard__modal {
+  max-width: 340px;
+}
+
+.clockcard__body {
+  align-items: stretch;
+}
+
+.clockcard__timer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 18px 12px;
+  background: var(--bg-primary);
+  border-radius: var(--radius-md);
+}
+
+.clockcard__timer strong {
+  font-family: var(--font-mono);
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.clockcard__timer--break strong {
+  color: #b0670f;
+}
+
+.clockcard__action-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.clockcard__action-btn {
+  flex: 1;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 700;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  transition: all 0.12s ease;
+}
+
+.clockcard__action-btn:hover:not(:disabled) {
+  border-color: var(--text-primary);
+}
+
+.clockcard__action-btn--start {
+  width: 100%;
+  background: var(--red);
+  color: #fff;
+  border-color: transparent;
+  padding: 16px;
+  font-size: 0.95rem;
+}
+
+.clockcard__action-btn--start:hover:not(:disabled) {
+  background: var(--red-hover);
+}
+
+.clockcard__action-btn--end {
+  background: var(--red);
+  color: #fff;
+  border-color: transparent;
+}
+
+.clockcard__action-btn--end:hover:not(:disabled) {
+  background: var(--red-hover);
+}
+
+.clockcard__pin-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}

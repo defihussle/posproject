@@ -67,6 +67,10 @@ posproject/
 - `shifts` — id, staff_id, location_id, clock_in (default now()), 
   clock_out (nullable — NULL means the shift is still open). Self-service 
   clock in/out, Order Entry account dropdown, all roles (see below)
+- `shift_breaks` — id, shift_id (FK to shifts), break_start (default 
+  now()), break_end (nullable — NULL means the break is still open). 
+  Multiple rows per shift, no limit — a shift's worked time is clock_out 
+  minus clock_in minus the sum of every break within it
 - `menu_categories`, `menu_items`, `item_variants` (e.g. protein choices, 
   each with own absolute price), `modifier_groups`, `modifier_options` 
   (has `max_quantity` for stepper-style multi-select, `default_selected` 
@@ -250,29 +254,41 @@ posproject/
   from the same polled data, no extra route
 - Back Office (`/backoffice`): Home (sales summary, order count, avg 
   order, **Total Tips**, top sellers, staff performance — Today/Week/
-  Month range switcher), Staff Management (full CRUD, PIN reset, 
-  hierarchy-enforced, email field for owner/admin), Menu Management (full 
-  CRUD for items, variants, AND modifier groups/options)
+  Month range switcher — plus **Live Status**, a read-only 5s-polled card 
+  showing every currently-clocked-in staff member and how long they've 
+  been Working/On Break, `GET /api/backoffice/staff/live-status`, owner/
+  admin only), Staff Management (full CRUD, PIN reset, hierarchy-
+  enforced, email field for owner/admin), Menu Management (full CRUD for 
+  items, variants, AND modifier groups/options)
 - Manage Menu (`/manage-menu`) — the same editor as Back Office's Menu 
   Management, reachable from the POS for owner/admin
 - Order Entry account dropdown, self-service, every role, no Back Office 
-  equivalent (works for cashier/kitchen too, who have no Back Office 
-  access at all):
+  equivalent for the actions themselves (works for cashier/kitchen too, 
+  who have no Back Office access at all — Live Status above is read-only 
+  visibility into the same state, not a duplicate control surface):
   - **Change PIN** (`PUT /api/staff/me/pin`) — current PIN required and 
     bcrypt-verified server-side; distinct from the manager+ 
     `PUT /api/backoffice/staff/:id/pin` route that resets SOMEONE ELSE's 
     PIN
-  - **Clock In / Clock Out** (`POST /api/staff/me/clock-in` / 
-    `.../clock-out`) — one open shift at a time per person, dropdown 
-    label toggles contextually based on real state (checked on dropdown 
-    open)
+  - **Clock In/Out** — a single contextual card (`ClockCard.jsx`) driven 
+    by `GET /api/staff/me/clock-status` (`not_clocked_in` | `working` | 
+    `on_break`, checked fresh every time the card opens): Start Shift; 
+    or a running shift timer + End Shift/Take Break; or a running break 
+    timer + End Break/End Shift (ending a shift directly from a break — 
+    an emergency path — auto-closes the open break with the same 
+    clock-out timestamp first, so a shift can never end with a break 
+    still open). Every action (`POST /api/staff/me/clock-in`, 
+    `.../clock-out`, `.../break-start`, `.../break-end`) requires the PIN 
+    entered inline in the card, bcrypt-verified server-side same as PIN 
+    login. Multiple breaks per shift, no limit.
   - **My Hours** (`GET /api/staff/me/hours?range=today|week|month`) — own 
-    shift history + total hours, Today/Week/Month switcher matching Back 
-    Office Home's. Always scoped to the calling staffId; no parameter 
-    broadens it to anyone else's shifts
-  - No break tracking, no manager editing/correction of punches, and 
-    clock status is NOT a gate on order-taking — pure time-tracking 
-    layered on top of PIN-based access, deliberately simple for v1
+    shift history + total WORKED hours (clocked time minus every break 
+    within it), Today/Week/Month switcher matching Back Office Home's. 
+    Always scoped to the calling staffId; no parameter broadens it to 
+    anyone else's shifts
+  - No manager editing/correction of punches, and clock status is NOT a 
+    gate on order-taking — pure time-tracking layered on top of 
+    PIN-based access
 
 ## What's NOT built yet
 - Back Office Reports/Orders sections (not yet added to the nav)

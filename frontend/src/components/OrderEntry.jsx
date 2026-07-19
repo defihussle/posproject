@@ -4,6 +4,7 @@ import ItemModal from "./ItemModal";
 import { StaffAddForm } from "./StaffManager";
 import ChangePinModal from "./ChangePinModal";
 import MyHoursModal from "./MyHoursModal";
+import ClockCard from "./ClockCard";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import { API_URL } from "../config";
 import "./OrderEntry.css";
@@ -34,6 +35,16 @@ const DISCOUNT_REASONS = [
 ];
 const DISCOUNT_REASON_LABEL = Object.fromEntries(DISCOUNT_REASONS.map((r) => [r.key, r.label]));
 
+// Account dropdown's clock entry label, derived from GET /me/clock-status.
+// The card itself (ClockCard) re-fetches fresh status on open regardless —
+// this is just so the dropdown entry doesn't say a generic "Clock In/Out"
+// when it can say something more useful.
+const CLOCK_ENTRY_LABEL = {
+  not_clocked_in: "Clock In",
+  working: "Clock Out",
+  on_break: "On Break",
+};
+
 // Swipe-to-delete tuning (cart line rows) — px of leftward drag.
 const SWIPE_REVEAL_PX = 76; // how far a partial swipe reveals the delete icon
 const SWIPE_DELETE_PX = 140; // swipe past this and release = delete immediately
@@ -53,24 +64,23 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [staffAddedName, setStaffAddedName] = useState(null); // brief success note
   const [changePinOpen, setChangePinOpen] = useState(false);
   const [myHoursOpen, setMyHoursOpen] = useState(false);
+  const [clockCardOpen, setClockCardOpen] = useState(false);
 
-  // Clock in/out — whether the logged-in staffId currently has an open
-  // shift, driving the dropdown's contextual Clock In/Clock Out label.
-  // null = not checked yet (dropdown never opened this session).
-  const [clockedIn, setClockedIn] = useState(null);
-  const [clockBusy, setClockBusy] = useState(false);
-  const [clockToast, setClockToast] = useState(null); // { text, isError }
-  const clockToastTimer = useRef(null);
+  // Just for the dropdown entry's label — 'not_clocked_in' | 'working' |
+  // 'on_break' | null (not checked yet). ClockCard fetches its own fresh
+  // status independently when it opens; this is a lighter-weight read of
+  // the same route purely for the entry text.
+  const [clockStatus, setClockStatus] = useState(null);
 
   const fetchClockStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/staff/me/hours?staffId=${staff.id}`);
+      const res = await fetch(`${API_URL}/api/staff/me/clock-status?staffId=${staff.id}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      setClockedIn(!!data.openShift);
+      setClockStatus(data.status);
     } catch {
       // Leave whatever we last knew — a transient failure here shouldn't
-      // flip the dropdown to a wrong state; the next open retries.
+      // flip the dropdown to a wrong label; the next open retries.
     }
   }, [staff.id]);
 
@@ -83,39 +93,6 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   useEffect(() => {
     if (accountMenuOpen) fetchClockStatus();
   }, [accountMenuOpen, fetchClockStatus]);
-
-  useEffect(() => {
-    return () => {
-      if (clockToastTimer.current) clearTimeout(clockToastTimer.current);
-    };
-  }, []);
-
-  const showClockToast = useCallback((text, isError = false) => {
-    setClockToast({ text, isError });
-    if (clockToastTimer.current) clearTimeout(clockToastTimer.current);
-    clockToastTimer.current = setTimeout(() => setClockToast(null), 3000);
-  }, []);
-
-  const handleClockToggle = useCallback(async () => {
-    if (clockBusy || clockedIn === null) return;
-    setClockBusy(true);
-    const endpoint = clockedIn ? "clock-out" : "clock-in";
-    try {
-      const res = await fetch(`${API_URL}/api/staff/me/${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ staffId: staff.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      setClockedIn(!clockedIn);
-      showClockToast(clockedIn ? "Clocked out" : "Clocked in");
-    } catch (err) {
-      showClockToast(err.message || "Something went wrong", true);
-    } finally {
-      setClockBusy(false);
-    }
-  }, [clockBusy, clockedIn, staff.id, showClockToast]);
 
   // Discount — { percent, reason } | null. Cleared on successful checkout,
   // same lifecycle as the cart itself.
@@ -384,10 +361,12 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                   {/* Self-service — every role, no gating */}
                   <button
                     className="oe-account-menu-item"
-                    onClick={handleClockToggle}
-                    disabled={clockBusy || clockedIn === null}
+                    onClick={() => {
+                      setAccountMenuOpen(false);
+                      setClockCardOpen(true);
+                    }}
                   >
-                    {clockedIn ? "Clock Out" : "Clock In"}
+                    {clockStatus ? CLOCK_ENTRY_LABEL[clockStatus] : "Clock In/Out"}
                   </button>
                   <button
                     className="oe-account-menu-item"
@@ -618,11 +597,17 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
         <MyHoursModal staff={staff} onClose={() => setMyHoursOpen(false)} />
       )}
 
-      {/* Clock in/out confirmation */}
-      {clockToast && (
-        <div className={`oe-clock-toast${clockToast.isError ? " oe-clock-toast--error" : ""}`}>
-          {clockToast.isError ? clockToast.text : `✓ ${clockToast.text}`}
-        </div>
+      {/* Clock In/Out — every role, self-service, Order-Entry-only.
+          Refreshes the dropdown entry's own label on close, in case the
+          state changed while the card was open. */}
+      {clockCardOpen && (
+        <ClockCard
+          staff={staff}
+          onClose={() => {
+            setClockCardOpen(false);
+            fetchClockStatus();
+          }}
+        />
       )}
 
       {/* Checkout Modal */}

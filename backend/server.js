@@ -2225,6 +2225,45 @@ app.get("/api/backoffice/staff", async (req, res) => {
   }
 });
 
+// GET /api/backoffice/staff/live-status
+// Owner/admin only — every staff member currently clocked in (open shift,
+// any location), with their live status and the relevant since-timestamp
+// (shift clock_in if working, break_start if on break). Powers Back Office
+// Home's Live Status card. The clock-in/out actions themselves are Order
+// Entry-only (cashier/kitchen have no Back Office access at all) — this is
+// read-only visibility into that same state, not a duplicate of the
+// actions.
+app.get("/api/backoffice/staff/live-status", async (req, res) => {
+  try {
+    await requireBackofficeSession(req);
+
+    const { rows } = await pool.query(
+      `SELECT st.id AS staff_id, st.name, st.role, s.clock_in, b.break_start
+         FROM shifts s
+         JOIN staff st ON st.id = s.staff_id
+         LEFT JOIN LATERAL (
+           SELECT break_start FROM shift_breaks
+            WHERE shift_id = s.id AND break_end IS NULL
+            ORDER BY break_start DESC LIMIT 1
+         ) b ON true
+        WHERE s.clock_out IS NULL
+        ORDER BY st.name`
+    );
+
+    res.json(
+      rows.map((r) => ({
+        staffId: r.staff_id,
+        name: r.name,
+        role: r.role,
+        status: r.break_start ? "on_break" : "working",
+        since: r.break_start || r.clock_in,
+      }))
+    );
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch live staff status");
+  }
+});
+
 // Shared create-staff logic for the two routes below, which differ ONLY in
 // who's allowed to call them and HOW that requester was authenticated:
 //   POST /api/backoffice/staff  — full Back Office "+ Add Staff", owner/
@@ -2364,12 +2403,62 @@ app.put("/api/staff/me/pin", async (req, res) => {
   }
 });
 
+// Verify a submitted PIN against the given (already-resolved) staffId's
+// stored hash — shared by every clock action below that requires PIN
+// confirmation (clock-in/out, break-start/end). Same bcrypt.compare shape
+// as PUT /me/pin above, generic error either way so nothing leaks about
+// staffId validity.
+async function verifyStaffPin(staffId, pin) {
+  if (typeof pin !== "string" || !/^\d{4}$/.test(pin)) {
+    throw new HttpError(400, "PIN must be exactly 4 digits");
+  }
+  const { rows } = await pool.query("SELECT pin_hash FROM staff WHERE id = $1", [staffId]);
+  const matches = rows[0] && (await bcrypt.compare(pin, rows[0].pin_hash));
+  if (!matches) {
+    throw new HttpError(401, "Incorrect PIN");
+  }
+}
+
+// GET /api/staff/me/clock-status?staffId=...
+// The logged-in staffId's current state — 'not_clocked_in' | 'working' |
+// 'on_break' — plus whichever timestamp a running client-side timer needs
+// (shift clock_in, or break_start when on break). Powers the account
+// dropdown's contextual Start Shift/End Shift/Take Break/End Break card
+// (and the dropdown entry's own label).
+app.get("/api/staff/me/clock-status", async (req, res) => {
+  try {
+    const requester = await requireStaffIdParam(req.query.staffId, STAFF_ROLES);
+
+    const { rows: shiftRows } = await pool.query(
+      "SELECT id, clock_in FROM shifts WHERE staff_id = $1 AND clock_out IS NULL ORDER BY clock_in DESC LIMIT 1",
+      [requester.id]
+    );
+    if (shiftRows.length === 0) {
+      return res.json({ status: "not_clocked_in" });
+    }
+    const shift = shiftRows[0];
+
+    const { rows: breakRows } = await pool.query(
+      "SELECT break_start FROM shift_breaks WHERE shift_id = $1 AND break_end IS NULL ORDER BY break_start DESC LIMIT 1",
+      [shift.id]
+    );
+    if (breakRows.length > 0) {
+      return res.json({ status: "on_break", clockIn: shift.clock_in, breakStart: breakRows[0].break_start });
+    }
+    return res.json({ status: "working", clockIn: shift.clock_in });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch clock status");
+  }
+});
+
 // POST /api/staff/me/clock-in
-// Body: { staffId }. Rejects with 409 if this staffId already has an open
-// (unclosed) shift — one active clock-in at a time per person.
+// Body: { staffId, pin }. Rejects with 409 if this staffId already has an
+// open (unclosed) shift — one active clock-in at a time per person.
 app.post("/api/staff/me/clock-in", async (req, res) => {
   try {
-    const requester = await requireStaffIdParam((req.body || {}).staffId, STAFF_ROLES);
+    const { staffId, pin } = req.body || {};
+    const requester = await requireStaffIdParam(staffId, STAFF_ROLES);
+    await verifyStaffPin(requester.id, pin);
 
     const { rows: openRows } = await pool.query(
       "SELECT id FROM shifts WHERE staff_id = $1 AND clock_out IS NULL",
@@ -2403,35 +2492,133 @@ app.post("/api/staff/me/clock-in", async (req, res) => {
 });
 
 // POST /api/staff/me/clock-out
-// Body: { staffId }. Rejects with 409 if this staffId has no open shift.
+// Body: { staffId, pin }. Rejects with 409 if this staffId has no open
+// shift. If there's an open break on that shift, it's closed automatically
+// with the SAME clock-out timestamp before the shift itself closes — a
+// shift must never end with a break still technically open, and this is
+// what makes "End Shift" work correctly from the on_break state too (the
+// emergency path: no separate break-end step required). Both updates run
+// in one transaction so a crash between them can never leave the break
+// open against an already-closed shift.
 app.post("/api/staff/me/clock-out", async (req, res) => {
   try {
-    const requester = await requireStaffIdParam((req.body || {}).staffId, STAFF_ROLES);
+    const { staffId, pin } = req.body || {};
+    const requester = await requireStaffIdParam(staffId, STAFF_ROLES);
+    await verifyStaffPin(requester.id, pin);
 
-    const { rows: openRows } = await pool.query(
-      "SELECT id FROM shifts WHERE staff_id = $1 AND clock_out IS NULL ORDER BY clock_in DESC LIMIT 1",
-      [requester.id]
-    );
-    if (openRows.length === 0) {
-      throw new HttpError(409, "You're not clocked in");
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const { rows: openRows } = await client.query(
+        "SELECT id FROM shifts WHERE staff_id = $1 AND clock_out IS NULL ORDER BY clock_in DESC LIMIT 1 FOR UPDATE",
+        [requester.id]
+      );
+      if (openRows.length === 0) {
+        await client.query("ROLLBACK");
+        throw new HttpError(409, "You're not clocked in");
+      }
+      const shiftId = openRows[0].id;
+
+      await client.query(
+        "UPDATE shift_breaks SET break_end = now() WHERE shift_id = $1 AND break_end IS NULL",
+        [shiftId]
+      );
+
+      const { rows } = await client.query(
+        "UPDATE shifts SET clock_out = now() WHERE id = $1 RETURNING id, clock_in, clock_out",
+        [shiftId]
+      );
+
+      await client.query("COMMIT");
+      res.json({ success: true, shift: rows[0] });
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
-
-    const { rows } = await pool.query(
-      "UPDATE shifts SET clock_out = now() WHERE id = $1 RETURNING id, clock_in, clock_out",
-      [openRows[0].id]
-    );
-    res.json({ success: true, shift: rows[0] });
   } catch (err) {
     sendHttpError(res, err, "Failed to clock out");
   }
 });
 
+// POST /api/staff/me/break-start
+// Body: { staffId, pin }. Rejects with 409 if this staffId has no open
+// shift, or is already on an open break.
+app.post("/api/staff/me/break-start", async (req, res) => {
+  try {
+    const { staffId, pin } = req.body || {};
+    const requester = await requireStaffIdParam(staffId, STAFF_ROLES);
+    await verifyStaffPin(requester.id, pin);
+
+    const { rows: shiftRows } = await pool.query(
+      "SELECT id FROM shifts WHERE staff_id = $1 AND clock_out IS NULL ORDER BY clock_in DESC LIMIT 1",
+      [requester.id]
+    );
+    if (shiftRows.length === 0) {
+      throw new HttpError(409, "You're not clocked in");
+    }
+    const shiftId = shiftRows[0].id;
+
+    const { rows: openBreakRows } = await pool.query(
+      "SELECT id FROM shift_breaks WHERE shift_id = $1 AND break_end IS NULL",
+      [shiftId]
+    );
+    if (openBreakRows.length > 0) {
+      throw new HttpError(409, "You're already on a break");
+    }
+
+    const { rows } = await pool.query(
+      "INSERT INTO shift_breaks (shift_id, break_start) VALUES ($1, now()) RETURNING id, break_start",
+      [shiftId]
+    );
+    res.status(201).json({ success: true, break: rows[0] });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to start break");
+  }
+});
+
+// POST /api/staff/me/break-end
+// Body: { staffId, pin }. Rejects with 409 if this staffId has no open
+// break (whether because they're not clocked in, or clocked in but not on
+// a break).
+app.post("/api/staff/me/break-end", async (req, res) => {
+  try {
+    const { staffId, pin } = req.body || {};
+    const requester = await requireStaffIdParam(staffId, STAFF_ROLES);
+    await verifyStaffPin(requester.id, pin);
+
+    const { rows: openBreakRows } = await pool.query(
+      `SELECT b.id
+         FROM shift_breaks b
+         JOIN shifts s ON s.id = b.shift_id
+        WHERE s.staff_id = $1 AND s.clock_out IS NULL AND b.break_end IS NULL
+        ORDER BY b.break_start DESC LIMIT 1`,
+      [requester.id]
+    );
+    if (openBreakRows.length === 0) {
+      throw new HttpError(409, "You're not on a break");
+    }
+
+    const { rows } = await pool.query(
+      "UPDATE shift_breaks SET break_end = now() WHERE id = $1 RETURNING id, break_start, break_end",
+      [openBreakRows[0].id]
+    );
+    res.json({ success: true, break: rows[0] });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to end break");
+  }
+});
+
 // GET /api/staff/me/hours?staffId=...&range=today|week|month
-// Own shift history + total hours in range, plus whether there's a
-// currently open shift (drives the account dropdown's Clock In/Clock Out
-// toggle — the frontend calls this same route for that check). Always
-// scoped to the resolved staffId; there is no parameter that broadens this
-// to any other staff member's shifts.
+// Own shift history + total WORKED hours in range (clocked time minus every
+// break within it), plus whether there's a currently open shift (drives the
+// account dropdown's clock-status label — the frontend calls this same
+// clock-status logic via /clock-status now, but openShift stays here too
+// for anything still reading it off /hours). Always scoped to the resolved
+// staffId; there is no parameter that broadens this to any other staff
+// member's shifts.
 app.get("/api/staff/me/hours", async (req, res) => {
   try {
     const requester = await requireStaffIdParam(req.query.staffId, STAFF_ROLES);
@@ -2447,22 +2634,45 @@ app.get("/api/staff/me/hours", async (req, res) => {
       [requester.id, trunc, location.timezone]
     );
 
+    // Break seconds per shift. A closed break uses its real duration; an
+    // open break (only possible on the currently-open shift, since
+    // clock-out always closes any open break first) counts up to now(),
+    // the same "still running" treatment the open shift itself gets below.
+    const shiftIds = shiftRows.map((s) => s.id);
+    const breakSecondsByShift = {};
+    if (shiftIds.length > 0) {
+      const { rows: breakRows } = await pool.query(
+        "SELECT shift_id, break_start, break_end FROM shift_breaks WHERE shift_id = ANY($1)",
+        [shiftIds]
+      );
+      for (const b of breakRows) {
+        const endMs = b.break_end ? new Date(b.break_end).getTime() : Date.now();
+        const seconds = Math.max(0, (endMs - new Date(b.break_start).getTime()) / 1000);
+        breakSecondsByShift[b.shift_id] = (breakSecondsByShift[b.shift_id] || 0) + seconds;
+      }
+    }
+
     let totalSeconds = 0;
     const shifts = shiftRows.map((s) => {
       const clockOutMs = s.clock_out ? new Date(s.clock_out).getTime() : Date.now();
-      const seconds = Math.max(0, (clockOutMs - new Date(s.clock_in).getTime()) / 1000);
+      const grossSeconds = Math.max(0, (clockOutMs - new Date(s.clock_in).getTime()) / 1000);
+      const breakSeconds = breakSecondsByShift[s.id] || 0;
+      // Worked time = clocked time minus every break within it — floored at
+      // 0 so it can never go negative.
+      const seconds = Math.max(0, grossSeconds - breakSeconds);
       totalSeconds += seconds;
       return {
         id: s.id,
         clockIn: s.clock_in,
         clockOut: s.clock_out,
         seconds: Math.round(seconds),
+        breakSeconds: Math.round(breakSeconds),
       };
     });
 
     // Open-shift check is deliberately NOT scoped to the range boundary —
     // it always reflects real-time truth (a shift that started yesterday
-    // but is still open must still show "Clock Out" today).
+    // but is still open must still show as open today).
     const { rows: openRows } = await pool.query(
       "SELECT id, clock_in FROM shifts WHERE staff_id = $1 AND clock_out IS NULL",
       [requester.id]

@@ -10,6 +10,16 @@ const RANGES = [
 
 const fmtMoney = (n) => `$${Number(n).toFixed(2)}`;
 
+const LIVE_STATUS_POLL_MS = 5000; // same cadence KDS uses for its live order queue
+
+function fmtSince(iso, nowMs) {
+  const seconds = Math.max(0, Math.floor((nowMs - new Date(iso).getTime()) / 1000));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h === 0) return `${m}m`;
+  return `${h}h ${m}m`;
+}
+
 /**
  * Back Office → Home. Pure display — stat cards only, no editing controls.
  * Owner/admin only (StaffManager route is the manager's landing page instead).
@@ -77,8 +87,77 @@ export default function HomeDashboard({ staff }) {
         <SalesCard summary={summary} loading={loading} />
         <TopSellersCard items={topItems} loading={loading} />
         <StaffPerformanceCard rows={staffPerf} loading={loading} />
+        <LiveStatusCard />
       </div>
     </div>
+  );
+}
+
+// Every currently-clocked-in staff member (any location), live. Polls
+// independently of the Today/Week/Month range switcher above — this is
+// real-time state, not a historical range. The clock-in/out actions
+// themselves stay Order-Entry-only; this is read-only visibility into
+// that same state, not a duplicate control surface.
+function LiveStatusCard() {
+  const [staffList, setStaffList] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/backoffice/staff/live-status`, {
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setStaffList(data);
+      setError(null);
+    } catch (err) {
+      setError(err.message || "Failed to load live status");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, LIVE_STATUS_POLL_MS);
+    return () => clearInterval(id);
+  }, [load]);
+
+  // 1s tick so each "since" duration counts up smoothly between polls,
+  // same pattern KDS uses for its elapsed timers.
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <CardShell title="Live Status">
+      {loading ? (
+        <div className="homedash-card__notice">Loading…</div>
+      ) : error ? (
+        <div className="homedash-card__notice">{error}</div>
+      ) : staffList.length === 0 ? (
+        <div className="homedash-card__notice">No one clocked in right now</div>
+      ) : (
+        <ul className="homedash-list">
+          {staffList.map((s) => (
+            <li key={s.staffId} className="homedash-list__row">
+              <span
+                className={`homedash-live-dot homedash-live-dot--${s.status}`}
+                aria-hidden="true"
+              />
+              <span className="homedash-list__name">{s.name}</span>
+              <span className="homedash-list__sub">
+                {s.status === "on_break" ? "On Break" : "Working"} · {fmtSince(s.since, nowMs)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </CardShell>
   );
 }
 

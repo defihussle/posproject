@@ -191,3 +191,19 @@
   color: var(--text-primary);
   flex-shrink: 0;
 }
+
+/* ---------- Live Status ---------- */
+.homedash-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.homedash-live-dot--working {
+  background: var(--green);
+}
+
+.homedash-live-dot--on_break {
+  background: #e8a32e;
+}
