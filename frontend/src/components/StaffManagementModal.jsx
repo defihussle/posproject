@@ -1,26 +1,71 @@
-import StaffManager from "./StaffManager";
+import { useState, useEffect, useCallback } from "react";
+import { API_URL } from "../config";
+import { canManageTarget, StaffAddForm } from "./StaffManager";
 import "./StaffManager.css";
+import "./StaffManagementModal.css";
+
+const LIVE_STATUS_POLL_MS = 5000; // same cadence as Back Office Home's Live Status card
+
+function fmtSince(iso, nowMs) {
+  const seconds = Math.max(0, Math.floor((nowMs - new Date(iso).getTime()) / 1000));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h === 0) return `${m}m`;
+  return `${h}h ${m}m`;
+}
 
 /**
- * Order Entry's "Staff Management" popup — owner/admin only. Same pattern
- * as ManageMenu.jsx (one shared component, two entry points: Back Office's
- * Staff tab and this POS popup), except this one stays a modal rather than
- * a full page, per this feature's spec — a "pop up card," similar
- * interaction weight to the item customization modal, not a page
- * navigation like Manage Menu.
+ * Order Entry's "Staff Management" popup — owner/admin only. Self-
+ * contained: hits the POS-specific /api/staff/* routes (roster,
+ * :id/status, :id/reset-pin, quick-add), which all follow the SAME
+ * trusted-staffId pattern as the rest of Order Entry — staffId comes from
+ * the client, the server re-derives that staffId's real role from the DB
+ * server-side. No Back Office session cookie involved anywhere in this
+ * file, and therefore no dependency on ever having logged into Back
+ * Office on this device (that was the bug in the previous version, which
+ * reused /api/backoffice/staff* and silently required a separate
+ * email+password+TOTP login on the same browser).
  *
- * Renders the exact same StaffManager component/logic Back Office uses
- * (list, inline edit, deactivate/reactivate, PIN reset, add) — same
- * /api/backoffice/staff* routes, same owner/admin role check, same
- * hierarchy protections, nothing duplicated or weakened. The one addition
- * is live clock-in/break status per row, via StaffManager's opt-in
- * showLiveStatus prop (Back Office's own Staff tab doesn't pass it, so
- * that surface is completely unchanged).
- *
- * Manager's dropdown entry is untouched — this popup is owner/admin only;
- * manager keeps the existing add-only quick-add modal (see OrderEntry.jsx).
+ * Deliberately smaller scope than Back Office's own StaffManager.jsx
+ * (unchanged, untouched by this file): view + add + deactivate/
+ * reactivate + reset PIN. No role/hourly-rate editing here — that stays
+ * Back-Office-only, a "quick troubleshooting on the counter tablet" tool
+ * rather than a duplicate of full HR editing.
  */
 export default function StaffManagementModal({ staff, onClose }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/staff/roster?staffId=${staff.id}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setRows(data);
+      setError(null);
+    } catch (err) {
+      setError(err.message || "Failed to load staff");
+    } finally {
+      setLoading(false);
+    }
+  }, [staff.id]);
+
+  // Poll so live status stays live. Safe to refresh the whole roster on an
+  // interval — rows are keyed by id, so a row mid-action (PIN prompt open,
+  // deactivate in flight) keeps its own local state across the re-fetch;
+  // React just re-renders the existing row instances with fresh props.
+  useEffect(() => {
+    load();
+    const id = setInterval(load, LIVE_STATUS_POLL_MS);
+    return () => clearInterval(id);
+  }, [load]);
+
+  const applyRow = useCallback((updated) => {
+    setRows((prev) => prev.map((r) => (r.id === updated.id ? { ...r, ...updated } : r)));
+  }, []);
+
   return (
     <div className="staffmgr__overlay" onClick={onClose}>
       <div className="staffmgr__modal staffmgr__modal--wide" onClick={(e) => e.stopPropagation()}>
@@ -32,8 +77,183 @@ export default function StaffManagementModal({ staff, onClose }) {
             </svg>
           </button>
         </div>
+
+        <div className="staffmgr__modal-body staffroster">
+          {error && <div className="staffmgr__error">{error}</div>}
+
+          <div className="staffroster__toolbar">
+            <h2 className="staffmgr__title">Staff</h2>
+            <button className="staffmgr__add-btn" onClick={() => setShowAdd(true)}>
+              + Add Staff
+            </button>
+          </div>
+
+          {loading ? (
+            <div className="staffmgr__notice">Loading staff…</div>
+          ) : (
+            <div className="staffroster__table">
+              <div className="staffroster-row staffroster-row--head" aria-hidden="true">
+                <span>Name</span>
+                <span>Role</span>
+                <span>Status</span>
+                <span />
+              </div>
+              {rows.map((row) => (
+                <StaffRosterRow key={row.id} row={row} me={staff} onSaved={applyRow} onError={setError} />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {showAdd && (
+        <div className="staffmgr__overlay" onClick={(e) => { e.stopPropagation(); setShowAdd(false); }}>
+          <div className="staffmgr__modal" onClick={(e) => e.stopPropagation()}>
+            <div className="staffmgr__modal-head">
+              <h3 className="staffmgr__modal-title">Add Staff</h3>
+              <button className="staffmgr__modal-close" onClick={() => setShowAdd(false)} aria-label="Close">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <StaffAddForm
+              staff={staff}
+              endpoint="/api/staff/quick-add"
+              onCreated={(created) => {
+                setRows((prev) => [...prev, { ...created, live: null }]);
+                setShowAdd(false);
+              }}
+              onCancel={() => setShowAdd(false)}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StaffRosterRow({ row, me, onSaved, onError }) {
+  const [pinPrompt, setPinPrompt] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const manageable = canManageTarget(me.role, row.role);
+
+  const toggleActive = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${API_URL}/api/staff/${row.id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ staffId: me.id, active: !row.active }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      onSaved(data);
+      onError(null);
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={`staffroster-row${row.active ? "" : " staffroster-row--inactive"}`}>
+      <span className="staffroster-row__name">
+        {row.name}
+        {row.id === me.id && <span className="staffroster-row__you">you</span>}
+        {row.live && (
+          <span className={`staffroster-row__live staffroster-row__live--${row.live.status}`}>
+            {row.live.status === "on_break" ? "On Break" : "Working"} · {fmtSince(row.live.since, Date.now())}
+          </span>
+        )}
+      </span>
+      <span className={`staffroster-row__role staffroster-row__role--${row.role}`}>{row.role}</span>
+      <span className={`staffroster-row__status${row.active ? "" : " staffroster-row__status--off"}`}>
+        {row.active ? "ACTIVE" : "INACTIVE"}
+      </span>
+      <div className="staffroster-row__actions">
+        {/* Hidden entirely when hierarchy says hands-off, mirroring the
+            server-side canManageTarget check every write also re-runs. */}
+        {manageable && (
+          <>
+            <button className="staffmgr__btn" onClick={() => setPinPrompt(true)}>
+              Reset PIN
+            </button>
+            <button
+              className={`staffmgr__btn ${row.active ? "staffmgr__btn--danger" : "staffmgr__btn--green"}`}
+              onClick={toggleActive}
+              disabled={busy}
+            >
+              {busy ? "…" : row.active ? "Deactivate" : "Reactivate"}
+            </button>
+          </>
+        )}
+      </div>
+
+      {pinPrompt && (
+        <RosterPinResetPrompt row={row} me={me} onDone={() => setPinPrompt(false)} onError={onError} />
+      )}
+    </div>
+  );
+}
+
+// Same shape as StaffManager.jsx's PinResetPrompt, but posts to the
+// trusted-staffId route instead of the Back Office session-cookie one.
+function RosterPinResetPrompt({ row, me, onDone, onError }) {
+  const [pin, setPin] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [localErr, setLocalErr] = useState(null);
+
+  const save = async () => {
+    if (saving) return;
+    if (!/^\d{4}$/.test(pin)) {
+      setLocalErr("PIN must be exactly 4 digits");
+      return;
+    }
+    setSaving(true);
+    setLocalErr(null);
+    try {
+      const res = await fetch(`${API_URL}/api/staff/${row.id}/reset-pin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ staffId: me.id, pin }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      onError(null);
+      onDone();
+    } catch (err) {
+      setLocalErr(err.message);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="staffmgr__overlay" onClick={onDone}>
+      <div className="staffmgr__modal staffmgr__modal--small" onClick={(e) => e.stopPropagation()}>
+        <div className="staffmgr__modal-head">
+          <h3 className="staffmgr__modal-title">Reset PIN — {row.name}</h3>
+        </div>
         <div className="staffmgr__modal-body">
-          <StaffManager staff={staff} showLiveStatus />
+          {localErr && <div className="staffmgr__error">{localErr}</div>}
+          <input
+            className="staffmgr__input staffmgr__input--pin"
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+            placeholder="New 4-digit PIN"
+            inputMode="numeric"
+            autoFocus
+          />
+          <div className="staffmgr__modal-actions">
+            <button className="staffmgr__btn" onClick={onDone} disabled={saving}>
+              Cancel
+            </button>
+            <button className="staffmgr__btn staffmgr__btn--save" onClick={save} disabled={saving}>
+              {saving ? "Saving…" : "Set PIN"}
+            </button>
+          </div>
         </div>
       </div>
     </div>

@@ -47,10 +47,13 @@ posproject/
                             BackofficeLogin.jsx + ResetPassword.jsx
                             (email+password+TOTP login, forgot/reset
                             password), HomeDashboard.jsx, StaffManager.jsx
-                            (+ StaffManagementModal.jsx, its POS popup
-                            wrapper for owner/admin — see Auth model),
-                            MenuManager.jsx (shared editor, see Auth model)
-                            + ManageMenu.jsx (its POS wrapper)
+                            (Back Office's full-edit Staff tab) +
+                            StaffManagementModal.jsx (self-contained POS
+                            roster popup for owner/admin, own CSS file —
+                            see Auth model, NOT a wrapper around
+                            StaffManager), MenuManager.jsx (shared editor,
+                            see Auth model) + ManageMenu.jsx (its POS
+                            wrapper)
       assets/             — narcos-tacos-logo.png (official brand logo, 
                             transparent background)
       config.js           — exports API_URL (from VITE_API_URL, trailing
@@ -214,16 +217,35 @@ posproject/
     include owner/admin (server-side `assertRoleAssignable` blocks it 
     too, even if the client were tampered with).
   - **Owner/admin** — `StaffManagementModal.jsx`, a popup (not a page — 
-    same interaction weight as the item customization modal) wrapping 
-    the exact same `StaffManager` component Back Office's Staff tab uses: 
-    full list (including owners), inline edit, deactivate/reactivate, 
-    reset PIN, add. Same `/api/backoffice/staff*` routes, same 
-    owner/admin check, same hierarchy rules — zero duplicated or 
-    weakened logic, one editor with two entry points (same pattern as 
-    Manage Menu/MenuManager below). Adds live clock-in/break status per 
-    row (reuses `GET /api/backoffice/staff/live-status`) via 
-    `StaffManager`'s `showLiveStatus` prop — opt-in and defaulted off, so 
-    Back Office's own Staff tab renders exactly as before, unchanged.
+    same interaction weight as the item customization modal), fully 
+    self-contained and independent of Back Office: it does NOT wrap 
+    `StaffManager` or call any `/api/backoffice/*` route. Instead it hits 
+    dedicated POS routes (`GET /api/staff/roster`, 
+    `PATCH /api/staff/:id/status`, `POST /api/staff/:id/reset-pin`) that 
+    follow the exact same trusted-staffId pattern as 
+    `POST /api/staff/quick-add` above — staffId comes from the client 
+    (Order Entry's own logged-in staff object, no session cookie), and 
+    the server re-derives that staffId's real role from the DB before 
+    allowing anything. This exists specifically so an owner/admin who has 
+    ONLY ever logged into Order Entry via PIN — never Back Office — can 
+    still use it; the original version of this feature accidentally 
+    required a separate Back Office login on the same device by reusing 
+    the session-cookie routes, which was a bug, not a design choice. 
+    Scope is deliberately smaller than Back Office's Staff tab: view 
+    (active + inactive, dimmed if inactive) + add (reuses 
+    `POST /api/staff/quick-add`, not duplicated) + deactivate/reactivate 
+    + reset PIN. **No role or hourly-rate editing here** — that stays 
+    Back-Office-only. Hierarchy protection (`canManageTarget`/
+    `requireManagedTarget`, same functions Back Office's staff routes 
+    use) is enforced server-side on every write and mirrored in the UI 
+    (an admin sees no Reset PIN/Deactivate buttons on owner rows). Live 
+    clock-in/break status per row is sourced by its own small helper 
+    (`getLiveStatusByStaffId()`) rather than reusing 
+    `GET /api/backoffice/staff/live-status`, to avoid touching the route 
+    Back Office Home's Live Status card depends on. Back Office's own 
+    `StaffManager.jsx`/`StaffManager.css` and `/api/backoffice/staff*` 
+    routes are completely unchanged by this — full role/hourly-rate 
+    editing stays there.
 - Theme defaults to **Light**, only owners can toggle dark mode 
   (app-wide setting, in the account dropdown menu next to the staff name 
   on Order Entry — NOT visible to non-owner roles at all)
@@ -275,11 +297,16 @@ posproject/
   items, variants, AND modifier groups/options)
 - Manage Menu (`/manage-menu`) — the same editor as Back Office's Menu 
   Management, reachable from the POS for owner/admin
-- Order Entry's "Staff Management" dropdown entry, owner/admin — the same 
-  full `StaffManager` component/logic as Back Office's Staff tab (list 
-  incl. owners, inline edit, deactivate/reactivate, reset PIN, add), 
-  shown as a popup instead of a page, plus live clock-in/break status per 
-  row. Manager keeps the original add-only quick-add modal, unchanged
+- Order Entry's "Staff Management" dropdown entry, owner/admin — a 
+  self-contained popup (`StaffManagementModal.jsx`) hitting dedicated 
+  trusted-staffId POS routes (`GET /api/staff/roster`, 
+  `PATCH /api/staff/:id/status`, `POST /api/staff/:id/reset-pin`), no 
+  Back Office session/cookie dependency at all: list (active + inactive), 
+  live clock-in/break status per row, add (reuses quick-add), 
+  deactivate/reactivate, reset PIN — no role/hourly-rate editing (that 
+  stays Back-Office-only). Hierarchy protection enforced both server-side 
+  and in the UI. Manager keeps the original add-only quick-add modal, 
+  unchanged
 - Order Entry account dropdown, self-service, every role, no Back Office 
   equivalent for the actions themselves (works for cashier/kitchen too, 
   who have no Back Office access at all — Live Status above is read-only 

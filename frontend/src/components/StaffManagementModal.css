@@ -1,0 +1,142 @@
+/* ============================================================
+   Order Entry's self-contained Staff Management popup.
+   Reuses generic modal/button/form primitives from StaffManager.css
+   (.staffmgr__overlay, .staffmgr__modal, .staffmgr__btn, etc. — Back
+   Office's own row/table classes are NOT reused here on purpose: this
+   popup has a different column set — no hourly rate, no edit — so it
+   gets its own row layout rather than a modifier bolted onto Back
+   Office's, keeping that file completely untouched).
+   ============================================================ */
+
+.staffroster {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.staffroster__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.staffroster__table {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 4px 18px;
+}
+
+.staffroster-row {
+  display: grid;
+  grid-template-columns: 1.6fr 0.9fr 0.8fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px dashed var(--border-color);
+}
+
+.staffroster-row:last-child {
+  border-bottom: none;
+}
+
+.staffroster-row--head {
+  padding: 10px 0 6px;
+}
+
+.staffroster-row--head span {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Inactive staff — dimmed, same treatment as 86'd menu items elsewhere */
+.staffroster-row--inactive .staffroster-row__name,
+.staffroster-row--inactive .staffroster-row__role {
+  opacity: 0.45;
+}
+
+.staffroster-row__name {
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.staffroster-row__you {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--bg-surface-hover);
+  border-radius: var(--radius-full);
+  padding: 2px 8px;
+}
+
+/* Live clock-in/break status — same green/amber language as Back Office
+   Home's Live Status card, shown only when the row currently has an
+   open shift. */
+.staffroster-row__live {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: var(--radius-full);
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.staffroster-row__live--working {
+  background: var(--green-light);
+  color: var(--green);
+}
+
+.staffroster-row__live--on_break {
+  background: rgba(232, 163, 46, 0.16);
+  color: #b0670f;
+}
+
+.staffroster-row__role {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.staffroster-row__role--owner {
+  color: var(--red);
+}
+
+.staffroster-row__role--admin {
+  color: #b0670f;
+}
+
+.staffroster-row__status {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--green);
+}
+
+.staffroster-row__status--off {
+  color: var(--red);
+}
+
+.staffroster-row__actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}

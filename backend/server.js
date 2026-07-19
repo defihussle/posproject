@@ -2360,6 +2360,121 @@ app.post("/api/staff/quick-add", async (req, res) => {
   }
 });
 
+// --------------- POS Staff Management popup (Order Entry, owner/admin) ---------------
+// Same trusted-staffId pattern as POST /api/staff/quick-add above — no
+// Back Office session cookie, and critically, no dependency on ever having
+// logged into Back Office on this device at all (that was the bug in the
+// previous version of this popup, which reused /api/backoffice/staff* and
+// therefore silently required a separate email+password+TOTP login on the
+// same browser). Deliberately NOT under /api/backoffice/* so it can never
+// be swept into that cookie-only auth model. requireStaffIdParam's default
+// allowedRoles is already exactly ["owner", "admin"], so every route below
+// just omits the second argument.
+//
+// Scope is deliberately smaller than Back Office's StaffManager: view +
+// add (reuses quick-add, not duplicated) + deactivate/reactivate + reset
+// PIN only. No role/hourly-rate editing here — that stays Back-Office-
+// only, unchanged, a deliberate split between "quick troubleshooting on
+// the counter tablet" and "full HR editing," not an oversight.
+
+// Same query shape as GET /api/backoffice/staff/live-status, kept as its
+// own small helper rather than refactoring that already-shipped route —
+// this is the only other caller, and duplicating one small query is lower
+// risk than touching a route Back Office Home's Live Status card depends on.
+async function getLiveStatusByStaffId() {
+  const { rows } = await pool.query(
+    `SELECT s.staff_id, s.clock_in, b.break_start
+       FROM shifts s
+       LEFT JOIN LATERAL (
+         SELECT break_start FROM shift_breaks
+          WHERE shift_id = s.id AND break_end IS NULL
+          ORDER BY break_start DESC LIMIT 1
+       ) b ON true
+      WHERE s.clock_out IS NULL`
+  );
+  const byStaffId = {};
+  for (const r of rows) {
+    byStaffId[r.staff_id] = {
+      status: r.break_start ? "on_break" : "working",
+      since: r.break_start || r.clock_in,
+    };
+  }
+  return byStaffId;
+}
+
+// GET /api/staff/roster?staffId=...
+// Owner/admin only. Every staff member, active AND inactive, with live
+// clock-in/break status per row (null if not currently clocked in) —
+// never returns pin_hash.
+app.get("/api/staff/roster", async (req, res) => {
+  try {
+    await requireStaffIdParam(req.query.staffId);
+
+    const { rows } = await pool.query(
+      `SELECT id, name, role, active FROM staff
+        ORDER BY active DESC, array_position(ARRAY['owner','admin','manager','cashier','kitchen'], role::text), name`
+    );
+    const liveByStaffId = await getLiveStatusByStaffId();
+
+    res.json(
+      rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        role: r.role,
+        active: r.active,
+        live: liveByStaffId[r.id] || null,
+      }))
+    );
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch staff roster");
+  }
+});
+
+// PATCH /api/staff/:id/status
+// Body: { staffId, active }. Owner/admin only; hierarchy-protected via the
+// SAME requireManagedTarget Back Office's staff routes use (defined below)
+// — an admin still can't touch an owner row here either, unweakened.
+app.patch("/api/staff/:id/status", async (req, res) => {
+  try {
+    const { staffId, active } = req.body || {};
+    const requester = await requireStaffIdParam(staffId);
+    const target = await requireManagedTarget(requester, req.params.id);
+
+    if (typeof active !== "boolean") {
+      throw new HttpError(400, "active must be a boolean");
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE staff SET active = $1 WHERE id = $2 RETURNING ${STAFF_SAFE_COLS}`,
+      [active, target.id]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to update staff status");
+  }
+});
+
+// POST /api/staff/:id/reset-pin
+// Body: { staffId, pin }. Owner/admin only, same hierarchy protection as
+// above. Mirrors PUT /api/backoffice/staff/:id/pin exactly (see below),
+// minus the session-cookie auth.
+app.post("/api/staff/:id/reset-pin", async (req, res) => {
+  try {
+    const { staffId, pin } = req.body || {};
+    const requester = await requireStaffIdParam(staffId);
+    const target = await requireManagedTarget(requester, req.params.id);
+
+    validatePin(pin);
+    await assertPinAvailable(pin, target.id);
+
+    const pinHash = await bcrypt.hash(pin, 10);
+    await pool.query("UPDATE staff SET pin_hash = $1 WHERE id = $2", [pinHash, target.id]);
+    res.json({ success: true, id: target.id });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to reset PIN");
+  }
+});
+
 // --------------- Self-service "me" routes (Order Entry account dropdown) ---------------
 // Every role, no session cookie (same reasoning as quick-add above: Order
 // Entry is PIN-login only). staffId is trusted from the body/query exactly
