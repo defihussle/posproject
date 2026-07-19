@@ -7,9 +7,14 @@ const fmtPrice = (p) => `$${parseFloat(p).toFixed(2)}`;
 /**
  * Menu management — shared by Back Office (owner/admin nav section) and the
  * POS-reachable "Manage Menu" page (see ManageMenu.jsx). Same component,
- * same backend routes, both places — a two-pane editor inspired by
- * Shopify's product editor: a browsable list on the left, a focused detail
- * panel for whatever's selected on the right, inline editing throughout.
+ * same backend routes, both places — Shopify-inspired: a single-column
+ * browsable list (categories → items), tap/click an item to open a focused
+ * MODAL with the full edit experience (name, description, price, 86
+ * toggle, Variants, Modifier Groups). Universal pattern regardless of
+ * viewport — the same list+modal on desktop and mobile, not a different
+ * layout per device (the previous side-by-side two-pane layout broke on
+ * narrow screens: the detail panel got cut off on mobile, confirmed via
+ * real device testing — replaced entirely rather than patched).
  *
  * Shows ALL items including inactive ones (86'd items stay visible, greyed
  * out, so owners/admins can reactivate them). All writes go through the
@@ -25,6 +30,16 @@ export default function MenuManager({ staff, showTitle = true }) {
   const [creatingInCat, setCreatingInCat] = useState(null); // category id, or null
   const [togglingIds, setTogglingIds] = useState(() => new Set());
 
+  // The modal is open whenever either of these is set — nothing auto-opens
+  // on load (unlike the old two-pane layout, which auto-selected the first
+  // item so its always-visible detail panel wasn't blank). Browsing the
+  // list is now the default, at-rest view; the modal is purely opt-in.
+  const modalOpen = !!selectedItemId || !!creatingInCat;
+  const closeModal = () => {
+    setSelectedItemId(null);
+    setCreatingInCat(null);
+  };
+
   // GET /api/backoffice/menu is now the ONE authoritative source for
   // everything shown here, including modifier groups/options (full CRUD —
   // it used to be view-only data fetched separately from the public menu
@@ -36,8 +51,6 @@ export default function MenuManager({ staff, showTitle = true }) {
       if (!res.ok) throw new Error(menuData.error || `HTTP ${res.status}`);
       setMenu(menuData);
       setError(null);
-      // First load: auto-select the first item so the detail panel isn't blank
-      setSelectedItemId((prev) => prev ?? menuData.find((c) => c.items.length)?.items[0]?.id ?? null);
     } catch (err) {
       setError(err.message || "Failed to load menu");
     } finally {
@@ -234,93 +247,104 @@ export default function MenuManager({ staff, showTitle = true }) {
 
       {error && <div className="menued__error">{error}</div>}
 
-      <div className="menued__shell">
-        <aside className="menued__list">
-          {menu.map((cat) => (
-            <section key={cat.id} className="menued__cat">
-              <div className="menued__cat-head">
-                <span className="menued__cat-name">{cat.name}</span>
-                <span className="menued__cat-count">{cat.items.length}</span>
-              </div>
-              {cat.items.map((item) => (
-                <button
-                  key={item.id}
-                  className={`menued__list-item${
-                    item.id === selectedItemId && !creatingInCat ? " menued__list-item--active" : ""
-                  }${item.active ? "" : " menued__list-item--inactive"}`}
-                  onClick={() => {
-                    setCreatingInCat(null);
-                    setSelectedItemId(item.id);
-                  }}
-                >
-                  <span className="menued__list-item-name">{item.name}</span>
-                  <span className="menued__list-item-meta">
-                    {item.variants.length > 0 ? `${item.variants.length} options` : fmtPrice(item.base_price)}
-                  </span>
-                  {!item.active && <span className="menued__list-item-dot" title="Inactive" />}
-                </button>
-              ))}
-              <button
-                className={`menued__add-item${creatingInCat === cat.id ? " menued__add-item--active" : ""}`}
-                onClick={() => {
-                  setSelectedItemId(null);
-                  setCreatingInCat(cat.id);
-                }}
-              >
-                + Add item
-              </button>
-            </section>
-          ))}
-        </aside>
-
-        <main className="menued__detail">
-          {creatingInCat ? (
-            <NewItemDetail
-              staff={staff}
-              categoryId={creatingInCat}
-              categoryName={menu.find((c) => c.id === creatingInCat)?.name || ""}
-              onCreated={(created) => {
-                applyItem(created);
-                setCreatingInCat(null);
-                setSelectedItemId(created.id);
-              }}
-              onCancel={() => setCreatingInCat(null)}
-              onError={setError}
-            />
-          ) : selectedItem ? (
-            <ItemDetail
-              key={selectedItem.id}
-              item={selectedItem}
-              category={selectedCat}
-              staff={staff}
-              busy={togglingIds.has(selectedItem.id)}
-              onToggle86={() => toggle86(selectedItem)}
-              onSaved={applyItem}
-              onVariantSaved={applyVariant}
-              onGroupSaved={applyModifierGroupEverywhere}
-              onGroupCreated={(created) => addModifierGroupToItem(selectedItem.id, created)}
-              onGroupDeletedEverywhere={removeModifierGroupEverywhere}
-              onGroupUnlinked={(groupId) => unlinkModifierGroupFromItem(selectedItem.id, groupId)}
-              onOptionSaved={applyModifierOptionEverywhere}
-              onOptionDeleted={removeModifierOptionEverywhere}
-              onError={setError}
-            />
-          ) : (
-            <div className="menued__empty">
-              <div className="menued__empty-title">No items yet</div>
-              <div className="menued__empty-sub">Add one from a category on the left</div>
+      <div className="menued__list">
+        {menu.map((cat) => (
+          <section key={cat.id} className="menued__cat">
+            <div className="menued__cat-head">
+              <span className="menued__cat-name">{cat.name}</span>
+              <span className="menued__cat-count">{cat.items.length}</span>
             </div>
-          )}
-        </main>
+            {cat.items.map((item) => (
+              <button
+                key={item.id}
+                className={`menued__list-item${item.active ? "" : " menued__list-item--inactive"}`}
+                onClick={() => setSelectedItemId(item.id)}
+              >
+                <span className="menued__list-item-name">{item.name}</span>
+                <span className="menued__list-item-meta">
+                  {item.variants.length > 0 ? `${item.variants.length} options` : fmtPrice(item.base_price)}
+                </span>
+                {!item.active && <span className="menued__list-item-dot" title="Inactive" />}
+                <ChevronIcon />
+              </button>
+            ))}
+            <button className="menued__add-item" onClick={() => setCreatingInCat(cat.id)}>
+              + Add item
+            </button>
+          </section>
+        ))}
       </div>
+
+      {/* Tap-to-open modal — the ONE focused surface for everything about
+          an item (or, for a new item, everything needed to create one):
+          base info, Variants, Modifier Groups. Same modal on desktop and
+          mobile (centered dialog vs. near-full-screen sheet is purely a
+          sizing difference in CSS, not a different component/layout). */}
+      {modalOpen && (
+        <div className="menued__modal-overlay" onClick={closeModal}>
+          <div className="menued__modal" onClick={(e) => e.stopPropagation()}>
+            <div className="menued__modal-head">
+              <span className="menued__modal-eyebrow">
+                {creatingInCat ? `New item in ${menu.find((c) => c.id === creatingInCat)?.name || ""}` : selectedCat?.name}
+              </span>
+              <button className="menued__modal-close" onClick={closeModal} aria-label="Close">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="menued__modal-body">
+              {creatingInCat ? (
+                <NewItemDetail
+                  staff={staff}
+                  categoryId={creatingInCat}
+                  onCreated={(created) => {
+                    applyItem(created);
+                    setCreatingInCat(null);
+                    setSelectedItemId(created.id);
+                  }}
+                  onCancel={closeModal}
+                  onError={setError}
+                />
+              ) : (
+                selectedItem && (
+                  <ItemDetail
+                    key={selectedItem.id}
+                    item={selectedItem}
+                    staff={staff}
+                    busy={togglingIds.has(selectedItem.id)}
+                    onToggle86={() => toggle86(selectedItem)}
+                    onSaved={applyItem}
+                    onVariantSaved={applyVariant}
+                    onGroupSaved={applyModifierGroupEverywhere}
+                    onGroupCreated={(created) => addModifierGroupToItem(selectedItem.id, created)}
+                    onGroupDeletedEverywhere={removeModifierGroupEverywhere}
+                    onGroupUnlinked={(groupId) => unlinkModifierGroupFromItem(selectedItem.id, groupId)}
+                    onOptionSaved={applyModifierOptionEverywhere}
+                    onOptionDeleted={removeModifierOptionEverywhere}
+                    onError={setError}
+                  />
+                )
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// ---------- Detail panel: existing item ----------
+function ChevronIcon() {
+  return (
+    <svg className="menued__list-item-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  );
+}
+
+// ---------- Modal body: existing item ----------
 function ItemDetail({
   item,
-  category,
   staff,
   busy,
   onToggle86,
@@ -398,8 +422,6 @@ function ItemDetail({
 
   return (
     <div className="menued__panel">
-      <div className="menued__panel-eyebrow">{category?.name}</div>
-
       <div className="menued__panel-head">
         <input
           className="menued__name-input"
@@ -1229,8 +1251,8 @@ function NewModifierOptionForm({ staff, groupId, onCreated, onCancel, onError })
   );
 }
 
-// ---------- Detail panel: creating a new item ----------
-function NewItemDetail({ staff, categoryId, categoryName, onCreated, onCancel, onError }) {
+// ---------- Modal body: creating a new item ----------
+function NewItemDetail({ staff, categoryId, onCreated, onCancel, onError }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState("");
@@ -1273,8 +1295,6 @@ function NewItemDetail({ staff, categoryId, categoryName, onCreated, onCancel, o
 
   return (
     <div className="menued__panel">
-      <div className="menued__panel-eyebrow">New item in {categoryName}</div>
-
       <div className="menued__panel-head">
         <input
           className="menued__name-input"

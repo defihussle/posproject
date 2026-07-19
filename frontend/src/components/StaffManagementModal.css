@@ -6,6 +6,11 @@
    popup has a different column set — no hourly rate, no edit — so it
    gets its own row layout rather than a modifier bolted onto Back
    Office's, keeping that file completely untouched).
+
+   Shopify-inspired browsable list, same pattern as Back Office's
+   StaffManager and MenuManager: name/role/status at a glance, tap a row
+   to open a focused detail sheet (nested modal) instead of inline action
+   buttons that ran off the edge of the screen on mobile.
    ============================================================ */
 
 .staffroster {
@@ -20,7 +25,7 @@
   justify-content: space-between;
 }
 
-.staffroster__table {
+.staffroster__list {
   background: var(--bg-surface);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
@@ -28,29 +33,22 @@
 }
 
 .staffroster-row {
-  display: grid;
-  grid-template-columns: 1.6fr 0.9fr 0.8fr auto;
+  width: 100%;
+  display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 0;
+  padding: 13px 0;
+  text-align: left;
   border-bottom: 1px dashed var(--border-color);
+  transition: background-color 0.12s ease;
 }
 
 .staffroster-row:last-child {
   border-bottom: none;
 }
 
-.staffroster-row--head {
-  padding: 10px 0 6px;
-}
-
-.staffroster-row--head span {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-muted);
+.staffroster-row:hover {
+  background: var(--bg-surface-hover);
 }
 
 /* Inactive staff — dimmed, same treatment as 86'd menu items elsewhere */
@@ -60,6 +58,8 @@
 }
 
 .staffroster-row__name {
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-body);
   font-size: 0.9rem;
   font-weight: 600;
@@ -68,6 +68,11 @@
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.staffroster-row__chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 .staffroster-row__you {
@@ -115,6 +120,14 @@
   color: var(--text-secondary);
 }
 
+/* Fixed-width column only in the browsable-list context — the same
+   class is reused (unconstrained) inside StaffDetailSheet's read-only
+   role display. */
+.staffroster-row > .staffroster-row__role {
+  flex-shrink: 0;
+  width: 72px;
+}
+
 .staffroster-row__role--owner {
   color: var(--red);
 }
@@ -131,12 +144,11 @@
   color: var(--green);
 }
 
-.staffroster-row__status--off {
-  color: var(--red);
+.staffroster-row > .staffroster-row__status {
+  flex-shrink: 0;
+  width: 62px;
 }
 
-.staffroster-row__actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
+.staffroster-row__status--off {
+  color: var(--red);
 }

@@ -1,12 +1,17 @@
 /* ============================================================
    Menu Editor — shared by Back Office and the POS "Manage Menu" page.
-   Shopify-product-editor-inspired: browsable list + focused detail panel,
-   inline editing, generous whitespace, clear typographic hierarchy.
+   Shopify-inspired: a single-column browsable list (categories → items),
+   tap/click an item to open a focused MODAL with the full edit
+   experience. Deliberately the SAME pattern on desktop and mobile — the
+   modal just sizes differently (centered dialog vs. near-full-screen
+   sheet), never a different layout per device. Replaces a prior
+   side-by-side two-pane layout that broke on narrow screens (the detail
+   panel got cut off on mobile).
    ============================================================ */
 
 .menued {
   width: 100%;
-  max-width: 1080px;
+  max-width: 720px;
   margin: 0 auto;
   height: 100%;
   display: flex;
@@ -47,26 +52,16 @@
   flex-shrink: 0;
 }
 
-/* ---------- Two-pane shell ---------- */
-.menued__shell {
+/* ---------- Browsable list (categories → items) ---------- */
+.menued__list {
   flex: 1;
-  display: flex;
   min-height: 0;
+  overflow-y: auto;
+  padding: 8px 14px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
   background: var(--bg-surface);
-  overflow: hidden;
   box-shadow: var(--shadow-soft);
-}
-
-/* ---------- Left: browsable list ---------- */
-.menued__list {
-  width: 300px;
-  flex-shrink: 0;
-  overflow-y: auto;
-  padding: 10px;
-  border-right: 1px solid var(--border-color);
-  background: var(--bg-primary);
 }
 
 .menued__cat {
@@ -77,7 +72,7 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: 14px 10px 6px;
+  padding: 16px 6px 8px;
   font-family: var(--font-mono);
   font-size: 0.68rem;
   font-weight: 700;
@@ -86,14 +81,19 @@
   color: var(--text-muted);
 }
 
+/* Each row is a tap target that opens the item's modal — no inline
+   actions or highlighted "active selection" state anymore (there's
+   nothing to compare against once there's no side-by-side detail panel);
+   a trailing chevron signals "opens something" the way a list row should. */
 .menued__list-item {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 10px;
+  gap: 10px;
+  padding: 13px 10px;
   border-radius: var(--radius-sm);
   text-align: left;
+  border-bottom: 1px dashed var(--border-color);
   transition: background-color 0.12s ease;
 }
 
@@ -101,15 +101,11 @@
   background: var(--bg-surface-hover);
 }
 
-.menued__list-item--active {
-  background: var(--red-light);
-}
-
 .menued__list-item-name {
   flex: 1;
   min-width: 0;
   font-family: var(--font-body);
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
@@ -117,13 +113,9 @@
   text-overflow: ellipsis;
 }
 
-.menued__list-item--active .menued__list-item-name {
-  color: var(--red);
-}
-
 .menued__list-item-meta {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-muted);
   white-space: nowrap;
@@ -137,6 +129,11 @@
   flex-shrink: 0;
 }
 
+.menued__list-item-chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
 .menued__list-item--inactive .menued__list-item-name,
 .menued__list-item--inactive .menued__list-item-meta {
   opacity: 0.45;
@@ -145,52 +142,115 @@
 .menued__add-item {
   width: 100%;
   text-align: left;
-  padding: 8px 10px;
+  padding: 10px;
   margin-top: 2px;
   font-family: var(--font-body);
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   font-weight: 600;
   color: var(--text-muted);
   border-radius: var(--radius-sm);
   transition: all 0.12s ease;
 }
 
-.menued__add-item:hover,
-.menued__add-item--active {
+.menued__add-item:hover {
   color: var(--red);
   background: var(--red-light);
 }
 
-/* ---------- Right: detail panel ---------- */
-.menued__detail {
+/* ---------- Modal (item detail / new item) ----------
+   Mobile-first: the base size is already compact enough to read as
+   near-full-screen on a phone (overlay padding is what keeps it off the
+   very edges), then widens at the desktop breakpoint below — same
+   overlay+dialog pattern as Order Entry's ItemModal, not a different
+   layout per device. */
+.menued__modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 16px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.menued__modal {
+  width: 100%;
+  max-width: 620px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-medium);
+  overflow: hidden;
+}
+
+.menued__modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.menued__modal-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.menued__modal-close {
+  color: var(--text-muted);
+  display: flex;
+  padding: 4px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: all 0.12s ease;
+}
+
+.menued__modal-close:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+
+.menued__modal-body {
   flex: 1;
   overflow-y: auto;
-  min-width: 0;
+}
+
+@media (min-width: 720px) {
+  .menued__modal {
+    max-width: 680px;
+  }
 }
 
 .menued__panel {
-  max-width: 640px;
-  padding: 36px 44px 60px;
+  padding: 24px 24px 40px;
   display: flex;
   flex-direction: column;
-}
-
-.menued__panel-eyebrow {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  margin-bottom: 8px;
 }
 
 .menued__panel-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 10px 16px;
   margin-bottom: 24px;
+}
+
+/* Name input claims the full row on its own once the status cluster
+   wraps below it (narrow modals) rather than staying squeezed beside a
+   fixed-width cluster — a long item name shouldn't read as cut off. */
+.menued__panel-head .menued__name-input {
+  flex-basis: 200px;
 }
 
 /* Inline-editable "heading" — looks like plain text until focused */
@@ -565,6 +625,7 @@
 .menued__modgroup-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   margin-left: auto;
 }
@@ -696,26 +757,4 @@
 
 .menued__option-row .menued__variant-name {
   flex: 1 1 140px;
-}
-
-/* ---------- Empty state ---------- */
-.menued__empty {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  color: var(--text-muted);
-}
-
-.menued__empty-title {
-  font-family: var(--font-headline);
-  font-size: 1rem;
-  color: var(--text-secondary);
-}
-
-.menued__empty-sub {
-  font-family: var(--font-body);
-  font-size: 0.85rem;
 }

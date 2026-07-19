@@ -69,8 +69,12 @@
   color: #fff;
 }
 
-/* ---------- Table ---------- */
-.staffmgr__table {
+/* ---------- Browsable list ----------
+   Name/role/status at a glance, no inline action buttons — tap a row to
+   open the focused detail modal (StaffDetailModal) instead. Replaces a
+   prior 5-column table whose action buttons ran off the edge of the
+   screen on mobile (confirmed via real device testing). */
+.staffmgr__list {
   background: var(--bg-surface);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
@@ -79,39 +83,33 @@
 }
 
 .staffmgr-row {
-  display: grid;
-  grid-template-columns: 1.4fr 0.9fr 0.9fr 0.7fr auto;
+  width: 100%;
+  display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 0;
+  padding: 14px 0;
+  text-align: left;
   border-bottom: 1px dashed var(--border-color);
+  transition: background-color 0.12s ease;
 }
 
 .staffmgr-row:last-child {
   border-bottom: none;
 }
 
-.staffmgr-row--head {
-  padding: 10px 0 6px;
-}
-
-.staffmgr-row--head span {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-muted);
+.staffmgr-row:hover {
+  background: var(--bg-surface-hover);
 }
 
 /* Inactive staff — dimmed, same treatment as 86'd menu items */
 .staffmgr-row--inactive .staffmgr-row__name,
-.staffmgr-row--inactive .staffmgr-row__role,
-.staffmgr-row--inactive .staffmgr-row__rate {
+.staffmgr-row--inactive .staffmgr-row__role {
   opacity: 0.45;
 }
 
 .staffmgr-row__name {
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-body);
   font-size: 0.9rem;
   font-weight: 600;
@@ -119,6 +117,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.staffmgr-row__chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 .staffmgr-row__you {
@@ -166,6 +170,14 @@
   color: var(--text-secondary);
 }
 
+/* Fixed-width columns only in the browsable-list context — the same
+   .staffmgr-row__role/__status classes are reused read-only inside
+   StaffDetailModal, where they should size to their own content instead. */
+.staffmgr-row > .staffmgr-row__role {
+  flex-shrink: 0;
+  width: 72px;
+}
+
 .staffmgr-row__role--owner {
   color: var(--red);
 }
@@ -189,14 +201,13 @@
   color: var(--green);
 }
 
-.staffmgr-row__status--off {
-  color: var(--red);
+.staffmgr-row > .staffmgr-row__status {
+  flex-shrink: 0;
+  width: 62px;
 }
 
-.staffmgr-row__actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
+.staffmgr-row__status--off {
+  color: var(--red);
 }
 
 .staffmgr__btn {
@@ -255,15 +266,6 @@
   border-color: transparent;
 }
 
-/* ---------- Inline edit ---------- */
-.staffmgr-row__editform {
-  grid-column: 2 / -1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 /* ---------- Inputs ---------- */
 .staffmgr__input {
   font-family: var(--font-body);
@@ -290,10 +292,6 @@
 
 .staffmgr__input--email {
   max-width: 240px;
-}
-
-.staffmgr-row__editform .staffmgr__input {
-  width: auto;
 }
 
 .staffmgr__label {
@@ -334,10 +332,11 @@
 }
 
 /* Order Entry's full Staff Management popup (StaffManagementModal.jsx) —
-   the reused Back Office table needs real width, not the narrow form
-   width the base .staffmgr__modal is sized for. */
+   its browsable list needs more room than the narrow form width the base
+   .staffmgr__modal is sized for, though not as wide as the old table
+   layout needed (no more inline action-button columns to fit). */
 .staffmgr__modal--wide {
-  max-width: 920px;
+  max-width: 640px;
 }
 
 .staffmgr__modal-head {
@@ -379,4 +378,41 @@
   justify-content: flex-end;
   gap: 10px;
   margin-top: 4px;
+}
+
+/* ---------- StaffDetailModal — status pill + section divider ---------- */
+.staffmgr__status-pill {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--green);
+  background: var(--green-light);
+  border-radius: var(--radius-full);
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+.staffmgr__status-pill--off {
+  color: var(--text-muted);
+  background: var(--bg-surface-hover);
+}
+
+/* Separates the edit fields (role/rate/email) from the Reset PIN /
+   Deactivate actions below, within the same modal. */
+.staffmgr__modal-divider {
+  border-top: 1px solid var(--border-color);
+  margin: 2px 0;
+}
+
+.staffmgr__inline-pin {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg-primary);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
 }
