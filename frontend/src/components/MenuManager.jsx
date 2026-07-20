@@ -4,6 +4,14 @@ import "./MenuManager.css";
 
 const fmtPrice = (p) => `$${parseFloat(p).toFixed(2)}`;
 
+// Plain-ingredient-style groups (Ingredients, Toppings) are always free —
+// the price field is hidden entirely for options in these groups, both
+// editing existing ones and adding new ones. Mirrors PRICELESS_GROUP_NAMES
+// in server.js, which is the actual source of truth (this is a UI-only
+// convenience; the server forces price to 0 for these groups regardless
+// of what the client sends).
+const isPricelessGroupName = (name) => /^(ingredients|toppings)$/i.test((name || "").trim());
+
 /**
  * Menu management — shared by Back Office (owner/admin nav section) and the
  * POS-reachable "Manage Menu" page (see ManageMenu.jsx). Same component,
@@ -294,6 +302,13 @@ export default function MenuManager({ staff, showTitle = true }) {
               </button>
             </div>
             <div className="menued__modal-body">
+              {/* Duplicated from the outer banner above — everything that can
+                  fail (Add Option, Save, Remove, etc.) happens inside this
+                  modal, but the outer banner renders behind the full-screen
+                  overlay (z-index: 200) and is never seen. A failed "Add"
+                  used to look like nothing happened: the form stayed open
+                  with Add/Cancel still showing and no visible reason why. */}
+              {error && <div className="menued__error menued__error--modal">{error}</div>}
               {creatingInCat ? (
                 <NewItemDetail
                   staff={staff}
@@ -854,7 +869,7 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
     try {
       const res = await fetch(
         `${API_URL}/api/backoffice/item-modifier-groups/${item.id}/${group.id}?staffId=${staff.id}`,
-        { method: "DELETE" }
+        { method: "DELETE", credentials: "include" }
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -872,7 +887,7 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
     try {
       const res = await fetch(
         `${API_URL}/api/backoffice/modifier-groups/${group.id}?staffId=${staff.id}`,
-        { method: "DELETE" }
+        { method: "DELETE", credentials: "include" }
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -949,6 +964,7 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
             groupId={group.id}
             option={o}
             staff={staff}
+            hidePrice={isPricelessGroupName(group.name)}
             onSaved={onOptionSaved}
             onDeleted={onOptionDeleted}
             onError={onError}
@@ -958,6 +974,7 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
           <NewModifierOptionForm
             staff={staff}
             groupId={group.id}
+            hidePrice={isPricelessGroupName(group.name)}
             onCreated={(created) => {
               onOptionSaved(created);
               setAddingOption(false);
@@ -982,7 +999,7 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
 // sensible default server-side; existing values are left untouched by
 // every edit made through this row now that the field isn't part of the
 // PUT body at all.
-function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError }) {
+function ModifierOptionRow({ groupId, option, staff, hidePrice, onSaved, onDeleted, onError }) {
   const [draft, setDraft] = useState({
     name: option.name,
     price_delta: String(option.price_delta),
@@ -1008,7 +1025,7 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
       onError("Option name can't be empty");
       return;
     }
-    const delta = Number(draft.price_delta);
+    const delta = hidePrice ? 0 : Number(draft.price_delta);
     if (!Number.isFinite(delta) || delta < 0) {
       onError("Price must be zero or a positive number");
       return;
@@ -1046,7 +1063,7 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
     try {
       const res = await fetch(
         `${API_URL}/api/backoffice/modifier-options/${option.id}?staffId=${staff.id}`,
-        { method: "DELETE" }
+        { method: "DELETE", credentials: "include" }
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -1064,15 +1081,17 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
         value={draft.name}
         onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
       />
-      <div className="menued__price-input-wrap menued__price-input-wrap--sm">
-        <span className="menued__price-prefix">$</span>
-        <input
-          className="menued__price-input"
-          value={draft.price_delta}
-          onChange={(e) => setDraft((d) => ({ ...d, price_delta: e.target.value }))}
-          inputMode="decimal"
-        />
-      </div>
+      {!hidePrice && (
+        <div className="menued__price-input-wrap menued__price-input-wrap--sm">
+          <span className="menued__price-prefix">$</span>
+          <input
+            className="menued__price-input"
+            value={draft.price_delta}
+            onChange={(e) => setDraft((d) => ({ ...d, price_delta: e.target.value }))}
+            inputMode="decimal"
+          />
+        </div>
+      )}
       <label className="menued__inline-check">
         <input
           type="checkbox"
@@ -1104,7 +1123,7 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
 // the server applies a sensible default to every new option (see
 // DEFAULT_OPTION_MAX_QUANTITY in server.js) without the owner ever
 // seeing or setting it here.
-function NewModifierOptionForm({ staff, groupId, onCreated, onCancel, onError }) {
+function NewModifierOptionForm({ staff, groupId, hidePrice, onCreated, onCancel, onError }) {
   const [name, setName] = useState("");
   const [priceDelta, setPriceDelta] = useState("0.00");
   const [defaultSelected, setDefaultSelected] = useState(false);
@@ -1116,7 +1135,7 @@ function NewModifierOptionForm({ staff, groupId, onCreated, onCancel, onError })
       onError("Option name is required");
       return;
     }
-    const delta = Number(priceDelta);
+    const delta = hidePrice ? 0 : Number(priceDelta);
     if (!Number.isFinite(delta) || delta < 0) {
       onError("Price must be zero or a positive number");
       return;
@@ -1154,16 +1173,18 @@ function NewModifierOptionForm({ staff, groupId, onCreated, onCancel, onError })
         placeholder="Option name"
         autoFocus
       />
-      <div className="menued__price-input-wrap menued__price-input-wrap--sm">
-        <span className="menued__price-prefix">$</span>
-        <input
-          className="menued__price-input"
-          value={priceDelta}
-          onChange={(e) => setPriceDelta(e.target.value)}
-          placeholder="0.00"
-          inputMode="decimal"
-        />
-      </div>
+      {!hidePrice && (
+        <div className="menued__price-input-wrap menued__price-input-wrap--sm">
+          <span className="menued__price-prefix">$</span>
+          <input
+            className="menued__price-input"
+            value={priceDelta}
+            onChange={(e) => setPriceDelta(e.target.value)}
+            placeholder="0.00"
+            inputMode="decimal"
+          />
+        </div>
+      )}
       <label className="menued__inline-check">
         <input type="checkbox" checked={defaultSelected} onChange={(e) => setDefaultSelected(e.target.checked)} />
         Default

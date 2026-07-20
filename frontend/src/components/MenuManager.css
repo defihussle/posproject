@@ -52,6 +52,14 @@
   flex-shrink: 0;
 }
 
+/* Sits directly in .menued__modal-body, which has no padding of its own
+   (.menued__panel/.menued__new-item-form supply their own) — margin
+   instead of relying on ancestor padding keeps it flush with the modal's
+   edges. */
+.menued__error--modal {
+  margin: 16px 24px 0;
+}
+
 /* ---------- Browsable list (categories → items) ---------- */
 .menued__list {
   flex: 1;

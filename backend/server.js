@@ -2003,6 +2003,15 @@ function validateGroupFields({ name, required, min_select, max_select }) {
 // never touches that column anymore.
 const DEFAULT_OPTION_MAX_QUANTITY = 5; // matches the existing convention for every stepper-style add-on already in the data (Extra Taco, and each Dipping Sauce flavor all use 5 — see menu_ux_enhancements.sql)
 
+// Plain-ingredient-style groups (Ingredients, Toppings) are always free —
+// the price field is hidden from the owner-facing edit UI for options in
+// these groups, and this is what makes that trustworthy: even if a client
+// somehow sent a nonzero price_delta, it's forced back to 0 here rather
+// than relying on the UI never showing the field (same never-trust-the-
+// client principle used for discounts elsewhere in this file).
+const PRICELESS_GROUP_NAMES = /^(ingredients|toppings)$/i;
+const isPricelessGroupName = (name) => PRICELESS_GROUP_NAMES.test((name || "").trim());
+
 function validateOptionFields({ name, price_delta, default_selected }) {
   if (typeof name !== "string" || !name.trim()) {
     throw new HttpError(400, "name is required");
@@ -2153,14 +2162,15 @@ app.post("/api/backoffice/modifier-options", async (req, res) => {
       throw new HttpError(400, "group_id is required");
     }
 
-    const { rows: groupRows } = await pool.query("SELECT id FROM modifier_groups WHERE id = $1", [group_id]);
+    const { rows: groupRows } = await pool.query("SELECT id, name FROM modifier_groups WHERE id = $1", [group_id]);
     if (groupRows.length === 0) throw new HttpError(400, "Unknown modifier group");
+    const finalDelta = isPricelessGroupName(groupRows[0].name) ? 0 : delta;
 
     const { rows } = await pool.query(
       `INSERT INTO modifier_options (group_id, name, price_delta, max_quantity, default_selected, active)
        VALUES ($1, $2, $3, $4, $5, true)
        RETURNING id, group_id, name, price_delta, sort_order, max_quantity, default_selected, active`,
-      [group_id, name, delta, DEFAULT_OPTION_MAX_QUANTITY, req.body.default_selected]
+      [group_id, name, finalDelta, DEFAULT_OPTION_MAX_QUANTITY, req.body.default_selected]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -2183,12 +2193,21 @@ app.put("/api/backoffice/modifier-options/:id", async (req, res) => {
       throw new HttpError(400, "active must be a boolean");
     }
 
+    const { rows: optionRows } = await pool.query(
+      `SELECT mg.name AS group_name FROM modifier_options mo
+         JOIN modifier_groups mg ON mg.id = mo.group_id
+        WHERE mo.id = $1`,
+      [req.params.id]
+    );
+    if (optionRows.length === 0) throw new HttpError(404, "Modifier option not found");
+    const finalDelta = isPricelessGroupName(optionRows[0].group_name) ? 0 : delta;
+
     const { rows } = await pool.query(
       `UPDATE modifier_options
           SET name = $1, price_delta = $2, default_selected = $3, active = $4
         WHERE id = $5
         RETURNING id, group_id, name, price_delta, sort_order, max_quantity, default_selected, active`,
-      [name, delta, req.body.default_selected, active, req.params.id]
+      [name, finalDelta, req.body.default_selected, active, req.params.id]
     );
     if (rows.length === 0) throw new HttpError(404, "Modifier option not found");
     res.json(rows[0]);
