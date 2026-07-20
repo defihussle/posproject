@@ -792,7 +792,6 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
     max_select: String(group.max_select),
   });
   const [saving, setSaving] = useState(false);
-  const [busy86, setBusy86] = useState(false);
   const [addingOption, setAddingOption] = useState(false);
 
   const dirty =
@@ -851,26 +850,6 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
     }
   };
 
-  const toggleActive = async () => {
-    if (busy86) return;
-    setBusy86(true);
-    try {
-      const data = await put({
-        name: group.name,
-        required: group.required,
-        min_select: group.min_select,
-        max_select: group.max_select,
-        active: !group.active,
-      });
-      onGroupSaved(data);
-      onError(null);
-    } catch (err) {
-      onError(err.message || "Failed to update modifier group");
-    } finally {
-      setBusy86(false);
-    }
-  };
-
   const removeFromItem = async () => {
     try {
       const res = await fetch(
@@ -886,7 +865,10 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
     }
   };
 
-  const deleteEverywhere = async () => {
+  // The single "Remove" action — the server decides hard-delete vs.
+  // soft-delete (see DELETE /api/backoffice/modifier-groups/:id); either
+  // way this group just disappears from the list, no messaging needed.
+  const remove = async () => {
     try {
       const res = await fetch(
         `${API_URL}/api/backoffice/modifier-groups/${group.id}?staffId=${staff.id}`,
@@ -897,14 +879,12 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
       onGroupDeletedEverywhere(group.id);
       onError(null);
     } catch (err) {
-      // Most common case here is the 409 "used in past orders" block —
-      // surfaced via the shared error banner, same as everywhere else.
-      onError(err.message || "Failed to delete modifier group");
+      onError(err.message || "Failed to remove modifier group");
     }
   };
 
   return (
-    <div className={`menued__modgroup${group.active ? "" : " menued__modgroup--inactive"}`}>
+    <div className="menued__modgroup">
       <div className="menued__modgroup-formrow">
         <input
           className="menued__variant-name menued__modgroup-nameinput"
@@ -919,9 +899,6 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
           />
           Required
         </label>
-        <span className={`menued__status-pill menued__status-pill--sm${group.active ? "" : " menued__status-pill--off"}`}>
-          {group.active ? "Active" : "Inactive"}
-        </span>
       </div>
 
       <div className="menued__modgroup-formrow">
@@ -956,14 +933,11 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
         )}
 
         <div className="menued__modgroup-actions">
-          <button className="menued__86-btn menued__86-btn--sm" onClick={toggleActive} disabled={busy86}>
-            {busy86 ? "…" : group.active ? "Deactivate" : "Reactivate"}
-          </button>
           <button className="menued__text-link" onClick={removeFromItem}>
             Remove from item
           </button>
-          <button className="menued__text-link menued__text-link--danger" onClick={deleteEverywhere}>
-            Delete group
+          <button className="menued__text-link menued__text-link--danger" onClick={remove}>
+            Remove
           </button>
         </div>
       </div>
@@ -1001,11 +975,17 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
   );
 }
 
+// Basic edit experience, deliberately reduced to Name / price (kept —
+// core to checkout math) / Default (kept — controls real customer-facing
+// pre-checked state on Order Entry) / Remove / Add. Max Qty is gone
+// entirely: owners never see or set it here anymore. New options get a
+// sensible default server-side; existing values are left untouched by
+// every edit made through this row now that the field isn't part of the
+// PUT body at all.
 function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError }) {
   const [draft, setDraft] = useState({
     name: option.name,
     price_delta: String(option.price_delta),
-    max_quantity: String(option.max_quantity),
     default_selected: option.default_selected,
   });
   const [saving, setSaving] = useState(false);
@@ -1013,14 +993,12 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
   const dirty =
     draft.name !== option.name ||
     draft.price_delta !== String(option.price_delta) ||
-    draft.max_quantity !== String(option.max_quantity) ||
     draft.default_selected !== option.default_selected;
 
   const discard = () =>
     setDraft({
       name: option.name,
       price_delta: String(option.price_delta),
-      max_quantity: String(option.max_quantity),
       default_selected: option.default_selected,
     });
 
@@ -1031,13 +1009,8 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
       return;
     }
     const delta = Number(draft.price_delta);
-    const maxQ = Number(draft.max_quantity);
     if (!Number.isFinite(delta) || delta < 0) {
       onError("Price must be zero or a positive number");
-      return;
-    }
-    if (!Number.isInteger(maxQ) || maxQ < 1) {
-      onError("Max quantity must be a positive whole number");
       return;
     }
     setSaving(true);
@@ -1050,7 +1023,6 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
           staffId: staff.id,
           name: draft.name.trim(),
           price_delta: delta,
-          max_quantity: maxQ,
           default_selected: draft.default_selected,
           active: option.active,
         }),
@@ -1066,30 +1038,10 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
     }
   };
 
-  const toggleActive = async () => {
-    try {
-      const res = await fetch(`${API_URL}/api/backoffice/modifier-options/${option.id}`, {
-      credentials: "include",
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          staffId: staff.id,
-          name: option.name,
-          price_delta: option.price_delta,
-          max_quantity: option.max_quantity,
-          default_selected: option.default_selected,
-          active: !option.active,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      onSaved(data);
-      onError(null);
-    } catch (err) {
-      onError(err.message || "Failed to update modifier option");
-    }
-  };
-
+  // The single "Remove" action — the server decides hard-delete vs.
+  // soft-delete (see DELETE /api/backoffice/modifier-options/:id);
+  // either way this option just disappears from the list, no messaging
+  // needed for the normal case.
   const remove = async () => {
     try {
       const res = await fetch(
@@ -1101,13 +1053,12 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
       onDeleted(groupId, option.id);
       onError(null);
     } catch (err) {
-      // Most common case here is the 409 "used in past orders" block.
-      onError(err.message || "Failed to delete modifier option");
+      onError(err.message || "Failed to remove modifier option");
     }
   };
 
   return (
-    <div className={`menued__option-row${option.active ? "" : " menued__option-row--inactive"}`}>
+    <div className="menued__option-row">
       <input
         className="menued__variant-name"
         value={draft.name}
@@ -1122,15 +1073,6 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
           inputMode="decimal"
         />
       </div>
-      <label className="menued__minmax menued__minmax--tight">
-        Max qty
-        <input
-          className="menued__minmax-input"
-          value={draft.max_quantity}
-          onChange={(e) => setDraft((d) => ({ ...d, max_quantity: e.target.value }))}
-          inputMode="numeric"
-        />
-      </label>
       <label className="menued__inline-check">
         <input
           type="checkbox"
@@ -1151,9 +1093,6 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
         </>
       )}
 
-      <button className="menued__text-link" onClick={toggleActive}>
-        {option.active ? "Deactivate" : "Reactivate"}
-      </button>
       <button className="menued__text-link menued__text-link--danger" onClick={remove}>
         Remove
       </button>
@@ -1161,10 +1100,13 @@ function ModifierOptionRow({ groupId, option, staff, onSaved, onDeleted, onError
   );
 }
 
+// max_quantity is intentionally not part of this form at all anymore —
+// the server applies a sensible default to every new option (see
+// DEFAULT_OPTION_MAX_QUANTITY in server.js) without the owner ever
+// seeing or setting it here.
 function NewModifierOptionForm({ staff, groupId, onCreated, onCancel, onError }) {
   const [name, setName] = useState("");
   const [priceDelta, setPriceDelta] = useState("0.00");
-  const [maxQuantity, setMaxQuantity] = useState("1");
   const [defaultSelected, setDefaultSelected] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -1175,13 +1117,8 @@ function NewModifierOptionForm({ staff, groupId, onCreated, onCancel, onError })
       return;
     }
     const delta = Number(priceDelta);
-    const maxQ = Number(maxQuantity);
     if (!Number.isFinite(delta) || delta < 0) {
       onError("Price must be zero or a positive number");
-      return;
-    }
-    if (!Number.isInteger(maxQ) || maxQ < 1) {
-      onError("Max quantity must be a positive whole number");
       return;
     }
     setSaving(true);
@@ -1195,7 +1132,6 @@ function NewModifierOptionForm({ staff, groupId, onCreated, onCancel, onError })
           group_id: groupId,
           name: name.trim(),
           price_delta: delta,
-          max_quantity: maxQ,
           default_selected: defaultSelected,
         }),
       });
@@ -1228,15 +1164,6 @@ function NewModifierOptionForm({ staff, groupId, onCreated, onCancel, onError })
           inputMode="decimal"
         />
       </div>
-      <label className="menued__minmax menued__minmax--tight">
-        Max qty
-        <input
-          className="menued__minmax-input"
-          value={maxQuantity}
-          onChange={(e) => setMaxQuantity(e.target.value)}
-          inputMode="numeric"
-        />
-      </label>
       <label className="menued__inline-check">
         <input type="checkbox" checked={defaultSelected} onChange={(e) => setDefaultSelected(e.target.checked)} />
         Default

@@ -1768,15 +1768,25 @@ app.get("/api/backoffice/menu", async (req, res) => {
       `SELECT id, item_id, name, price, active, sort_order
          FROM item_variants WHERE active = true ORDER BY sort_order`
     );
+    // Modifier groups/options are filtered to active-only here, same as
+    // variants/categories above — unlike menu items (which deliberately
+    // stay visible-but-dimmed when 86'd, with a Reactivate path), groups/
+    // options no longer expose an active/inactive distinction in the
+    // editor at all: "Remove" always looks like a clean removal to the
+    // owner, whether the server hard-deleted it or, because it's
+    // referenced by real order history, soft-deleted it instead (see the
+    // DELETE routes below). Filtering here is what actually makes a
+    // soft-deleted option/group disappear from the editor.
     const { rows: itemGroups } = await pool.query(
       `SELECT img.item_id, mg.id, mg.name, mg.min_select, mg.max_select, mg.required, mg.active
          FROM item_modifier_groups img
          JOIN modifier_groups mg ON mg.id = img.modifier_group_id
+        WHERE mg.active = true
         ORDER BY img.sort_order`
     );
     const { rows: options } = await pool.query(
       `SELECT id, group_id, name, price_delta, sort_order, max_quantity, default_selected, active
-         FROM modifier_options ORDER BY sort_order`
+         FROM modifier_options WHERE active = true ORDER BY sort_order`
     );
 
     const optionsByGroup = {};
@@ -1944,16 +1954,24 @@ app.post("/api/backoffice/item-variants", async (req, res) => {
 // Same owner/admin-only pattern as every other backoffice route. Modifier
 // groups can be shared across multiple items (e.g. a common "Ingredients"
 // group), so "remove from this item" and "delete the group definition
-// entirely" are deliberately separate actions:
+// entirely" stay deliberately separate actions:
 //   - DELETE /item-modifier-groups/:itemId/:groupId unlinks ONE item, always
 //     safe (never touches order_item_modifiers, never affects other items)
 //   - DELETE /modifier-groups/:id removes the group DEFINITION (cascading to
-//     every item that uses it and all its options) — blocked with a clear
-//     409 if any of its options are referenced by real order history, same
-//     "never hard-delete what orders reference" principle as everywhere
-//     else in this app. Deactivating (active=false) is the way to retire a
-//     referenced group instead.
-// Same delete-vs-deactivate split for individual options.
+//     every item that uses it and all its options).
+// Same for individual options (DELETE /modifier-options/:id).
+//
+// "Delete" and "deactivate" used to be two visible concepts (a hard
+// delete blocked with a 409 if referenced by real order history, forcing
+// the caller to deactivate instead). Per real usability feedback, the
+// editor now exposes ONE "Remove" action for options/groups — these two
+// DELETE routes make the hard-vs-soft decision themselves, invisibly:
+// hard-delete if nothing references it, soft-delete (active=false) if
+// order history does, either way returning the same success shape. GET
+// /api/backoffice/menu only returns active groups/options, so a
+// soft-deleted one simply disappears from the editor exactly like a
+// hard-deleted one would — no special messaging needed for the normal
+// case, matching how variants/categories already filter to active-only.
 
 function validateGroupFields({ name, required, min_select, max_select }) {
   if (typeof name !== "string" || !name.trim()) {
@@ -1976,7 +1994,16 @@ function validateGroupFields({ name, required, min_select, max_select }) {
   return { name: name.trim(), min, max };
 }
 
-function validateOptionFields({ name, price_delta, max_quantity, default_selected }) {
+// max_quantity is deliberately NOT accepted here anymore — it's been
+// removed from the owner-facing edit UI entirely (per usability
+// feedback; the customer-facing quantity stepper on Order Entry is
+// unaffected and keeps reading whatever value is already in the
+// database). New options get DEFAULT_OPTION_MAX_QUANTITY below; existing
+// options keep whatever value they already have — the PUT route simply
+// never touches that column anymore.
+const DEFAULT_OPTION_MAX_QUANTITY = 5; // matches the existing convention for every stepper-style add-on already in the data (Extra Taco, and each Dipping Sauce flavor all use 5 — see menu_ux_enhancements.sql)
+
+function validateOptionFields({ name, price_delta, default_selected }) {
   if (typeof name !== "string" || !name.trim()) {
     throw new HttpError(400, "name is required");
   }
@@ -1984,14 +2011,10 @@ function validateOptionFields({ name, price_delta, max_quantity, default_selecte
   if (!Number.isFinite(delta) || delta < 0) {
     throw new HttpError(400, "price_delta must be a non-negative number");
   }
-  const maxQ = Number(max_quantity);
-  if (!Number.isInteger(maxQ) || maxQ < 1) {
-    throw new HttpError(400, "max_quantity must be a positive integer");
-  }
   if (typeof default_selected !== "boolean") {
     throw new HttpError(400, "default_selected must be a boolean");
   }
-  return { name: name.trim(), delta, maxQ };
+  return { name: name.trim(), delta };
 }
 
 // POST /api/backoffice/modifier-groups
@@ -2059,9 +2082,13 @@ app.put("/api/backoffice/modifier-groups/:id", async (req, res) => {
 });
 
 // DELETE /api/backoffice/modifier-groups/:id?staffId=...
-// Hard-deletes the group DEFINITION (cascades to item_modifier_groups links
-// and modifier_options) — blocked if any of its options appear in real
-// order history.
+// The single "Remove" action for a group — hard-deletes the group
+// DEFINITION (cascades to item_modifier_groups links and modifier_options)
+// if nothing references it in real order history; if it IS referenced,
+// soft-deletes (active=false) instead so historical orders stay intact.
+// Both paths return the same success shape — the caller can't tell which
+// happened, and doesn't need to: GET /api/backoffice/menu excludes
+// inactive groups, so either way it just disappears from the editor.
 app.delete("/api/backoffice/modifier-groups/:id", async (req, res) => {
   try {
     await requireBackofficeSession(req);
@@ -2072,11 +2099,14 @@ app.delete("/api/backoffice/modifier-groups/:id", async (req, res) => {
         WHERE mo.group_id = $1`,
       [req.params.id]
     );
+
     if (refRows[0].n > 0) {
-      throw new HttpError(
-        409,
-        "This group has been used in past orders and can't be deleted — deactivate it instead"
+      const { rows } = await pool.query(
+        "UPDATE modifier_groups SET active = false WHERE id = $1 RETURNING id",
+        [req.params.id]
       );
+      if (rows.length === 0) throw new HttpError(404, "Modifier group not found");
+      return res.json({ success: true, id: rows[0].id });
     }
 
     const { rows } = await pool.query(
@@ -2084,9 +2114,9 @@ app.delete("/api/backoffice/modifier-groups/:id", async (req, res) => {
       [req.params.id]
     );
     if (rows.length === 0) throw new HttpError(404, "Modifier group not found");
-    res.json({ success: true, id: req.params.id });
+    res.json({ success: true, id: rows[0].id });
   } catch (err) {
-    sendHttpError(res, err, "Failed to delete modifier group");
+    sendHttpError(res, err, "Failed to remove modifier group");
   }
 });
 
@@ -2109,12 +2139,16 @@ app.delete("/api/backoffice/item-modifier-groups/:itemId/:groupId", async (req, 
 });
 
 // POST /api/backoffice/modifier-options
-// Body: { staffId, group_id, name, price_delta, max_quantity, default_selected }
+// Body: { staffId, group_id, name, price_delta, default_selected }
+// max_quantity is no longer client-supplied — every new option gets
+// DEFAULT_OPTION_MAX_QUANTITY, invisibly. Order Entry's quantity stepper
+// still reads this column exactly as before; only the owner-facing
+// ability to see/set it during menu editing is gone.
 app.post("/api/backoffice/modifier-options", async (req, res) => {
   try {
     const { group_id } = req.body || {};
     await requireBackofficeSession(req);
-    const { name, delta, maxQ } = validateOptionFields(req.body || {});
+    const { name, delta } = validateOptionFields(req.body || {});
     if (!group_id || typeof group_id !== "string") {
       throw new HttpError(400, "group_id is required");
     }
@@ -2126,7 +2160,7 @@ app.post("/api/backoffice/modifier-options", async (req, res) => {
       `INSERT INTO modifier_options (group_id, name, price_delta, max_quantity, default_selected, active)
        VALUES ($1, $2, $3, $4, $5, true)
        RETURNING id, group_id, name, price_delta, sort_order, max_quantity, default_selected, active`,
-      [group_id, name, delta, maxQ, req.body.default_selected]
+      [group_id, name, delta, DEFAULT_OPTION_MAX_QUANTITY, req.body.default_selected]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
@@ -2135,22 +2169,26 @@ app.post("/api/backoffice/modifier-options", async (req, res) => {
 });
 
 // PUT /api/backoffice/modifier-options/:id
-// Body: { staffId, name, price_delta, max_quantity, default_selected, active }
+// Body: { staffId, name, price_delta, default_selected, active }
+// max_quantity is deliberately excluded from the UPDATE — whatever value
+// an option already has (the default for new ones, or a previously-set
+// value for older ones) is left completely untouched by edits made
+// through this route now that the field isn't editable anymore.
 app.put("/api/backoffice/modifier-options/:id", async (req, res) => {
   try {
     const { active } = req.body || {};
     await requireBackofficeSession(req);
-    const { name, delta, maxQ } = validateOptionFields(req.body || {});
+    const { name, delta } = validateOptionFields(req.body || {});
     if (typeof active !== "boolean") {
       throw new HttpError(400, "active must be a boolean");
     }
 
     const { rows } = await pool.query(
       `UPDATE modifier_options
-          SET name = $1, price_delta = $2, max_quantity = $3, default_selected = $4, active = $5
-        WHERE id = $6
+          SET name = $1, price_delta = $2, default_selected = $3, active = $4
+        WHERE id = $5
         RETURNING id, group_id, name, price_delta, sort_order, max_quantity, default_selected, active`,
-      [name, delta, maxQ, req.body.default_selected, active, req.params.id]
+      [name, delta, req.body.default_selected, active, req.params.id]
     );
     if (rows.length === 0) throw new HttpError(404, "Modifier option not found");
     res.json(rows[0]);
@@ -2160,8 +2198,11 @@ app.put("/api/backoffice/modifier-options/:id", async (req, res) => {
 });
 
 // DELETE /api/backoffice/modifier-options/:id?staffId=...
-// Hard-deletes if never used in a real order; blocked (409) if it is —
-// deactivate instead.
+// The single "Remove" action — hard-deletes if never used in a real
+// order; if it IS referenced, soft-deletes (active=false) instead so
+// historical orders stay intact. Same success shape either way; GET
+// /api/backoffice/menu excludes inactive options, so it just disappears
+// from the editor regardless of which path was taken.
 app.delete("/api/backoffice/modifier-options/:id", async (req, res) => {
   try {
     await requireBackofficeSession(req);
@@ -2170,11 +2211,14 @@ app.delete("/api/backoffice/modifier-options/:id", async (req, res) => {
       "SELECT count(*)::int AS n FROM order_item_modifiers WHERE modifier_option_id = $1",
       [req.params.id]
     );
+
     if (refRows[0].n > 0) {
-      throw new HttpError(
-        409,
-        "This option has been used in past orders and can't be deleted — deactivate it instead"
+      const { rows } = await pool.query(
+        "UPDATE modifier_options SET active = false WHERE id = $1 RETURNING id",
+        [req.params.id]
       );
+      if (rows.length === 0) throw new HttpError(404, "Modifier option not found");
+      return res.json({ success: true, id: rows[0].id });
     }
 
     const { rows } = await pool.query(
@@ -2182,9 +2226,9 @@ app.delete("/api/backoffice/modifier-options/:id", async (req, res) => {
       [req.params.id]
     );
     if (rows.length === 0) throw new HttpError(404, "Modifier option not found");
-    res.json({ success: true, id: req.params.id });
+    res.json({ success: true, id: rows[0].id });
   } catch (err) {
-    sendHttpError(res, err, "Failed to delete modifier option");
+    sendHttpError(res, err, "Failed to remove modifier option");
   }
 });
 

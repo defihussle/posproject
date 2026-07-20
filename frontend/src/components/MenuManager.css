@@ -600,10 +600,6 @@
   background: var(--bg-surface);
 }
 
-.menued__modgroup--inactive {
-  opacity: 0.55;
-}
-
 .menued__modgroup-formrow {
   display: flex;
   align-items: center;
@@ -628,17 +624,6 @@
   flex-wrap: wrap;
   gap: 6px;
   margin-left: auto;
-}
-
-/* Small variants of existing controls, reused for the denser group/option rows */
-.menued__status-pill--sm {
-  font-size: 0.6rem;
-  padding: 3px 8px;
-}
-
-.menued__86-btn--sm {
-  padding: 5px 10px;
-  font-size: 0.68rem;
 }
 
 .menued__add-variant--sm {
@@ -672,10 +657,6 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-muted);
-}
-
-.menued__minmax--tight {
-  font-size: 0.62rem;
 }
 
 .menued__minmax-input {
@@ -749,10 +730,6 @@
 .menued__option-row--new {
   background: var(--bg-surface);
   border: 1px dashed var(--border-color);
-}
-
-.menued__option-row--inactive {
-  opacity: 0.5;
 }
 
 .menued__option-row .menued__variant-name {
