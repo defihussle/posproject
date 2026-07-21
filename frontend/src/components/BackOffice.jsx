@@ -157,7 +157,6 @@ export default function BackOffice() {
 
         <div className="backoffice__header-center">
           <img src={logoImg} alt="NARCOS TACOS" className="backoffice__logo" />
-          <span className="backoffice__label">Back Office</span>
         </div>
 
         <div className="backoffice__header-side backoffice__header-side--right" aria-hidden="true" />

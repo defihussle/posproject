@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { API_URL } from "../config";
+import ConfirmDialog from "./ConfirmDialog";
 import "./MenuManager.css";
 
 const fmtPrice = (p) => `$${parseFloat(p).toFixed(2)}`;
@@ -380,6 +381,7 @@ function ItemDetail({
   }));
   const [saving, setSaving] = useState(false);
   const [addingVariant, setAddingVariant] = useState(false);
+  const [confirming86, setConfirming86] = useState(false);
   const hasVariants = item.variants.length > 0;
 
   // New item selected — reset the draft to match it
@@ -448,7 +450,11 @@ function ItemDetail({
           <span className={`menued__status-pill${item.active ? "" : " menued__status-pill--off"}`}>
             {item.active ? "Active" : "Inactive"}
           </span>
-          <button className="menued__86-btn" onClick={onToggle86} disabled={busy}>
+          <button
+            className="menued__86-btn"
+            onClick={() => (item.active ? setConfirming86(true) : onToggle86())}
+            disabled={busy}
+          >
             {busy ? "…" : item.active ? "86 It" : "Reactivate"}
           </button>
         </div>
@@ -542,6 +548,21 @@ function ItemDetail({
         onOptionDeleted={onOptionDeleted}
         onError={onError}
       />
+
+      {confirming86 && (
+        <ConfirmDialog
+          title="Remove menu item?"
+          message={`Are you sure you want to remove "${item.name}"? It'll be hidden from Order Entry until reactivated.`}
+          confirmLabel="86 It"
+          danger
+          busy={busy}
+          onConfirm={() => {
+            onToggle86();
+            setConfirming86(false);
+          }}
+          onCancel={() => setConfirming86(false)}
+        />
+      )}
     </div>
   );
 }
@@ -808,6 +829,8 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
   });
   const [saving, setSaving] = useState(false);
   const [addingOption, setAddingOption] = useState(false);
+  const [confirmingUnlink, setConfirmingUnlink] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
 
   const dirty =
     draft.name !== group.name ||
@@ -866,6 +889,7 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
   };
 
   const removeFromItem = async () => {
+    setConfirmingUnlink(false);
     try {
       const res = await fetch(
         `${API_URL}/api/backoffice/item-modifier-groups/${item.id}/${group.id}?staffId=${staff.id}`,
@@ -884,6 +908,7 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
   // soft-delete (see DELETE /api/backoffice/modifier-groups/:id); either
   // way this group just disappears from the list, no messaging needed.
   const remove = async () => {
+    setConfirmingRemove(false);
     try {
       const res = await fetch(
         `${API_URL}/api/backoffice/modifier-groups/${group.id}?staffId=${staff.id}`,
@@ -948,10 +973,10 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
         )}
 
         <div className="menued__modgroup-actions">
-          <button className="menued__text-link" onClick={removeFromItem}>
+          <button className="menued__text-link" onClick={() => setConfirmingUnlink(true)}>
             Remove from item
           </button>
-          <button className="menued__text-link menued__text-link--danger" onClick={remove}>
+          <button className="menued__text-link menued__text-link--danger" onClick={() => setConfirmingRemove(true)}>
             Remove
           </button>
         </div>
@@ -988,6 +1013,28 @@ function ModifierGroupCard({ item, group, staff, onGroupSaved, onGroupDeletedEve
           </button>
         )}
       </div>
+
+      {confirmingUnlink && (
+        <ConfirmDialog
+          title="Remove from item?"
+          message={`Are you sure you want to remove "${group.name}" from this item? The group and its options stay intact for any other item using it, but this item won't offer it anymore.`}
+          confirmLabel="Remove from item"
+          danger
+          onConfirm={removeFromItem}
+          onCancel={() => setConfirmingUnlink(false)}
+        />
+      )}
+
+      {confirmingRemove && (
+        <ConfirmDialog
+          title="Remove modifier group?"
+          message={`Are you sure you want to remove "${group.name}"?`}
+          confirmLabel="Remove"
+          danger
+          onConfirm={remove}
+          onCancel={() => setConfirmingRemove(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1006,6 +1053,7 @@ function ModifierOptionRow({ groupId, option, staff, hidePrice, onSaved, onDelet
     default_selected: option.default_selected,
   });
   const [saving, setSaving] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
 
   const dirty =
     draft.name !== option.name ||
@@ -1060,6 +1108,7 @@ function ModifierOptionRow({ groupId, option, staff, hidePrice, onSaved, onDelet
   // either way this option just disappears from the list, no messaging
   // needed for the normal case.
   const remove = async () => {
+    setConfirmingRemove(false);
     try {
       const res = await fetch(
         `${API_URL}/api/backoffice/modifier-options/${option.id}?staffId=${staff.id}`,
@@ -1112,9 +1161,20 @@ function ModifierOptionRow({ groupId, option, staff, hidePrice, onSaved, onDelet
         </>
       )}
 
-      <button className="menued__text-link menued__text-link--danger" onClick={remove}>
+      <button className="menued__text-link menued__text-link--danger" onClick={() => setConfirmingRemove(true)}>
         Remove
       </button>
+
+      {confirmingRemove && (
+        <ConfirmDialog
+          title="Remove option?"
+          message={`Are you sure you want to remove "${option.name}"?`}
+          confirmLabel="Remove"
+          danger
+          onConfirm={remove}
+          onCancel={() => setConfirmingRemove(false)}
+        />
+      )}
     </div>
   );
 }

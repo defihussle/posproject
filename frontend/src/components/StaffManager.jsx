@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { API_URL } from "../config";
+import ConfirmDialog from "./ConfirmDialog";
 import "./StaffManager.css";
 
 const ALL_ROLES = ["owner", "admin", "manager", "cashier", "kitchen"];
@@ -111,6 +112,13 @@ export default function StaffManager({ staff, showLiveStatus = false }) {
     );
   }, []);
 
+  // Distinct from applyRow: a smart-delete that actually hard-deleted the
+  // row (see DELETE /api/backoffice/staff/:id) means it no longer exists
+  // server-side, so it must be filtered out entirely rather than updated.
+  const removeRow = useCallback((id) => {
+    setRows((prev) => prev.filter((r) => r.id !== id));
+  }, []);
+
   if (loading) return <div className="staffmgr__notice">Loading staff…</div>;
 
   const selectedRow = rows.find((r) => r.id === selectedId) || null;
@@ -157,6 +165,7 @@ export default function StaffManager({ staff, showLiveStatus = false }) {
           row={selectedRow}
           me={staff}
           onSaved={applyRow}
+          onRemoved={removeRow}
           onError={setError}
           onClose={() => setSelectedId(null)}
         />
@@ -206,7 +215,7 @@ function ChevronIcon() {
 // (`canManageTarget`) still gates whether the write controls even render;
 // an unmanageable row (e.g. an owner viewed by an admin) opens the same
 // modal but read-only — view access always available, edit conditionally.
-function StaffDetailModal({ row, me, onSaved, onError, onClose }) {
+function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
   const manageable = canManageTarget(me.role, row.role);
   const [role, setRole] = useState(row.role);
   const [rate, setRate] = useState(row.hourly_rate == null ? "" : String(row.hourly_rate));
@@ -214,6 +223,8 @@ function StaffDetailModal({ row, me, onSaved, onError, onClose }) {
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pinPrompt, setPinPrompt] = useState(false);
+  const [confirmingRole, setConfirmingRole] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
   const roles = assignableRoles(me.role);
   const options = roles.includes(row.role) ? roles : [row.role, ...roles];
   const isBackofficeRole = role === "owner" || role === "admin";
@@ -235,8 +246,8 @@ function StaffDetailModal({ row, me, onSaved, onError, onClose }) {
     return data;
   };
 
-  const save = async () => {
-    if (saving || !dirty) return;
+  const performSave = async () => {
+    if (saving) return;
     setSaving(true);
     try {
       const body = { hourly_rate: Number(rate) };
@@ -249,14 +260,56 @@ function StaffDetailModal({ row, me, onSaved, onError, onClose }) {
       onError(err.message);
     } finally {
       setSaving(false);
+      setConfirmingRole(false);
     }
   };
 
-  const toggleActive = async () => {
+  // Role changes get their own confirmation showing the specific
+  // from/to values (per task); rate/email edits are low-stakes and save
+  // immediately, unchanged from before.
+  const requestSave = () => {
+    if (saving || !dirty) return;
+    if (role !== row.role) {
+      setConfirmingRole(true);
+      return;
+    }
+    performSave();
+  };
+
+  // Smart delete (see DELETE /api/backoffice/staff/:id): hard-deletes if
+  // this staff member has zero order/shift history, otherwise force-
+  // deactivates — same server-side decision either way, `row.has_history`
+  // is only used here to word the confirmation dialog ahead of time.
+  const performRemove = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      const data = await put({ active: !row.active });
+      const res = await fetch(`${API_URL}/api/backoffice/staff/${row.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      onError(null);
+      if (data.action === "deleted") {
+        onRemoved(row.id);
+      } else {
+        onSaved({ ...row, active: false });
+      }
+      onClose();
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setBusy(false);
+      setConfirmingRemove(false);
+    }
+  };
+
+  const reactivate = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const data = await put({ active: true });
       onError(null);
       onSaved(data);
       onClose();
@@ -330,7 +383,7 @@ function StaffDetailModal({ row, me, onSaved, onError, onClose }) {
                   >
                     Discard
                   </button>
-                  <button className="staffmgr__btn staffmgr__btn--save" onClick={save} disabled={saving}>
+                  <button className="staffmgr__btn staffmgr__btn--save" onClick={requestSave} disabled={saving}>
                     {saving ? "Saving…" : "Save"}
                   </button>
                 </div>
@@ -341,6 +394,7 @@ function StaffDetailModal({ row, me, onSaved, onError, onClose }) {
               {pinPrompt ? (
                 <InlinePinReset
                   staffId={row.id}
+                  staffName={row.name}
                   me={me}
                   onDone={() => setPinPrompt(false)}
                   onError={onError}
@@ -351,13 +405,30 @@ function StaffDetailModal({ row, me, onSaved, onError, onClose }) {
                 </button>
               )}
 
-              <button
-                className={`staffmgr__btn ${row.active ? "staffmgr__btn--danger" : "staffmgr__btn--green"}`}
-                onClick={toggleActive}
-                disabled={busy}
-              >
-                {busy ? "…" : row.active ? "Deactivate" : "Reactivate"}
-              </button>
+              {row.active ? (
+                <button
+                  className="staffmgr__btn staffmgr__btn--danger"
+                  onClick={() => setConfirmingRemove(true)}
+                  disabled={busy}
+                >
+                  {busy ? "…" : row.has_history ? "Deactivate" : "Delete"}
+                </button>
+              ) : (
+                <>
+                  <button className="staffmgr__btn staffmgr__btn--green" onClick={reactivate} disabled={busy}>
+                    {busy ? "…" : "Reactivate"}
+                  </button>
+                  {!row.has_history && (
+                    <button
+                      className="staffmgr__btn staffmgr__btn--danger"
+                      onClick={() => setConfirmingRemove(true)}
+                      disabled={busy}
+                    >
+                      {busy ? "…" : "Delete"}
+                    </button>
+                  )}
+                </>
+              )}
             </>
           ) : (
             <>
@@ -373,6 +444,33 @@ function StaffDetailModal({ row, me, onSaved, onError, onClose }) {
           )}
         </div>
       </div>
+
+      {confirmingRole && (
+        <ConfirmDialog
+          title="Change role?"
+          message={`Change ${row.name}'s role from ${row.role} to ${role}?`}
+          confirmLabel="Change Role"
+          busy={saving}
+          onConfirm={performSave}
+          onCancel={() => setConfirmingRole(false)}
+        />
+      )}
+
+      {confirmingRemove && (
+        <ConfirmDialog
+          title={row.has_history ? "Deactivate staff member?" : "Delete staff member?"}
+          message={
+            row.has_history
+              ? `Deactivate ${row.name}? They will no longer be able to log in. (They have order/shift history, so they can't be permanently deleted.)`
+              : `Permanently delete ${row.name}? This cannot be undone.`
+          }
+          confirmLabel={row.has_history ? "Deactivate" : "Delete"}
+          danger
+          busy={busy}
+          onConfirm={performRemove}
+          onCancel={() => setConfirmingRemove(false)}
+        />
+      )}
     </div>
   );
 }
@@ -380,17 +478,34 @@ function StaffDetailModal({ row, me, onSaved, onError, onClose }) {
 // Inline (not a nested modal) — sits within the staff detail modal's own
 // body, so resetting a PIN doesn't require stacking a second overlay on
 // top of the first.
-function InlinePinReset({ staffId, me, onDone, onError }) {
+// Admin/owner resetting SOMEONE ELSE's PIN — deliberately just New +
+// Confirm, no "current PIN" field, since the person resetting it doesn't
+// (and shouldn't need to) know the old one. Distinct from the self-
+// service Change PIN flow elsewhere (old + new + confirm), untouched by
+// this component.
+function InlinePinReset({ staffId, staffName, me, onDone, onError }) {
   const [pin, setPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
   const [saving, setSaving] = useState(false);
   const [localErr, setLocalErr] = useState(null);
+  const [confirming, setConfirming] = useState(false);
 
-  const save = async () => {
+  const requestSave = () => {
     if (saving) return;
     if (!/^\d{4}$/.test(pin)) {
       setLocalErr("PIN must be exactly 4 digits");
       return;
     }
+    if (pin !== confirmPin) {
+      setLocalErr("PINs don't match");
+      return;
+    }
+    setLocalErr(null);
+    setConfirming(true);
+  };
+
+  const performSave = async () => {
+    if (saving) return;
     setSaving(true);
     setLocalErr(null);
     try {
@@ -407,6 +522,7 @@ function InlinePinReset({ staffId, me, onDone, onError }) {
     } catch (err) {
       setLocalErr(err.message);
       setSaving(false);
+      setConfirming(false);
     }
   };
 
@@ -421,14 +537,33 @@ function InlinePinReset({ staffId, me, onDone, onError }) {
         inputMode="numeric"
         autoFocus
       />
+      <input
+        className="staffmgr__input staffmgr__input--pin"
+        value={confirmPin}
+        onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+        placeholder="Confirm new PIN"
+        inputMode="numeric"
+      />
       <div className="staffmgr__modal-actions">
         <button className="staffmgr__btn" onClick={onDone} disabled={saving}>
           Cancel
         </button>
-        <button className="staffmgr__btn staffmgr__btn--save" onClick={save} disabled={saving}>
+        <button className="staffmgr__btn staffmgr__btn--save" onClick={requestSave} disabled={saving}>
           {saving ? "Saving…" : "Set PIN"}
         </button>
       </div>
+
+      {confirming && (
+        <ConfirmDialog
+          title="Reset PIN?"
+          message={`Reset ${staffName}'s PIN? The old PIN will stop working immediately — they'll need the new one to log in.`}
+          confirmLabel="Reset PIN"
+          danger
+          busy={saving}
+          onConfirm={performSave}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
     </div>
   );
 }

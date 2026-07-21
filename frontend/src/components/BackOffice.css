@@ -60,16 +60,6 @@
   display: block;
 }
 
-.backoffice__label {
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  white-space: nowrap;
-}
-
 /* Hamburger — desktop: hidden (sidebar is always visible, nothing to open) */
 .backoffice__hamburger {
   display: none;

@@ -1,0 +1,93 @@
+/* ============================================================
+   Shared "Are you sure?" confirmation dialog — see ConfirmDialog.jsx.
+   z-index sits above every existing modal overlay in the app (all at
+   200) since this is always opened from within one of those.
+   ============================================================ */
+
+.confirmdlg__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.confirmdlg__modal {
+  width: 100%;
+  max-width: 380px;
+  background: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-medium);
+  padding: 22px 22px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.confirmdlg__title {
+  font-family: var(--font-headline);
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+
+.confirmdlg__message {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.confirmdlg__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.confirmdlg__btn {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 9px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+
+.confirmdlg__btn:hover:not(:disabled) {
+  border-color: var(--text-primary);
+}
+
+.confirmdlg__btn:disabled {
+  opacity: 0.5;
+}
+
+.confirmdlg__btn--primary {
+  background: var(--red);
+  color: #fff;
+  border-color: transparent;
+}
+
+.confirmdlg__btn--primary:hover:not(:disabled) {
+  background: var(--red-hover);
+  border-color: transparent;
+}
+
+.confirmdlg__btn--danger {
+  background: var(--red-light);
+  color: var(--red);
+  border-color: transparent;
+}
+
+.confirmdlg__btn--danger:hover:not(:disabled) {
+  background: var(--red);
+  color: #fff;
+  border-color: transparent;
+}

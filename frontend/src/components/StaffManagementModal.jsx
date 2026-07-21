@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { API_URL } from "../config";
 import { canManageTarget, StaffAddForm } from "./StaffManager";
+import ConfirmDialog from "./ConfirmDialog";
 import "./StaffManager.css";
 import "./StaffManagementModal.css";
 
@@ -75,6 +76,13 @@ export default function StaffManagementModal({ staff, onClose }) {
     setRows((prev) => prev.map((r) => (r.id === updated.id ? { ...r, ...updated } : r)));
   }, []);
 
+  // Distinct from applyRow: a smart-delete that actually hard-deleted the
+  // row (see DELETE /api/staff/:id) means it no longer exists server-
+  // side, so it must be filtered out entirely rather than updated.
+  const removeRow = useCallback((id) => {
+    setRows((prev) => prev.filter((r) => r.id !== id));
+  }, []);
+
   const selectedRow = rows.find((r) => r.id === selectedId) || null;
 
   return (
@@ -136,6 +144,7 @@ export default function StaffManagementModal({ staff, onClose }) {
           row={selectedRow}
           me={staff}
           onSaved={applyRow}
+          onRemoved={removeRow}
           onError={setError}
           onClose={() => setSelectedId(null)}
         />
@@ -183,19 +192,20 @@ function ChevronIcon() {
 // Hierarchy protection mirrors the server-side canManageTarget check
 // exactly — an unmanageable row (e.g. an owner viewed by an admin) opens
 // the same sheet but with no write controls, view-only.
-function StaffDetailSheet({ row, me, onSaved, onError, onClose }) {
+function StaffDetailSheet({ row, me, onSaved, onRemoved, onError, onClose }) {
   const manageable = canManageTarget(me.role, row.role);
   const [busy, setBusy] = useState(false);
   const [pinPrompt, setPinPrompt] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
 
-  const toggleActive = async () => {
+  const reactivate = async () => {
     if (busy) return;
     setBusy(true);
     try {
       const res = await fetch(`${API_URL}/api/staff/${row.id}/status`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ staffId: me.id, active: !row.active }),
+        body: JSON.stringify({ staffId: me.id, active: true }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -206,6 +216,34 @@ function StaffDetailSheet({ row, me, onSaved, onError, onClose }) {
       onError(err.message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Smart delete (see DELETE /api/staff/:id): hard-deletes if this staff
+  // member has zero order/shift history, otherwise force-deactivates —
+  // same server-side decision either way, `row.has_history` is only used
+  // here to word the confirmation dialog ahead of time.
+  const performRemove = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${API_URL}/api/staff/${row.id}?staffId=${me.id}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      onError(null);
+      if (data.action === "deleted") {
+        onRemoved(row.id);
+      } else {
+        onSaved({ ...row, active: false });
+      }
+      onClose();
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setBusy(false);
+      setConfirmingRemove(false);
     }
   };
 
@@ -240,6 +278,7 @@ function StaffDetailSheet({ row, me, onSaved, onError, onClose }) {
               {pinPrompt ? (
                 <InlinePinReset
                   staffId={row.id}
+                  staffName={row.name}
                   me={me}
                   onDone={() => setPinPrompt(false)}
                   onError={onError}
@@ -250,34 +289,81 @@ function StaffDetailSheet({ row, me, onSaved, onError, onClose }) {
                 </button>
               )}
 
-              <button
-                className={`staffmgr__btn ${row.active ? "staffmgr__btn--danger" : "staffmgr__btn--green"}`}
-                onClick={toggleActive}
-                disabled={busy}
-              >
-                {busy ? "…" : row.active ? "Deactivate" : "Reactivate"}
-              </button>
+              {row.active ? (
+                <button
+                  className="staffmgr__btn staffmgr__btn--danger"
+                  onClick={() => setConfirmingRemove(true)}
+                  disabled={busy}
+                >
+                  {busy ? "…" : row.has_history ? "Deactivate" : "Delete"}
+                </button>
+              ) : (
+                <>
+                  <button className="staffmgr__btn staffmgr__btn--green" onClick={reactivate} disabled={busy}>
+                    {busy ? "…" : "Reactivate"}
+                  </button>
+                  {!row.has_history && (
+                    <button
+                      className="staffmgr__btn staffmgr__btn--danger"
+                      onClick={() => setConfirmingRemove(true)}
+                      disabled={busy}
+                    >
+                      {busy ? "…" : "Delete"}
+                    </button>
+                  )}
+                </>
+              )}
             </>
           )}
         </div>
       </div>
+
+      {confirmingRemove && (
+        <ConfirmDialog
+          title={row.has_history ? "Deactivate staff member?" : "Delete staff member?"}
+          message={
+            row.has_history
+              ? `Deactivate ${row.name}? They will no longer be able to log in. (They have order/shift history, so they can't be permanently deleted.)`
+              : `Permanently delete ${row.name}? This cannot be undone.`
+          }
+          confirmLabel={row.has_history ? "Deactivate" : "Delete"}
+          danger
+          busy={busy}
+          onConfirm={performRemove}
+          onCancel={() => setConfirmingRemove(false)}
+        />
+      )}
     </div>
   );
 }
 
 // Same shape as StaffManager.jsx's inline PIN reset, but posts to the
 // trusted-staffId route instead of the Back Office session-cookie one.
-function InlinePinReset({ staffId, me, onDone, onError }) {
+// Same New + Confirm (no old PIN) shape — the person resetting someone
+// else's PIN doesn't know their old one.
+function InlinePinReset({ staffId, staffName, me, onDone, onError }) {
   const [pin, setPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
   const [saving, setSaving] = useState(false);
   const [localErr, setLocalErr] = useState(null);
+  const [confirming, setConfirming] = useState(false);
 
-  const save = async () => {
+  const requestSave = () => {
     if (saving) return;
     if (!/^\d{4}$/.test(pin)) {
       setLocalErr("PIN must be exactly 4 digits");
       return;
     }
+    if (pin !== confirmPin) {
+      setLocalErr("PINs don't match");
+      return;
+    }
+    setLocalErr(null);
+    setConfirming(true);
+  };
+
+  const performSave = async () => {
+    if (saving) return;
     setSaving(true);
     setLocalErr(null);
     try {
@@ -293,6 +379,7 @@ function InlinePinReset({ staffId, me, onDone, onError }) {
     } catch (err) {
       setLocalErr(err.message);
       setSaving(false);
+      setConfirming(false);
     }
   };
 
@@ -307,14 +394,33 @@ function InlinePinReset({ staffId, me, onDone, onError }) {
         inputMode="numeric"
         autoFocus
       />
+      <input
+        className="staffmgr__input staffmgr__input--pin"
+        value={confirmPin}
+        onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+        placeholder="Confirm new PIN"
+        inputMode="numeric"
+      />
       <div className="staffmgr__modal-actions">
         <button className="staffmgr__btn" onClick={onDone} disabled={saving}>
           Cancel
         </button>
-        <button className="staffmgr__btn staffmgr__btn--save" onClick={save} disabled={saving}>
+        <button className="staffmgr__btn staffmgr__btn--save" onClick={requestSave} disabled={saving}>
           {saving ? "Saving…" : "Set PIN"}
         </button>
       </div>
+
+      {confirming && (
+        <ConfirmDialog
+          title="Reset PIN?"
+          message={`Reset ${staffName}'s PIN? The old PIN will stop working immediately — they'll need the new one to log in.`}
+          confirmLabel="Reset PIN"
+          danger
+          busy={saving}
+          onConfirm={performSave}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
     </div>
   );
 }

@@ -2308,6 +2308,46 @@ async function assertPinAvailable(pin, excludeId = null) {
   }
 }
 
+// Real history = orders they placed or applied a discount on, or shifts
+// they clocked — anything that would leave a dangling reference (or lose
+// real business history) if the staff row were hard-deleted. Used both
+// to decide the smart-delete outcome (see smartDeleteStaff) AND surfaced
+// ahead of time via has_history on staff list responses, so the client
+// can word its confirmation dialog correctly before the user commits.
+// Both uses share this exact SQL fragment so they can never drift apart.
+const STAFF_HISTORY_EXISTS_SQL = `(
+  EXISTS(SELECT 1 FROM shifts WHERE shifts.staff_id = staff.id)
+  OR EXISTS(SELECT 1 FROM orders WHERE orders.staff_id = staff.id OR orders.discount_applied_by = staff.id)
+)`;
+
+async function staffHasHistory(staffId) {
+  const { rows } = await pool.query(
+    `SELECT ${STAFF_HISTORY_EXISTS_SQL} AS has_history FROM staff WHERE id = $1`,
+    [staffId]
+  );
+  return rows[0]?.has_history || false;
+}
+
+// Shared "smart delete" outcome for both DELETE routes below. Hierarchy
+// protection (who's ALLOWED to act on this target) must already have
+// been checked by the caller via requireManagedTarget before this runs —
+// this function only decides WHAT removal means once permission is
+// already established, per the task's separation of those two concerns.
+async function smartDeleteStaff(target) {
+  const hasHistory = await staffHasHistory(target.id);
+  if (hasHistory) {
+    await pool.query("UPDATE staff SET active = false WHERE id = $1", [target.id]);
+    return {
+      success: true,
+      action: "deactivated",
+      id: target.id,
+      message: `${target.name} has order/shift history and can't be deleted — deactivated instead`,
+    };
+  }
+  await pool.query("DELETE FROM staff WHERE id = $1", [target.id]);
+  return { success: true, action: "deleted", id: target.id };
+}
+
 // GET /api/backoffice/staff?staffId=...
 // All staff, active AND inactive, without pin_hash. Full Back Office staff
 // list — owner/admin only (Back Office access was fully revoked from
@@ -2317,7 +2357,7 @@ app.get("/api/backoffice/staff", async (req, res) => {
   try {
     await requireBackofficeSession(req);
     const { rows } = await pool.query(
-      `SELECT ${STAFF_SAFE_COLS} FROM staff
+      `SELECT ${STAFF_SAFE_COLS}, ${STAFF_HISTORY_EXISTS_SQL} AS has_history FROM staff
         ORDER BY active DESC, array_position(ARRAY['owner','admin','manager','cashier','kitchen'], role::text), name`
     );
     res.json(rows);
@@ -2512,7 +2552,7 @@ app.get("/api/staff/roster", async (req, res) => {
     await requireStaffIdParam(req.query.staffId);
 
     const { rows } = await pool.query(
-      `SELECT id, name, role, active FROM staff
+      `SELECT id, name, role, active, ${STAFF_HISTORY_EXISTS_SQL} AS has_history FROM staff
         ORDER BY active DESC, array_position(ARRAY['owner','admin','manager','cashier','kitchen'], role::text), name`
     );
     const liveByStaffId = await getLiveStatusByStaffId();
@@ -2523,6 +2563,7 @@ app.get("/api/staff/roster", async (req, res) => {
         name: r.name,
         role: r.role,
         active: r.active,
+        has_history: r.has_history,
         live: liveByStaffId[r.id] || null,
       }))
     );
@@ -2573,6 +2614,20 @@ app.post("/api/staff/:id/reset-pin", async (req, res) => {
     res.json({ success: true, id: target.id });
   } catch (err) {
     sendHttpError(res, err, "Failed to reset PIN");
+  }
+});
+
+// DELETE /api/staff/:id?staffId=... — StaffManagementModal's Remove action.
+// Same smart-delete/hierarchy rules as DELETE /api/backoffice/staff/:id
+// (see smartDeleteStaff), staffId-query-param authenticated like the rest
+// of this trusted-staffId POS route family.
+app.delete("/api/staff/:id", async (req, res) => {
+  try {
+    const requester = await requireStaffIdParam(req.query.staffId);
+    const target = await requireManagedTarget(requester, req.params.id);
+    res.json(await smartDeleteStaff(target));
+  } catch (err) {
+    sendHttpError(res, err, "Failed to remove staff member");
   }
 });
 
@@ -3032,6 +3087,25 @@ app.put("/api/backoffice/staff/:id/pin", async (req, res) => {
     res.json({ success: true, id: target.id });
   } catch (err) {
     sendHttpError(res, err, "Failed to reset PIN");
+  }
+});
+
+// DELETE /api/backoffice/staff/:id
+// Owner/admin only, session-cookie auth, hierarchy-protected exactly like
+// the PUT routes above. Smart delete (see smartDeleteStaff): hard-deletes
+// the row if it has zero order/shift history, otherwise force-deactivates
+// it instead — same outcome as the old PUT active:false toggle, just
+// reached through this route now too. The client may already know which
+// outcome to expect (has_history on the GET /api/backoffice/staff row,
+// used to word its confirmation dialog before this is even called), but
+// the decision is always re-verified here, never trusted from the request.
+app.delete("/api/backoffice/staff/:id", async (req, res) => {
+  try {
+    const requester = await requireBackofficeSession(req);
+    const target = await requireManagedTarget(requester, req.params.id);
+    res.json(await smartDeleteStaff(target));
+  } catch (err) {
+    sendHttpError(res, err, "Failed to remove staff member");
   }
 });
 
