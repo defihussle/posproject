@@ -3161,7 +3161,9 @@ app.get("/api/backoffice/stats/summary", async (req, res) => {
 
     const { rows } = await client.query(
       `SELECT COALESCE(SUM(total), 0) AS total_sales, COUNT(*) AS order_count,
-              COALESCE(SUM(tip), 0) AS total_tips
+              COALESCE(SUM(tip), 0) AS total_tips,
+              COALESCE(SUM(subtotal), 0) AS gross_sales,
+              COALESCE(SUM(discount), 0) AS discount_total
          FROM orders
         WHERE location_id = $1
           AND status = 'ready'
@@ -3170,9 +3172,17 @@ app.get("/api/backoffice/stats/summary", async (req, res) => {
     );
     const totalSales = parseFloat(rows[0].total_sales);
     const orderCount = parseInt(rows[0].order_count, 10);
+    // Gross = pre-discount subtotal; Net = gross minus discounts (both
+    // pre-tax, matching how the dashboard's Gross/Net KPIs read). totalSales
+    // stays = SUM(total), the actual revenue collected (incl. tax/tip).
+    const grossSales = parseFloat(rows[0].gross_sales);
+    const discountTotal = parseFloat(rows[0].discount_total);
     res.json({
       range,
       totalSales,
+      grossSales,
+      netSales: grossSales - discountTotal,
+      discountTotal,
       orderCount,
       avgOrderValue: orderCount > 0 ? totalSales / orderCount : 0,
       // Always $0 today — checkout doesn't collect tips yet (orders.tip is

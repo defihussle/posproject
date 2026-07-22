@@ -1,38 +1,67 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { API_URL } from "../config";
 import "./HomeDashboard.css";
 
+// Preset ranges map 1:1 to the backend's resolveStatsRange. "custom" is a
+// UI-only option for now — the stats endpoints don't accept start/end yet,
+// so selecting it shows the date pickers + a "coming next" note rather than
+// firing a request the backend would 400. (Backend custom-range support is
+// the next phase — see the endpoint plan.)
 const RANGES = [
   { key: "today", label: "Today" },
-  { key: "week", label: "Week" },
-  { key: "month", label: "Month" },
+  { key: "week", label: "This Week" },
+  { key: "month", label: "This Month" },
+  { key: "custom", label: "Custom" },
 ];
 
-const fmtMoney = (n) => `$${Number(n).toFixed(2)}`;
+const LIVE_STATUS_POLL_MS = 5000;
 
-const LIVE_STATUS_POLL_MS = 5000; // same cadence KDS uses for its live order queue
+const fmtMoney = (n) =>
+  `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtInt = (n) => Number(n || 0).toLocaleString();
+const fmtPct = (n) => `${Number(n || 0).toFixed(1)}%`;
 
 function fmtSince(iso, nowMs) {
   const seconds = Math.max(0, Math.floor((nowMs - new Date(iso).getTime()) / 1000));
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  if (h === 0) return `${m}m`;
-  return `${h}h ${m}m`;
+  return h === 0 ? `${m}m` : `${h}h ${m}m`;
 }
 
 /**
- * Back Office → Home. Pure display — stat cards only, no editing controls.
- * Owner/admin only (StaffManager route is the manager's landing page instead).
+ * Back Office → Home. A glanceable, mobile-first stats dashboard
+ * (Clover/Square/Toast-inspired, tailored to this restaurant). Owner/admin
+ * only. Layout: top bar (range + comparison) → horizontally-scrolling KPI
+ * strip → a responsive grid of section cards (charts, breakdowns, lists).
+ *
+ * This pass establishes the full UI structure. KPIs, the discount total,
+ * top items, staff performance, and live status are wired to real data;
+ * the four trend/breakdown charts and the per-reason discount / labor /
+ * hours columns are scaffolded, awaiting their backend routes (see the
+ * endpoint plan). Each scaffolded card shows a labelled "pending" state,
+ * never fake data.
  */
 export default function HomeDashboard({ staff }) {
   const [range, setRange] = useState("today");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+  const [compare, setCompare] = useState(false);
+
   const [summary, setSummary] = useState(null);
   const [topItems, setTopItems] = useState([]);
   const [staffPerf, setStaffPerf] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  const isCustom = range === "custom";
+
   const load = useCallback(async () => {
+    // Custom range has no backend support yet — don't fire a request the
+    // server would reject; the sections render their pending state instead.
+    if (range === "custom") {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const qs = `staffId=${staff.id}&range=${range}`;
@@ -41,11 +70,7 @@ export default function HomeDashboard({ staff }) {
         fetch(`${API_URL}/api/backoffice/stats/top-items?${qs}&limit=5`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/staff-performance?${qs}`, { credentials: "include" }),
       ]);
-      const [sumData, topData, perfData] = await Promise.all([
-        sumRes.json(),
-        topRes.json(),
-        perfRes.json(),
-      ]);
+      const [sumData, topData, perfData] = await Promise.all([sumRes.json(), topRes.json(), perfRes.json()]);
       if (!sumRes.ok) throw new Error(sumData.error || `HTTP ${sumRes.status}`);
       if (!topRes.ok) throw new Error(topData.error || `HTTP ${topRes.status}`);
       if (!perfRes.ok) throw new Error(perfData.error || `HTTP ${perfRes.status}`);
@@ -64,31 +89,36 @@ export default function HomeDashboard({ staff }) {
     load();
   }, [load]);
 
+  // KPI definitions — real values from the (extended) summary endpoint;
+  // Labor % awaits the labor endpoint. `delta` stays null until the
+  // comparison endpoint lands, so the arrow simply doesn't render yet.
+  const kpis = useMemo(
+    () => [
+      { key: "gross", label: "Gross Sales", value: summary ? fmtMoney(summary.grossSales) : null, delta: null },
+      { key: "net", label: "Net Sales", value: summary ? fmtMoney(summary.netSales) : null, delta: null, hint: "after discounts" },
+      { key: "orders", label: "Orders", value: summary ? fmtInt(summary.orderCount) : null, delta: null },
+      { key: "aov", label: "Avg Order", value: summary ? fmtMoney(summary.avgOrderValue) : null, delta: null },
+      { key: "tips", label: "Total Tips", value: summary ? fmtMoney(summary.totalTips) : null, delta: null },
+      { key: "labor", label: "Labor Cost %", value: null, delta: null, pending: true },
+    ],
+    [summary]
+  );
+
   return (
     <div className="homedash">
-      <div className="homedash__toolbar">
-        <h2 className="homedash__title">Home</h2>
-        <div className="homedash__range">
-          {RANGES.map((r) => (
-            <button
-              key={r.key}
-              className={`homedash__range-btn${range === r.key ? " homedash__range-btn--active" : ""}`}
-              onClick={() => setRange(r.key)}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <TopBar
+        range={range}
+        onRange={setRange}
+        isCustom={isCustom}
+        customStart={customStart}
+        customEnd={customEnd}
+        onCustomStart={setCustomStart}
+        onCustomEnd={setCustomEnd}
+        compare={compare}
+        onCompare={setCompare}
+      />
 
       {error ? (
-        // A failed fetch must never look like "no sales today" — that was
-        // the actual root cause of stats silently appearing not to load:
-        // once loading finished, the cards had no way to distinguish
-        // "genuinely empty range" from "the request never succeeded," and
-        // defaulted to rendering the same calm empty-state copy either way.
-        // This replaces the whole grid with an unmissable, actionable error
-        // instead of three cards quietly lying about having real data.
         <div className="homedash__errorstate">
           <h3 className="homedash__errorstate-title">Couldn't load dashboard data</h3>
           <p className="homedash__errorstate-msg">{error}</p>
@@ -97,22 +127,294 @@ export default function HomeDashboard({ staff }) {
           </button>
         </div>
       ) : (
-        <div className="homedash__grid">
-          <SalesCard summary={summary} loading={loading} />
-          <TopSellersCard items={topItems} loading={loading} />
-          <StaffPerformanceCard rows={staffPerf} loading={loading} />
-          <LiveStatusCard />
+        <>
+          {isCustom && (
+            <div className="homedash__note">
+              Custom date ranges arrive with the next backend update — the pickers above are ready to wire in.
+            </div>
+          )}
+
+          <KpiStrip kpis={kpis} compare={compare} loading={loading && !isCustom} pending={isCustom} />
+
+          <div className="homedash__sections">
+            <SalesTrendCard loading={loading} pending={isCustom} />
+            <HourlyBreakdownCard loading={loading} pending={isCustom} />
+            <CategorySalesCard loading={loading} pending={isCustom} />
+            <LaborVsSalesCard loading={loading} pending={isCustom} />
+            <DiscountReportCard summary={summary} loading={loading && !isCustom} pending={isCustom} />
+            <TopItemsCard items={topItems} loading={loading && !isCustom} pending={isCustom} />
+            <StaffPerformanceCard rows={staffPerf} loading={loading && !isCustom} pending={isCustom} />
+            <LiveStatusCard />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Top bar ---------------- */
+function TopBar({ range, onRange, isCustom, customStart, customEnd, onCustomStart, onCustomEnd, compare, onCompare }) {
+  return (
+    <div className="homedash__topbar">
+      <div className="homedash__topbar-row">
+        <h2 className="homedash__title">Dashboard</h2>
+        <button
+          type="button"
+          className={`homedash__compare${compare ? " homedash__compare--on" : ""}`}
+          onClick={() => onCompare(!compare)}
+          aria-pressed={compare}
+        >
+          <span className="homedash__compare-track"><span className="homedash__compare-thumb" /></span>
+          vs Last Period
+        </button>
+      </div>
+
+      <div className="homedash__ranges" role="tablist" aria-label="Date range">
+        {RANGES.map((r) => (
+          <button
+            key={r.key}
+            role="tab"
+            aria-selected={range === r.key}
+            className={`homedash__range-btn${range === r.key ? " homedash__range-btn--active" : ""}`}
+            onClick={() => onRange(r.key)}
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
+
+      {isCustom && (
+        <div className="homedash__custom">
+          <label className="homedash__custom-field">
+            <span>From</span>
+            <input type="date" value={customStart} onChange={(e) => onCustomStart(e.target.value)} />
+          </label>
+          <label className="homedash__custom-field">
+            <span>To</span>
+            <input type="date" value={customEnd} onChange={(e) => onCustomEnd(e.target.value)} />
+          </label>
         </div>
       )}
     </div>
   );
 }
 
-// Every currently-clocked-in staff member (any location), live. Polls
-// independently of the Today/Week/Month range switcher above — this is
-// real-time state, not a historical range. The clock-in/out actions
-// themselves stay Order-Entry-only; this is read-only visibility into
-// that same state, not a duplicate control surface.
+/* ---------------- KPI strip ---------------- */
+function KpiStrip({ kpis, compare, loading, pending }) {
+  return (
+    <div className="homedash__kpis">
+      {kpis.map((k) => (
+        <KpiCard key={k.key} kpi={k} compare={compare} loading={loading} pending={pending} />
+      ))}
+    </div>
+  );
+}
+
+function KpiCard({ kpi, compare, loading, pending }) {
+  const showValue = !loading && !pending && !kpi.pending && kpi.value != null;
+  return (
+    <div className="homedash-kpi">
+      <div className="homedash-kpi__label">{kpi.label}</div>
+      {showValue ? (
+        <div className="homedash-kpi__value">{kpi.value}</div>
+      ) : (
+        <div className={`homedash-kpi__value homedash-kpi__value--muted`}>
+          {kpi.pending ? "—" : pending ? "—" : loading ? "" : "—"}
+        </div>
+      )}
+      {kpi.hint && <div className="homedash-kpi__hint">{kpi.hint}</div>}
+      {/* Delta — arrow + status color, never color alone (accessibility). Renders
+          only once the comparison endpoint provides a previous-period number. */}
+      {compare && (
+        <div className="homedash-kpi__delta homedash-kpi__delta--pending">
+          {kpi.delta == null ? "— vs last period" : <Delta value={kpi.delta} />}
+        </div>
+      )}
+      {kpi.pending && <div className="homedash-kpi__badge">Soon</div>}
+    </div>
+  );
+}
+
+function Delta({ value }) {
+  const up = value >= 0;
+  return (
+    <span className={`homedash-delta homedash-delta--${up ? "up" : "down"}`}>
+      <span aria-hidden="true">{up ? "▲" : "▼"}</span> {Math.abs(value).toFixed(1)}%
+    </span>
+  );
+}
+
+/* ---------------- Section shell ---------------- */
+function SectionCard({ title, actions, wide, children }) {
+  return (
+    <section className={`homedash-card${wide ? " homedash-card--wide" : ""}`}>
+      <div className="homedash-card__head">
+        <h3 className="homedash-card__title">{title}</h3>
+        {actions}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+// Skeleton bars used while a chart's backend route is still pending, so the
+// card reads as "chart here, data coming" rather than broken/empty.
+function ChartPending({ shape = "bars", note }) {
+  return (
+    <div className="homedash-pending">
+      {shape === "bars" ? (
+        <div className="homedash-pending__bars" aria-hidden="true">
+          {[42, 68, 55, 80, 48, 72, 60].map((h, i) => (
+            <span key={i} style={{ height: `${h}%` }} />
+          ))}
+        </div>
+      ) : (
+        <div className="homedash-pending__line" aria-hidden="true" />
+      )}
+      <div className="homedash-pending__note">{note}</div>
+    </div>
+  );
+}
+
+/* ---------------- Charts (scaffolded — inline-SVG charts land next phase) ---------------- */
+function SalesTrendCard({ pending }) {
+  const [mode, setMode] = useState("hourly");
+  return (
+    <SectionCard
+      title="Sales Trend"
+      wide
+      actions={
+        <div className="homedash-toggle">
+          {["hourly", "daily"].map((m) => (
+            <button
+              key={m}
+              className={`homedash-toggle__btn${mode === m ? " homedash-toggle__btn--active" : ""}`}
+              onClick={() => setMode(m)}
+            >
+              {m === "hourly" ? "Hourly" : "Daily"}
+            </button>
+          ))}
+        </div>
+      }
+    >
+      <ChartPending shape="line" note={pending ? "Select a preset range" : `${mode === "hourly" ? "Hourly" : "Daily"} trend — needs the sales-trend endpoint`} />
+    </SectionCard>
+  );
+}
+
+function HourlyBreakdownCard({ pending }) {
+  return (
+    <SectionCard title="Hourly Breakdown" wide>
+      <ChartPending shape="bars" note={pending ? "Select a preset range" : "Hour · Orders · Sales · Avg — needs the hourly endpoint"} />
+      <div className="homedash-table homedash-table--ghost" aria-hidden="true">
+        <div className="homedash-table__head">
+          <span>Hour</span><span>Orders</span><span>Sales</span><span>Avg</span>
+        </div>
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="homedash-table__row homedash-table__row--ghost">
+            <span /><span /><span /><span />
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  );
+}
+
+function CategorySalesCard({ pending }) {
+  return (
+    <SectionCard title="Category Sales">
+      <ChartPending shape="bars" note={pending ? "Select a preset range" : "Sales by category — needs the category endpoint"} />
+    </SectionCard>
+  );
+}
+
+function LaborVsSalesCard({ pending }) {
+  return (
+    <SectionCard title="Labor Cost %">
+      <ChartPending shape="line" note={pending ? "Select a preset range" : "Labor cost as % of sales — needs the labor endpoint"} />
+    </SectionCard>
+  );
+}
+
+/* ---------------- Discount report (total is real; per-reason pending) ---------------- */
+function DiscountReportCard({ summary, loading, pending }) {
+  const pctOfGross = summary && summary.grossSales > 0 ? (summary.discountTotal / summary.grossSales) * 100 : 0;
+  return (
+    <SectionCard title="Discount Report">
+      {loading || pending ? (
+        <div className="homedash-card__notice">{pending ? "Select a preset range" : "Loading…"}</div>
+      ) : (
+        <div className="homedash-table">
+          <div className="homedash-table__head">
+            <span>Reason</span><span>Amount</span><span>% of Sales</span>
+          </div>
+          <div className="homedash-table__row">
+            <span>All discounts</span>
+            <span className="homedash-num">{fmtMoney(summary?.discountTotal)}</span>
+            <span className="homedash-num">{fmtPct(pctOfGross)}</span>
+          </div>
+          <div className="homedash-table__note">Per-reason breakdown (family / friend / employee / neighbouring store) arrives with the discount endpoint.</div>
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+/* ---------------- Top items (real) ---------------- */
+function TopItemsCard({ items, loading, pending }) {
+  return (
+    <SectionCard title="Top 5 Items">
+      {loading || pending ? (
+        <div className="homedash-card__notice">{pending ? "Select a preset range" : "Loading…"}</div>
+      ) : items.length === 0 ? (
+        <div className="homedash-card__notice">No sales in this range</div>
+      ) : (
+        <ol className="homedash-list">
+          {items.map((it, i) => (
+            <li key={`${it.item_id}-${it.variant || ""}`} className="homedash-list__row">
+              <span className="homedash-list__rank">{i + 1}</span>
+              <span className="homedash-list__name">
+                {it.name}
+                {it.variant && <span className="homedash-list__variant"> · {it.variant}</span>}
+              </span>
+              <span className="homedash-list__value">×{it.quantity}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </SectionCard>
+  );
+}
+
+/* ---------------- Staff performance (orders/sales real; hours pending) ---------------- */
+function StaffPerformanceCard({ rows, loading, pending }) {
+  return (
+    <SectionCard title="Staff Performance" wide>
+      {loading || pending ? (
+        <div className="homedash-card__notice">{pending ? "Select a preset range" : "Loading…"}</div>
+      ) : rows.length === 0 ? (
+        <div className="homedash-card__notice">No orders in this range</div>
+      ) : (
+        <div className="homedash-table">
+          <div className="homedash-table__head">
+            <span>Name</span><span>Orders</span><span>Sales</span><span>Hours</span>
+          </div>
+          {rows.map((r) => (
+            <div key={r.staff_id} className="homedash-table__row">
+              <span className="homedash-table__name">{r.name}</span>
+              <span className="homedash-num">{fmtInt(r.orderCount)}</span>
+              <span className="homedash-num">{fmtMoney(r.totalSales)}</span>
+              <span className="homedash-num homedash-num--muted">—</span>
+            </div>
+          ))}
+          <div className="homedash-table__note">Hours column fills in with the labor/shifts endpoint.</div>
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+/* ---------------- Live status (real, keep) ---------------- */
 function LiveStatusCard() {
   const [staffList, setStaffList] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -121,9 +423,7 @@ function LiveStatusCard() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/backoffice/staff/live-status`, {
-        credentials: "include",
-      });
+      const res = await fetch(`${API_URL}/api/backoffice/staff/live-status`, { credentials: "include" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setStaffList(data);
@@ -141,15 +441,13 @@ function LiveStatusCard() {
     return () => clearInterval(id);
   }, [load]);
 
-  // 1s tick so each "since" duration counts up smoothly between polls,
-  // same pattern KDS uses for its elapsed timers.
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
   return (
-    <CardShell title="Live Status">
+    <SectionCard title="Live Status">
       {loading ? (
         <div className="homedash-card__notice">Loading…</div>
       ) : error ? (
@@ -160,10 +458,7 @@ function LiveStatusCard() {
         <ul className="homedash-list">
           {staffList.map((s) => (
             <li key={s.staffId} className="homedash-list__row">
-              <span
-                className={`homedash-live-dot homedash-live-dot--${s.status}`}
-                aria-hidden="true"
-              />
+              <span className={`homedash-live-dot homedash-live-dot--${s.status}`} aria-hidden="true" />
               <span className="homedash-list__name">{s.name}</span>
               <span className="homedash-list__sub">
                 {s.status === "on_break" ? "On Break" : "Working"} · {fmtSince(s.since, nowMs)}
@@ -172,93 +467,6 @@ function LiveStatusCard() {
           ))}
         </ul>
       )}
-    </CardShell>
-  );
-}
-
-function CardShell({ title, children, className = "" }) {
-  return (
-    <section className={`homedash-card${className ? ` ${className}` : ""}`}>
-      <h3 className="homedash-card__title">{title}</h3>
-      {children}
-    </section>
-  );
-}
-
-// The one number an owner opens this screen to see — given its own visually
-// dominant row (full-width, larger type) rather than sitting as just
-// another tile the same size as Top Sellers/Staff Performance/Live Status.
-function SalesCard({ summary, loading }) {
-  return (
-    <CardShell title="Sales" className="homedash-card--hero">
-      {loading || !summary ? (
-        <div className="homedash-card__notice">Loading…</div>
-      ) : (
-        <>
-          <div className="homedash-card__hero">{fmtMoney(summary.totalSales)}</div>
-          <div className="homedash-card__stats">
-            <div className="homedash-stat">
-              <span className="homedash-stat__value">{summary.orderCount}</span>
-              <span className="homedash-stat__label">orders</span>
-            </div>
-            <div className="homedash-stat">
-              <span className="homedash-stat__value">{fmtMoney(summary.avgOrderValue)}</span>
-              <span className="homedash-stat__label">avg order</span>
-            </div>
-            <div className="homedash-stat">
-              <span className="homedash-stat__value">{fmtMoney(summary.totalTips)}</span>
-              <span className="homedash-stat__label">total tips</span>
-            </div>
-          </div>
-        </>
-      )}
-    </CardShell>
-  );
-}
-
-function TopSellersCard({ items, loading }) {
-  return (
-    <CardShell title="Top Sellers">
-      {loading ? (
-        <div className="homedash-card__notice">Loading…</div>
-      ) : items.length === 0 ? (
-        <div className="homedash-card__notice">No sales in this range</div>
-      ) : (
-        <ol className="homedash-list">
-          {items.map((it, i) => (
-            <li key={`${it.item_id}-${it.variant || ""}`} className="homedash-list__row">
-              <span className="homedash-list__rank">{i + 1}</span>
-              <span className="homedash-list__name">
-                {it.name}
-                {it.variant && <span className="homedash-list__variant"> · {it.variant}</span>}
-              </span>
-              <span className="homedash-list__value">{it.quantity}</span>
-            </li>
-          ))}
-        </ol>
-      )}
-    </CardShell>
-  );
-}
-
-function StaffPerformanceCard({ rows, loading }) {
-  return (
-    <CardShell title="Staff Performance">
-      {loading ? (
-        <div className="homedash-card__notice">Loading…</div>
-      ) : rows.length === 0 ? (
-        <div className="homedash-card__notice">No orders in this range</div>
-      ) : (
-        <ul className="homedash-list">
-          {rows.map((r) => (
-            <li key={r.staff_id} className="homedash-list__row">
-              <span className="homedash-list__name">{r.name}</span>
-              <span className="homedash-list__sub">{r.orderCount} orders</span>
-              <span className="homedash-list__value">{fmtMoney(r.totalSales)}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </CardShell>
+    </SectionCard>
   );
 }

@@ -1,22 +1,31 @@
 /* ============================================================
-   Back Office — Home Dashboard (stat cards, view-only)
+   Back Office — Home Dashboard
+   Mobile-first, card-based stats dashboard. Top bar → KPI strip
+   (horizontal scroll on mobile, grid on desktop) → section grid.
+   Uses the app design tokens throughout, so it adapts to dark mode.
    ============================================================ */
 
 .homedash {
   width: 100%;
-  max-width: 1080px;
+  max-width: 1120px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 18px;
   animation: fadeIn 0.25s ease-out;
 }
 
-.homedash__toolbar {
+/* ---------- Top bar ---------- */
+.homedash__topbar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.homedash__topbar-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  flex-wrap: wrap;
   gap: 12px;
 }
 
@@ -26,11 +35,456 @@
   color: var(--text-primary);
 }
 
-/* ---------- Error state — replaces the grid entirely on failure ----------
-   Deliberately unmissable: a failed fetch must never be visually
-   indistinguishable from "no sales in this range" (that ambiguity was the
-   actual mobile bug — see HomeDashboard.jsx). Full-width, high-contrast,
-   with a one-tap retry. */
+/* Comparison toggle (switch + label) */
+.homedash__compare {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-body);
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.homedash__compare-track {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  border-radius: var(--radius-full);
+  background: var(--border-color);
+  transition: background-color 0.15s ease;
+}
+
+.homedash__compare-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease;
+}
+
+.homedash__compare--on {
+  color: var(--text-primary);
+}
+.homedash__compare--on .homedash__compare-track {
+  background: var(--green);
+}
+.homedash__compare--on .homedash__compare-thumb {
+  transform: translateX(14px);
+}
+
+/* Range segmented control */
+.homedash__ranges {
+  display: inline-flex;
+  align-self: flex-start;
+  background: var(--bg-surface-hover);
+  border-radius: var(--radius-full);
+  padding: 3px;
+  gap: 2px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.homedash__range-btn {
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 7px 15px;
+  border-radius: var(--radius-full);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  transition: all 0.12s ease;
+}
+.homedash__range-btn:hover {
+  color: var(--text-primary);
+}
+.homedash__range-btn--active {
+  background: var(--red);
+  color: #fff;
+}
+
+/* Custom date pickers */
+.homedash__custom {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.homedash__custom-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.homedash__custom-field input {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.homedash__note {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  background: var(--bg-surface-hover);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+}
+
+/* ---------- KPI strip ---------- */
+.homedash__kpis {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+}
+
+.homedash-kpi {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 150px;
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 18px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+}
+
+.homedash-kpi__label {
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.homedash-kpi__value {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  min-height: 1.65rem;
+}
+.homedash-kpi__value--muted {
+  color: var(--text-muted);
+}
+
+.homedash-kpi__hint {
+  font-family: var(--font-body);
+  font-size: 0.66rem;
+  color: var(--text-muted);
+}
+
+.homedash-kpi__delta {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.homedash-kpi__delta--pending {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.homedash-delta--up {
+  color: var(--green);
+}
+.homedash-delta--down {
+  color: var(--red);
+}
+
+.homedash-kpi__badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--bg-surface-hover);
+  border-radius: var(--radius-full);
+  padding: 2px 7px;
+}
+
+/* ---------- Section grid ---------- */
+.homedash__sections {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.homedash-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: var(--shadow-soft);
+}
+
+.homedash-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.homedash-card__title {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.homedash-card__notice {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding: 8px 0;
+}
+
+/* Hourly/Daily style toggle inside a card head */
+.homedash-toggle {
+  display: inline-flex;
+  background: var(--bg-surface-hover);
+  border-radius: var(--radius-full);
+  padding: 2px;
+  gap: 2px;
+}
+.homedash-toggle__btn {
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: var(--radius-full);
+  color: var(--text-secondary);
+  transition: all 0.12s ease;
+}
+.homedash-toggle__btn--active {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-soft);
+}
+
+/* ---------- Pending chart skeleton ---------- */
+.homedash-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+  padding: 8px 0;
+}
+.homedash-pending__bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  width: 100%;
+  max-width: 320px;
+  height: 110px;
+}
+.homedash-pending__bars span {
+  flex: 1;
+  background: linear-gradient(180deg, var(--bg-surface-hover), var(--border-color));
+  border-radius: 4px 4px 0 0;
+  opacity: 0.7;
+}
+.homedash-pending__line {
+  width: 100%;
+  max-width: 320px;
+  height: 90px;
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(120deg, transparent 0 8%, var(--border-color) 8% 9%, transparent 9%) 0 70%/100% 2px no-repeat,
+    linear-gradient(60deg, transparent 0 40%, var(--border-color) 40% 41%, transparent 41%) 0 40%/100% 2px no-repeat,
+    var(--bg-surface-hover);
+  opacity: 0.8;
+}
+.homedash-pending__note {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ---------- Tables (discount, staff, hourly) ---------- */
+.homedash-table {
+  display: flex;
+  flex-direction: column;
+}
+.homedash-table__head,
+.homedash-table__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+}
+.homedash-table__head {
+  border-bottom: 1px solid var(--border-color);
+}
+.homedash-table__row {
+  border-bottom: 1px dashed var(--border-color);
+}
+.homedash-table__row:last-of-type {
+  border-bottom: none;
+}
+.homedash-table__head span {
+  font-family: var(--font-body);
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.homedash-table__head span:first-child,
+.homedash-table__row span:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.homedash-table__head span:not(:first-child),
+.homedash-table__row span:not(:first-child) {
+  width: 68px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.homedash-table__name {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.homedash-table__row > span:first-child:not(.homedash-table__name) {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+.homedash-num {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.homedash-num--muted {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.homedash-table__note {
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  padding-top: 10px;
+  line-height: 1.4;
+}
+
+/* Ghost table rows (hourly skeleton) */
+.homedash-table--ghost .homedash-table__row--ghost span {
+  height: 9px;
+  border-radius: 4px;
+  background: var(--bg-surface-hover);
+}
+.homedash-table--ghost .homedash-table__row--ghost span:first-child {
+  max-width: 120px;
+}
+
+/* ---------- Lists (Top items / Live status) ---------- */
+.homedash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+}
+.homedash-list__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border-color);
+}
+.homedash-list__row:last-child {
+  border-bottom: none;
+}
+.homedash-list__rank {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  width: 16px;
+  flex-shrink: 0;
+}
+.homedash-list__name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.homedash-list__variant {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.homedash-list__sub {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.homedash-list__value {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.homedash-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.homedash-live-dot--working {
+  background: var(--green);
+}
+.homedash-live-dot--on_break {
+  background: #e8a32e;
+}
+
+/* ---------- Error state ---------- */
 .homedash__errorstate {
   display: flex;
   flex-direction: column;
@@ -43,19 +497,16 @@
   box-shadow: var(--shadow-soft);
   animation: fadeIn 0.2s ease-out;
 }
-
 .homedash__errorstate-title {
   font-family: var(--font-headline);
   font-size: 1rem;
   color: var(--red);
 }
-
 .homedash__errorstate-msg {
   font-family: var(--font-body);
   font-size: 0.85rem;
   color: var(--text-secondary);
 }
-
 .homedash__errorstate-retry {
   font-family: var(--font-body);
   font-size: 0.78rem;
@@ -66,201 +517,34 @@
   color: #fff;
   transition: background-color 0.12s ease;
 }
-
 .homedash__errorstate-retry:hover {
   background: var(--red-hover);
 }
 
-/* ---------- Range switcher (segmented control) ---------- */
-.homedash__range {
-  display: flex;
-  background: var(--bg-surface-hover);
-  border-radius: var(--radius-full);
-  padding: 3px;
-  gap: 2px;
+/* ---------- Desktop layout ---------- */
+@media (min-width: 720px) {
+  .homedash__kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    overflow: visible;
+  }
+  .homedash-kpi {
+    min-width: 0;
+  }
+  .homedash__sections {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  /* Charts/tables that need horizontal room span the full width */
+  .homedash-card--wide {
+    grid-column: 1 / -1;
+  }
 }
 
-.homedash__range-btn {
-  font-family: var(--font-body);
-  font-size: 0.75rem;
-  font-weight: 700;
-  padding: 7px 16px;
-  border-radius: var(--radius-full);
-  color: var(--text-secondary);
-  transition: all 0.12s ease;
-}
-
-.homedash__range-btn:hover {
-  color: var(--text-primary);
-}
-
-.homedash__range-btn--active {
-  background: var(--red);
-  color: #fff;
-}
-
-/* ---------- Card grid ----------
-   Sales (.homedash-card--hero) spans the full row on its own — it's the
-   one number this screen exists to answer, so it gets a visually distinct
-   treatment (larger padding, a subtle brand-tinted top border, bigger
-   type) rather than competing for attention as just another same-size
-   tile next to Top Sellers/Staff Performance/Live Status underneath. */
-.homedash__grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 16px;
-}
-
-.homedash-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  box-shadow: var(--shadow-soft);
-  transition: box-shadow 0.15s ease;
-}
-
-.homedash-card--hero {
-  grid-column: 1 / -1;
-  padding: 28px 28px 26px;
-  border-top: 3px solid var(--red);
-  box-shadow: var(--shadow-medium);
-}
-
-.homedash-card__title {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.homedash-card--hero .homedash-card__title {
-  color: var(--red);
-}
-
-.homedash-card__notice {
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  color: var(--text-muted);
-}
-
-/* ---------- Sales card ---------- */
-.homedash-card__hero {
-  font-family: var(--font-mono);
-  font-size: 3rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  line-height: 1;
-  letter-spacing: -0.01em;
-}
-
-.homedash-card__stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 32px;
-  padding-top: 4px;
-}
-
-.homedash-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.homedash-stat__value {
-  font-family: var(--font-mono);
-  font-size: 1.3rem;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.homedash-stat__label {
-  font-family: var(--font-body);
-  font-size: 0.68rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-/* ---------- Lists (Top Sellers / Staff Performance) ---------- */
-.homedash-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  list-style: none;
-}
-
-.homedash-list__row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 0;
-  border-bottom: 1px dashed var(--border-color);
-}
-
-.homedash-list__row:last-child {
-  border-bottom: none;
-}
-
-.homedash-list__rank {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: var(--text-muted);
-  width: 16px;
-  flex-shrink: 0;
-}
-
-.homedash-list__name {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--font-body);
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.homedash-list__variant {
-  font-weight: 500;
-  color: var(--text-muted);
-}
-
-.homedash-list__sub {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.homedash-list__value {
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  flex-shrink: 0;
-}
-
-/* ---------- Live Status ---------- */
-.homedash-live-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.homedash-live-dot--working {
-  background: var(--green);
-}
-
-.homedash-live-dot--on_break {
-  background: #e8a32e;
+@media (min-width: 1000px) {
+  .homedash__sections {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .homedash-card--wide {
+    grid-column: span 2;
+  }
 }
