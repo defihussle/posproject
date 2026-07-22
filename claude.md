@@ -172,6 +172,11 @@ Full detail: `docs/architecture/features.md`
 - DB changes go through a `.sql` migration in `database/` (repo root,
   not `backend/`), run via `docker exec -i narcos_tacos_db psql -U
   narcos -d narcos_tacos < database/file.sql`
+- **Run migrations before (or with) the code deploy, never after** — code
+  that selects a not-yet-added column 500s every query against that table
+  until the column exists. Deploying code-first once took the whole menu
+  down in prod (`is_upsell`); apply the migration to the prod DB first,
+  then push/deploy the code that depends on it
 - `npm run dev` (`--watch`) auto-restarts on backend changes; plain
   `node server.js` does not — manual restart needed
 - Commit after each working milestone; never commit `.env`,
