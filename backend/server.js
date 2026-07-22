@@ -272,7 +272,7 @@ app.get("/api/menu/full", async (req, res) => {
 
     // 2. Items
     const { rows: items } = await pool.query(
-      "SELECT id, category_id, name, description, base_price, image_url, sort_order FROM menu_items WHERE active = true ORDER BY sort_order, name"
+      "SELECT id, category_id, name, description, base_price, image_url, sort_order, is_upsell FROM menu_items WHERE active = true ORDER BY sort_order, name"
     );
 
     // 3. Variants
@@ -1771,7 +1771,7 @@ app.get("/api/backoffice/menu", async (req, res) => {
       "SELECT id, name, sort_order FROM menu_categories WHERE active = true ORDER BY sort_order"
     );
     const { rows: items } = await pool.query(
-      `SELECT id, category_id, name, description, base_price, active, sort_order
+      `SELECT id, category_id, name, description, base_price, active, sort_order, is_upsell
          FROM menu_items ORDER BY sort_order, name`
     );
     const { rows: variants } = await pool.query(
@@ -1846,22 +1846,28 @@ function validateItemFields({ name, base_price }) {
 }
 
 // PUT /api/backoffice/menu-items/:id
-// Body: { staffId, name, description, base_price, active }
+// Body: { staffId, name, description, base_price, active, is_upsell? }
+// is_upsell is optional: callers that don't manage it (e.g. the 86 toggle)
+// omit it, and COALESCE below preserves whatever is already stored.
 app.put("/api/backoffice/menu-items/:id", async (req, res) => {
   try {
-    const { description, active } = req.body || {};
+    const { description, active, is_upsell } = req.body || {};
     await requireBackofficeSession(req);
     const { name, price } = validateItemFields(req.body || {});
     if (typeof active !== "boolean") {
       throw new HttpError(400, "active must be a boolean");
     }
+    if (is_upsell !== undefined && typeof is_upsell !== "boolean") {
+      throw new HttpError(400, "is_upsell must be a boolean");
+    }
 
     const { rows } = await pool.query(
       `UPDATE menu_items
-          SET name = $1, description = $2, base_price = $3, active = $4
-        WHERE id = $5
-        RETURNING id, category_id, name, description, base_price, active, sort_order`,
-      [name, description || null, price, active, req.params.id]
+          SET name = $1, description = $2, base_price = $3, active = $4,
+              is_upsell = COALESCE($5, is_upsell)
+        WHERE id = $6
+        RETURNING id, category_id, name, description, base_price, active, sort_order, is_upsell`,
+      [name, description || null, price, active, is_upsell ?? null, req.params.id]
     );
     if (rows.length === 0) throw new HttpError(404, "Menu item not found");
     res.json(rows[0]);
@@ -1887,11 +1893,12 @@ app.post("/api/backoffice/menu-items", async (req, res) => {
     );
     if (catRows.length === 0) throw new HttpError(400, "Unknown category");
 
+    const isUpsell = typeof req.body?.is_upsell === "boolean" ? req.body.is_upsell : false;
     const { rows } = await pool.query(
-      `INSERT INTO menu_items (category_id, name, description, base_price, active)
-       VALUES ($1, $2, $3, $4, true)
-       RETURNING id, category_id, name, description, base_price, active, sort_order`,
-      [category_id, name, description || null, price]
+      `INSERT INTO menu_items (category_id, name, description, base_price, active, is_upsell)
+       VALUES ($1, $2, $3, $4, true, $5)
+       RETURNING id, category_id, name, description, base_price, active, sort_order, is_upsell`,
+      [category_id, name, description || null, price, isUpsell]
     );
     res.status(201).json(rows[0]);
   } catch (err) {

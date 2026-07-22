@@ -378,6 +378,7 @@ function ItemDetail({
     name: item.name,
     description: item.description || "",
     base_price: String(item.base_price),
+    is_upsell: !!item.is_upsell,
   }));
   const [saving, setSaving] = useState(false);
   const [addingVariant, setAddingVariant] = useState(false);
@@ -390,16 +391,23 @@ function ItemDetail({
       name: item.name,
       description: item.description || "",
       base_price: String(item.base_price),
+      is_upsell: !!item.is_upsell,
     });
-  }, [item.id, item.name, item.description, item.base_price]);
+  }, [item.id, item.name, item.description, item.base_price, item.is_upsell]);
 
   const dirty =
     draft.name !== item.name ||
     draft.description !== (item.description || "") ||
+    draft.is_upsell !== !!item.is_upsell ||
     (!hasVariants && draft.base_price !== String(item.base_price));
 
   const discard = () =>
-    setDraft({ name: item.name, description: item.description || "", base_price: String(item.base_price) });
+    setDraft({
+      name: item.name,
+      description: item.description || "",
+      base_price: String(item.base_price),
+      is_upsell: !!item.is_upsell,
+    });
 
   const save = async () => {
     if (saving || !dirty) return;
@@ -424,6 +432,7 @@ function ItemDetail({
           description: draft.description.trim() || null,
           base_price: price,
           active: item.active,
+          is_upsell: draft.is_upsell,
         }),
       });
       const data = await res.json();
@@ -491,6 +500,20 @@ function ItemDetail({
           </div>
         </>
       )}
+
+      <label className="menued__upsell-toggle">
+        <input
+          type="checkbox"
+          checked={draft.is_upsell}
+          onChange={(e) => setDraft((d) => ({ ...d, is_upsell: e.target.checked }))}
+        />
+        <span className="menued__upsell-toggle-text">
+          <span className="menued__upsell-toggle-title">Upsell item</span>
+          <span className="menued__upsell-toggle-hint">
+            Offered once after Checkout, before payment (e.g. “Add guac?”)
+          </span>
+        </span>
+      </label>
 
       {dirty && (
         <div className="menued__savebar">

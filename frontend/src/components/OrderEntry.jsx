@@ -106,6 +106,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [submitting, setSubmitting] = useState(false);
   const [checkoutError, setCheckoutError] = useState(null);
   const [confirmation, setConfirmation] = useState(null); // { orderNumber }
+  const [upsellOpen, setUpsellOpen] = useState(false); // post-checkout guac prompt
 
   // Total cart items count
   const cartItemsCount = useMemo(
@@ -275,6 +276,66 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
     },
     [submitting, buildOrderPayload]
   );
+
+  // ---- Post-checkout upsell ----------------------------------------
+  // Items flagged is_upsell in Menu Management (Guacamole by default) are
+  // offered once, after the cashier taps Checkout but before the payment
+  // screen. For now a single item — the first flagged one; the schema
+  // already supports flagging several, which a later pass can turn into a
+  // multiple/random prompt without a data change.
+  const upsellItem = useMemo(() => {
+    for (const cat of menu) {
+      for (const it of cat.items || []) {
+        if (it.is_upsell) return it;
+      }
+    }
+    return null;
+  }, [menu]);
+
+  // A cart line for the upsell item. Items with variants require one (the
+  // server rejects a variant-less line for them), so default to the first
+  // variant — for Guacamole that's Small, the natural "some guac."
+  const buildUpsellLine = useCallback((it) => {
+    const variant = it.variants && it.variants.length > 0 ? it.variants[0] : null;
+    return {
+      itemId: it.id,
+      itemName: variant ? getFormattedVariantItemName(it.name, variant.name) : it.name,
+      variant: variant ? { id: variant.id, name: variant.name, price: parseFloat(variant.price) } : null,
+      modifiers: [],
+      removedIngredients: [],
+      addons: [],
+      unitPrice: variant ? parseFloat(variant.price) : parseFloat(it.base_price),
+      quantity: 1,
+    };
+  }, []);
+
+  // Tapping Checkout offers the upsell first — unless there's nothing to
+  // offer or it's already in the cart — otherwise goes straight to payment.
+  const startCheckout = useCallback(() => {
+    if (upsellItem && !cart.some((line) => line.itemId === upsellItem.id)) {
+      setUpsellOpen(true);
+    } else {
+      openCheckout();
+    }
+  }, [upsellItem, cart, openCheckout]);
+
+  const addUpsellAndCheckout = useCallback(() => {
+    if (upsellItem) addToCart(buildUpsellLine(upsellItem));
+    setUpsellOpen(false);
+    openCheckout();
+  }, [upsellItem, addToCart, buildUpsellLine, openCheckout]);
+
+  const declineUpsellAndCheckout = useCallback(() => {
+    setUpsellOpen(false);
+    openCheckout();
+  }, [openCheckout]);
+
+  // Price for the upsell (variant price if any, else base) — display only.
+  const upsellPrice = upsellItem
+    ? upsellItem.variants?.length > 0
+      ? parseFloat(upsellItem.variants[0].price)
+      : parseFloat(upsellItem.base_price)
+    : 0;
 
   // Price display helper for items
   const getPriceDisplay = (item) => {
@@ -535,7 +596,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                       </span>
                     </div>
                   )}
-                  <button className="oe-cart__checkout-btn" onClick={openCheckout}>
+                  <button className="oe-cart__checkout-btn" onClick={startCheckout}>
                     Checkout · ${total.toFixed(2)}
                   </button>
                 </div>
@@ -626,6 +687,38 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
             fetchClockStatus();
           }}
         />
+      )}
+
+      {/* Post-checkout upsell — shown after Checkout, before payment */}
+      {upsellOpen && upsellItem && (
+        <div className="oe-upsell-overlay" onClick={declineUpsellAndCheckout}>
+          <div className="oe-upsell" onClick={(e) => e.stopPropagation()}>
+            <button
+              className="oe-upsell__close"
+              onClick={declineUpsellAndCheckout}
+              aria-label="No thanks"
+            >
+              ✕
+            </button>
+            <div className="oe-upsell__emoji" aria-hidden="true">🥑</div>
+            {/* Copy is guac-specific for now (the only default upsell); when
+                this grows to multiple/random items, derive it from the item. */}
+            <h2 className="oe-upsell__title">Would you like some guac with your order?</h2>
+            <div className="oe-upsell__sub">
+              {upsellItem.name}
+              {upsellItem.variants?.length > 0 ? ` (${upsellItem.variants[0].name})` : ""}
+              {` · +$${upsellPrice.toFixed(2)}`}
+            </div>
+            <div className="oe-upsell__actions">
+              <button className="oe-upsell__add" onClick={addUpsellAndCheckout}>
+                Add Guac
+              </button>
+              <button className="oe-upsell__decline" onClick={declineUpsellAndCheckout}>
+                No Thanks
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Checkout Modal */}
