@@ -211,7 +211,9 @@ export default function KitchenDisplay({ deviceName }) {
 
   const fetchOrders = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/orders?status=${KDS_STATUSES}`);
+      const res = await fetch(`${API_URL}/api/orders?status=${KDS_STATUSES}`, {
+        credentials: "include", // device-gated route — must send the pairing cookie
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       // Backend already sorts FIFO (oldest created_at first) — do NOT re-sort.
@@ -272,6 +274,7 @@ export default function KitchenDisplay({ deviceName }) {
     try {
       const res = await fetch(`${API_URL}/api/orders/${orderId}/status/revert`, {
         method: "PATCH",
+        credentials: "include", // device-gated route — must send the pairing cookie
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -316,6 +319,7 @@ export default function KitchenDisplay({ deviceName }) {
       try {
         const res = await fetch(`${API_URL}/api/orders/${order.id}/status`, {
           method: "PATCH",
+          credentials: "include", // device-gated route — must send the pairing cookie
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ status: next }),
         });
@@ -730,7 +734,8 @@ function PastOrdersOverlay({ onClose, onReverted }) {
     (async () => {
       try {
         const res = await fetch(
-          `${API_URL}/api/orders/history?sinceHours=${HISTORY_SINCE_HOURS}`
+          `${API_URL}/api/orders/history?sinceHours=${HISTORY_SINCE_HOURS}`,
+          { credentials: "include" } // device-gated route — must send the pairing cookie
         );
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -769,6 +774,7 @@ function PastOrdersOverlay({ onClose, onReverted }) {
       try {
         const res = await fetch(`${API_URL}/api/orders/${order.id}/status/revert`, {
           method: "PATCH",
+          credentials: "include", // device-gated route — must send the pairing cookie
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));

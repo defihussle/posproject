@@ -272,6 +272,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
       try {
         const res = await fetch(`${API_URL}/api/orders`, {
           method: "POST",
+          credentials: "include", // device-gated route — must send the pairing cookie
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(buildOrderPayload(method)),
         });

@@ -61,6 +61,10 @@ export default function PinLogin({ onLogin }) {
       try {
         const res = await fetch(`${API_URL}/api/auth/login`, {
           method: "POST",
+          // Sends the httpOnly device-pairing cookie — /api/auth/login is
+          // device-gated, so without this the backend 401s ("device isn't
+          // paired") even on a paired device and it looks like a bad PIN.
+          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pin }),
         });
