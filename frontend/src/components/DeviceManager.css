@@ -216,6 +216,33 @@
   text-align: right;
 }
 
+/* "Connected to" pill — Order Entry (red), KDS (green), or both (neutral). */
+.devices__conn-pill {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+.devices__conn-pill--oe {
+  color: var(--red);
+  background: var(--red-light);
+}
+
+.devices__conn-pill--kds {
+  color: var(--green);
+  background: var(--green-light);
+}
+
+.devices__conn-pill--both {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+  border: 1px solid var(--border-color);
+}
+
 /* ---------- Generate Pairing Code modal ---------- */
 .devices__code-notice {
   font-family: var(--font-body);

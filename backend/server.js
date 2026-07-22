@@ -3357,20 +3357,35 @@ async function resolveDeviceId(req) {
   return rows[0] ? deviceId : null;
 }
 
+// Which POS surface a gated request belongs to, so Back Office can show
+// what a device is connected to. Order Entry = PIN login + checkout;
+// everything else gated (board poll, history, status advance/revert) is
+// KDS. Returns the device_pairings column to stamp — a fixed internal set,
+// never user input, so it's safe to interpolate into the UPDATE below.
+function surfaceColumnForRequest(req) {
+  if (req.path === "/api/auth/login") return "last_order_entry_at";
+  if (req.method === "POST" && req.path === "/api/orders") return "last_order_entry_at";
+  return "last_kds_at";
+}
+
 // Express middleware for the routes that require a paired device (PIN
 // login and the order routes — see the note at the top of this section
-// for the exact list). Updates last_seen_at on every pass so Back
-// Office's device list reflects real activity and a revoked device is
-// caught on its very next check-in.
+// for the exact list). Updates last_seen_at plus the matching per-surface
+// timestamp on every pass, so Back Office's device list reflects real
+// activity and a revoked device is caught on its very next check-in.
 async function requireDevicePairing(req, res, next) {
   try {
     const deviceId = await resolveDeviceId(req);
     if (!deviceId) {
       throw new HttpError(401, "This device isn't paired — enter a pairing code to continue");
     }
+    const surfaceCol = surfaceColumnForRequest(req);
     pool
-      .query("UPDATE device_pairings SET last_seen_at = now() WHERE device_id = $1", [deviceId])
-      .catch((err) => console.error("Failed to update device last_seen_at:", err.message));
+      .query(
+        `UPDATE device_pairings SET last_seen_at = now(), ${surfaceCol} = now() WHERE device_id = $1`,
+        [deviceId]
+      )
+      .catch((err) => console.error("Failed to update device activity:", err.message));
     req.deviceId = deviceId;
     next();
   } catch (err) {
@@ -3489,6 +3504,7 @@ app.get("/api/backoffice/devices", async (req, res) => {
     await requireBackofficeSession(req);
     const { rows } = await pool.query(
       `SELECT dp.id, dp.device_id, dp.device_name, dp.paired_at, dp.last_seen_at, dp.revoked_at,
+              dp.last_order_entry_at, dp.last_kds_at,
               creator.name AS created_by_name, revoker.name AS revoked_by_name
          FROM device_pairings dp
          JOIN staff creator ON creator.id = dp.created_by

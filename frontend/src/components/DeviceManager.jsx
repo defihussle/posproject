@@ -189,6 +189,23 @@ function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
   const isRevoked = !!row.revoked_at;
 
+  // What this device is connected to, derived from the per-surface activity
+  // stamped by requireDevicePairing (Order Entry = PIN login + checkout,
+  // KDS = board/history/status). A non-null timestamp means it's been used
+  // on that surface; for the dedicated tablets this POS runs on that maps
+  // cleanly to the device's role.
+  const hasOrderEntry = !!row.last_order_entry_at;
+  const hasKds = !!row.last_kds_at;
+  const connectedLabel =
+    hasOrderEntry && hasKds
+      ? "Order Entry + KDS"
+      : hasOrderEntry
+      ? "Order Entry"
+      : hasKds
+      ? "KDS"
+      : null;
+  const connectedKind = hasOrderEntry && hasKds ? "both" : hasOrderEntry ? "oe" : "kds";
+
   const dirty = name !== (row.device_name || "");
 
   // Leave edit mode without persisting — restores the original name so a
@@ -298,6 +315,16 @@ function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
 
           <div className="staffmgr__modal-divider" />
 
+          <div className="devices__detail-row">
+            <span className="devices__detail-label">Connected to</span>
+            {connectedLabel ? (
+              <span className={`devices__conn-pill devices__conn-pill--${connectedKind}`}>
+                {connectedLabel}
+              </span>
+            ) : (
+              <span className="devices__detail-value">Not yet active</span>
+            )}
+          </div>
           <div className="devices__detail-row">
             <span className="devices__detail-label">Paired</span>
             <span className="devices__detail-value">
