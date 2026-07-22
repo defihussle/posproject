@@ -22,12 +22,12 @@
 .devices-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   padding: 0 18px 6px;
   font-family: var(--font-mono);
-  font-size: 0.62rem;
+  font-size: 0.6rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -39,12 +39,12 @@
 
 .devices-header__date {
   flex-shrink: 0;
-  width: 100px;
+  width: 72px;
 }
 
 .devices-header__status {
   flex-shrink: 0;
-  width: 62px;
+  width: 58px;
 }
 
 /* Matches the chevron column's width so labels line up with the rows
@@ -61,8 +61,8 @@
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 0;
+  gap: 10px;
+  padding: 12px 0;
   text-align: left;
   border-bottom: 1px dashed var(--border-color);
   transition: background-color 0.12s ease;
@@ -85,7 +85,7 @@
   flex: 1;
   min-width: 0;
   font-family: var(--font-body);
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
@@ -95,15 +95,15 @@
 
 .devices-row__date {
   flex-shrink: 0;
-  width: 100px;
+  width: 72px;
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   color: var(--text-secondary);
 }
 
 .devices-row__pill {
   flex-shrink: 0;
-  width: 62px;
+  width: 58px;
   text-align: center;
 }
 
@@ -137,6 +137,62 @@
   transform: translateY(0);
 }
 
+/* ---------- Detail modal — name (view by default, Edit toggles input) ---------- */
+.devices__name-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.devices__field-label {
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.devices__name-view {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.devices__name-text {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.devices__edit-btn {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: background-color 0.12s ease;
+}
+
+.devices__edit-btn:hover {
+  background: var(--border-color);
+}
+
+.devices__name-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 /* ---------- Detail modal — read-only Paired/Last seen/Revoked rows ---------- */
 .devices__detail-row {
   display: flex;
@@ -144,7 +200,7 @@
   justify-content: space-between;
   gap: 12px;
   font-family: var(--font-body);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
 }
 
 .devices__detail-label {
@@ -156,7 +212,7 @@
 .devices__detail-value {
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   text-align: right;
 }
 

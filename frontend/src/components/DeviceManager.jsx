@@ -5,11 +5,6 @@ import ConfirmDialog from "./ConfirmDialog";
 import "./StaffManager.css";
 import "./DeviceManager.css";
 
-function fmtDate(iso) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-}
-
 function fmtDateTime(iso) {
   if (!iso) return "—";
   return new Date(iso).toLocaleString(undefined, {
@@ -124,7 +119,6 @@ export default function DeviceManager() {
         <>
           <div className="devices-header" aria-hidden="true">
             <span className="devices-header__name">Name</span>
-            <span className="devices-header__date">Paired</span>
             <span className="devices-header__date">Last Seen</span>
             <span className="devices-header__status">Status</span>
           </div>
@@ -136,7 +130,6 @@ export default function DeviceManager() {
                 onClick={() => setSelectedId(row.id)}
               >
                 <span className="devices-row__name">{row.device_name}</span>
-                <span className="devices-row__date">{fmtDate(row.paired_at)}</span>
                 <span className="devices-row__date">{fmtRelative(row.last_seen_at)}</span>
                 <span className={`staffmgr__status-pill devices-row__pill${row.revoked_at ? " staffmgr__status-pill--off" : ""}`}>
                   {row.revoked_at ? "Revoked" : "Paired"}
@@ -190,12 +183,21 @@ function ChevronIcon() {
 // (owner + admin, same as every other Back Office capability).
 function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
   const [name, setName] = useState(row.device_name || "");
+  const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [revoking, setRevoking] = useState(false);
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
   const isRevoked = !!row.revoked_at;
 
   const dirty = name !== (row.device_name || "");
+
+  // Leave edit mode without persisting — restores the original name so a
+  // reopened editor doesn't start from an abandoned draft.
+  const handleCancel = () => {
+    setName(row.device_name || "");
+    setEditing(false);
+    onError(null);
+  };
 
   const performSave = async () => {
     if (saving || !dirty) return;
@@ -215,6 +217,7 @@ function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       onError(null);
       onSaved(data);
+      setEditing(false);
     } catch (err) {
       onError(err.message);
     } finally {
@@ -259,26 +262,39 @@ function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
             {isRevoked ? "Revoked" : "Paired"}
           </span>
 
-          <label className="staffmgr__label">
-            Name
-            <input
-              className="staffmgr__input"
-              value={name}
-              onChange={(e) => setName(e.target.value.slice(0, 60))}
-              disabled={saving}
-            />
-          </label>
-
-          {dirty && (
-            <div className="staffmgr__modal-actions">
-              <button className="staffmgr__btn" onClick={() => setName(row.device_name || "")} disabled={saving}>
-                Discard
-              </button>
-              <button className="staffmgr__btn staffmgr__btn--save" onClick={performSave} disabled={saving}>
-                {saving ? "Saving…" : "Save"}
-              </button>
-            </div>
-          )}
+          <div className="devices__name-block">
+            <span className="devices__field-label">Name</span>
+            {editing ? (
+              <div className="devices__name-edit">
+                <input
+                  className="staffmgr__input"
+                  value={name}
+                  onChange={(e) => setName(e.target.value.slice(0, 60))}
+                  disabled={saving}
+                  autoFocus
+                />
+                <div className="staffmgr__modal-actions">
+                  <button className="staffmgr__btn" onClick={handleCancel} disabled={saving}>
+                    Cancel
+                  </button>
+                  <button
+                    className="staffmgr__btn staffmgr__btn--save"
+                    onClick={performSave}
+                    disabled={saving || !dirty || !name.trim()}
+                  >
+                    {saving ? "Saving…" : "Save"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="devices__name-view">
+                <span className="devices__name-text">{row.device_name}</span>
+                <button className="devices__edit-btn" onClick={() => setEditing(true)}>
+                  Edit
+                </button>
+              </div>
+            )}
+          </div>
 
           <div className="staffmgr__modal-divider" />
 
