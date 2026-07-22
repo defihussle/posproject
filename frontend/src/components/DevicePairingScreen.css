@@ -1,0 +1,124 @@
+/* ============================================================
+   Device Pairing Screen — code + device name form
+   Shares .login-screen / .login-card / .brand-logo / .login-footer
+   with PinLogin.css for a consistent shell; everything below is
+   form-specific. Mirrors BackofficeLogin.css's shape closely on
+   purpose (same kind of "labeled text fields + submit" login-adjacent
+   form), just under its own devicepair__ prefix.
+   ============================================================ */
+
+.login-card.devicepair {
+  gap: 20px;
+}
+
+.devicepair__panel {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.devicepair__title {
+  font-family: var(--font-headline);
+  font-size: 1.1rem;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.devicepair__notice {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  text-align: center;
+  line-height: 1.4;
+}
+
+.devicepair__error {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--red-light);
+  color: var(--red);
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.devicepair__error--lockout {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.devicepair__form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.devicepair__label-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.devicepair__input {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 11px 14px;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+
+.devicepair__input:focus {
+  border-color: var(--red);
+}
+
+.devicepair__input:disabled {
+  opacity: 0.6;
+}
+
+.devicepair__input--code {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  padding-left: 0.3em; /* re-center the letter-spaced text */
+  text-transform: uppercase;
+}
+
+.devicepair__hint {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  margin-top: -6px;
+}
+
+.devicepair__submit {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--red);
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 700;
+  transition: background-color 0.12s ease, opacity 0.12s ease;
+}
+
+.devicepair__submit:hover:not(:disabled) {
+  background: var(--red-hover);
+}
+
+.devicepair__submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

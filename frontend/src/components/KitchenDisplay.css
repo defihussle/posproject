@@ -804,6 +804,15 @@
   pointer-events: none;
   opacity: 0.7;
   transition: opacity 0.3s ease;
+  max-width: min(60vw, 320px);
+}
+
+/* Device names are staff-entered (up to 60 chars) — truncate rather than
+   let a long one push the indicator off-screen on a narrow tablet. */
+.kds__device-indicator span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ============================================================

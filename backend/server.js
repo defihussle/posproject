@@ -33,6 +33,13 @@ const SESSION_SECRET = process.env.SESSION_SECRET;
 if (!SESSION_SECRET) {
   throw new Error("SESSION_SECRET env var is required (signs Back Office session cookies)");
 }
+// Deliberately separate from SESSION_SECRET — device trust (this) and
+// staff session trust (above) are orthogonal layers per the device-
+// pairing plan; a leak of one secret shouldn't compromise the other.
+const DEVICE_SECRET = process.env.DEVICE_SECRET;
+if (!DEVICE_SECRET) {
+  throw new Error("DEVICE_SECRET env var is required (signs device-pairing cookies)");
+}
 const FRONTEND_URL = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, "");
 
 // The frontend (pos.narcostacos.ca) and backend (api.narcostacos.ca) now
@@ -356,8 +363,11 @@ app.get("/api/menu/full", async (req, res) => {
   }
 });
 
-// PIN login
-app.post("/api/auth/login", async (req, res) => {
+// PIN login. requireDevicePairing gates this so an unpaired device can't
+// even attempt PINs against Order Entry (the original threat — see
+// docs/architecture/device-pairing.md). A 401 here surfaces in the UI as
+// the pairing screen via RequireDevicePairing.
+app.post("/api/auth/login", requireDevicePairing, async (req, res) => {
   const { pin } = req.body;
   if (!pin || typeof pin !== "string") {
     return res.status(400).json({ success: false, message: "PIN is required" });
@@ -434,7 +444,7 @@ const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const DISCOUNT_REASONS = ["family", "friend", "employee", "neighbouring_store"];
 const DISCOUNT_FLAG_THRESHOLD = 50; // % — not blocked, but logged so it's not silently invisible
 
-app.post("/api/orders", async (req, res) => {
+app.post("/api/orders", requireDevicePairing, async (req, res) => {
   const { staffId, paymentMethod, items, discount } = req.body || {};
 
   // ---- Shape validation (cheap checks before touching the DB) ----
@@ -974,7 +984,7 @@ async function fetchKdsOrders(client, orderIds, { includeCompletedAt = false } =
 const KDS_ALLOWED_STATUSES = ["open", "preparing", "ready", "completed", "cancelled"];
 
 // GET /api/orders?status=open,preparing  (defaults to open,preparing)
-app.get("/api/orders", async (req, res) => {
+app.get("/api/orders", requireDevicePairing, async (req, res) => {
   const statusParam = (req.query.status ?? "open,preparing").toString();
   const statuses = statusParam
     .split(",")
@@ -1024,7 +1034,7 @@ app.get("/api/orders", async (req, res) => {
 // the last N hours, MOST-RECENT-FIRST (opposite of the live queue). Same nested
 // price-free shape, plus created_at + completed_at so the frontend can compute
 // prep time (placed → ready). No auth, single active location.
-app.get("/api/orders/history", async (req, res) => {
+app.get("/api/orders/history", requireDevicePairing, async (req, res) => {
   const sinceHours = req.query.sinceHours === undefined ? 4 : Number(req.query.sinceHours);
   if (!Number.isFinite(sinceHours) || sinceHours <= 0) {
     return res.status(400).json({ error: "sinceHours must be a positive number" });
@@ -1064,7 +1074,7 @@ app.get("/api/orders/history", async (req, res) => {
 // PATCH /api/orders/:id/status   body: { status: "preparing" | "ready" }
 // Advances the whole order one step and keeps order_items.status in lockstep,
 // all inside one transaction so the two can never drift out of sync.
-app.patch("/api/orders/:id/status", async (req, res) => {
+app.patch("/api/orders/:id/status", requireDevicePairing, async (req, res) => {
   const { id } = req.params;
   const { status } = req.body || {};
 
@@ -1132,7 +1142,7 @@ app.patch("/api/orders/:id/status", async (req, res) => {
 // PATCH /api/orders/:id/status/revert
 // Reverses the most recent status change: preparing→open, ready→preparing.
 // Mirrors the forward endpoint's transactional lockstep pattern.
-app.patch("/api/orders/:id/status/revert", async (req, res) => {
+app.patch("/api/orders/:id/status/revert", requireDevicePairing, async (req, res) => {
   const { id } = req.params;
 
   const client = await pool.connect();
@@ -3255,6 +3265,285 @@ app.get("/api/backoffice/stats/staff-performance", async (req, res) => {
     sendHttpError(res, err, "Failed to fetch staff performance");
   } finally {
     client.release();
+  }
+});
+
+// --------------- Device pairing (Order Entry / KDS access) ---------------
+// Adds a device-trust layer UNDERNEATH staffId/PIN identity (device-
+// pairing-plan.md, "Background") — orthogonal to who's logged in, this is
+// about whether the physical tablet itself was ever authorized by an
+// owner/admin. See database/device_pairing.sql for the full schema
+// rationale (single-use hashed codes, DB-driven revocation, etc.).
+//
+// This section defines generate/pair/list/revoke plus the
+// requireDevicePairing middleware. That middleware is now attached (in
+// the same pass as the frontend pairing guards, so the cutover is atomic)
+// to POST /api/auth/login and the KDS/Order-Entry order routes:
+// POST /api/orders, GET /api/orders, GET /api/orders/history, and the two
+// PATCH /api/orders/:id/status[/revert] routes. Those are exactly the
+// server-side surface of the two device-gated screens; Back Office's own
+// routes have their own session gate and are intentionally NOT device-
+// gated (an owner manages devices from any browser, not a paired tablet).
+
+const DEVICE_COOKIE_NAME = "device_token";
+// Deliberately long — physical possession of the tablet is the real
+// security boundary here, not the token's clock. Immediate revocation is
+// handled by requireDevicePairing re-checking the database on every
+// check-in (see below), not by letting this expire quickly.
+const DEVICE_COOKIE_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
+
+const PAIRING_CODE_TTL_MS = 10 * 60 * 1000; // 10 min — typed once, immediately, by someone standing at the device
+const PAIRING_CODE_LENGTH = 8;
+// Excludes 0/O, 1/I/L — ambiguous when handwritten, read aloud, or shown
+// in a font that doesn't distinguish them. 32 characters exactly so
+// `byte % 32` below is perfectly uniform (256 / 32 = 8, no modulo bias).
+const PAIRING_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
+function generatePairingCode() {
+  const bytes = crypto.randomBytes(PAIRING_CODE_LENGTH);
+  let code = "";
+  for (let i = 0; i < PAIRING_CODE_LENGTH; i++) {
+    code += PAIRING_CODE_ALPHABET[bytes[i] % PAIRING_CODE_ALPHABET.length];
+  }
+  return code;
+}
+
+// Same principle as hashResetToken — the raw code only ever exists in the
+// generate-code HTTP response and the pair request body, never at rest.
+function hashPairingCode(rawCode) {
+  return crypto.createHash("sha256").update(rawCode).digest("hex");
+}
+
+// Cross-domain cookie flags (httpOnly/secure/sameSite/domain) are
+// identical to the Back Office session cookie's — same frontend/backend
+// split, same Safari cross-site quirks — so this reuses sessionCookieOpts
+// directly rather than duplicating that logic under a new name.
+function issueDeviceCookie(req, res, deviceId) {
+  const token = jwt.sign({ deviceId, purpose: "device" }, DEVICE_SECRET, {
+    expiresIn: Math.floor(DEVICE_COOKIE_MAX_AGE_MS / 1000),
+  });
+  res.cookie(DEVICE_COOKIE_NAME, token, { ...sessionCookieOpts(req), maxAge: DEVICE_COOKIE_MAX_AGE_MS });
+}
+
+function readDeviceIdFromCookie(req) {
+  const token = req.cookies?.[DEVICE_COOKIE_NAME];
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, DEVICE_SECRET);
+    return payload.purpose === "device" && payload.deviceId ? payload.deviceId : null;
+  } catch {
+    return null; // expired/invalid/tampered — treat exactly like "not paired"
+  }
+}
+
+// Resolves the device cookie -> a still-valid, paired, non-revoked
+// device_id, or null. This (not just JWT verification) is what makes
+// revocation immediate rather than bounded by the cookie's 1-year clock.
+async function resolveDeviceId(req) {
+  const deviceId = readDeviceIdFromCookie(req);
+  if (!deviceId) return null;
+  const { rows } = await pool.query(
+    `SELECT device_id FROM device_pairings
+      WHERE device_id = $1 AND paired_at IS NOT NULL AND revoked_at IS NULL`,
+    [deviceId]
+  );
+  return rows[0] ? deviceId : null;
+}
+
+// Express middleware for the routes that require a paired device (PIN
+// login and the order routes — see the note at the top of this section
+// for the exact list). Updates last_seen_at on every pass so Back
+// Office's device list reflects real activity and a revoked device is
+// caught on its very next check-in.
+async function requireDevicePairing(req, res, next) {
+  try {
+    const deviceId = await resolveDeviceId(req);
+    if (!deviceId) {
+      throw new HttpError(401, "This device isn't paired — enter a pairing code to continue");
+    }
+    pool
+      .query("UPDATE device_pairings SET last_seen_at = now() WHERE device_id = $1", [deviceId])
+      .catch((err) => console.error("Failed to update device last_seen_at:", err.message));
+    req.deviceId = deviceId;
+    next();
+  } catch (err) {
+    sendHttpError(res, err, "Device pairing required");
+  }
+}
+
+// GET /api/devices/me — public (a device isn't authenticated as staff or
+// as itself yet when this is called). Lets the frontend's route guard
+// check pairing status on load without needing to provoke a 401 from
+// requireDevicePairing just to find out.
+app.get("/api/devices/me", async (req, res) => {
+  try {
+    const deviceId = await resolveDeviceId(req);
+    if (!deviceId) return res.json({ paired: false });
+    const { rows } = await pool.query("SELECT device_name FROM device_pairings WHERE device_id = $1", [deviceId]);
+    res.json({ paired: true, deviceName: rows[0]?.device_name || null });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to check device pairing status");
+  }
+});
+
+// POST /api/backoffice/devices/generate-code
+// Owner/admin, session-cookie authenticated. Creates a pending
+// device_pairings row (device_name/paired_at still NULL — see migration
+// comments) and returns the RAW code exactly once; only its hash is ever
+// stored. Rate-limited per requester using the same sliding-window
+// counter PIN/TOTP login already use — recordFailedAttempt is reused
+// here purely as the generic throttle it actually is (a counter with a
+// lockout), not because generating a code is a "failure."
+app.post("/api/backoffice/devices/generate-code", async (req, res) => {
+  try {
+    const requester = await requireBackofficeSession(req);
+
+    const rateCheck = checkRateLimit(requester.id, "device-pair-gen");
+    if (!rateCheck.allowed) {
+      throw new HttpError(429, formatLockoutMessage(rateCheck.retryAfter));
+    }
+
+    const rawCode = generatePairingCode();
+    const expiresAt = new Date(Date.now() + PAIRING_CODE_TTL_MS);
+    const { rows } = await pool.query(
+      `INSERT INTO device_pairings (pairing_code_hash, code_expires_at, created_by)
+       VALUES ($1, $2, $3)
+       RETURNING id, code_expires_at`,
+      [hashPairingCode(rawCode), expiresAt, requester.id]
+    );
+
+    recordFailedAttempt(requester.id, "device-pair-gen");
+
+    res.status(201).json({ pairingId: rows[0].id, code: rawCode, expiresAt: rows[0].code_expires_at });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to generate pairing code");
+  }
+});
+
+// POST /api/devices/pair — { code, deviceName }
+// Public (the whole point — a device isn't authenticated as anything
+// yet). Rate-limited by the submitted code VALUE, same pattern PIN login
+// uses (key by the identity being guessed, not IP — see the rate
+// limiter's own comments above for why IP isn't trustworthy here either).
+// Generic error message on any failure reason (unknown/expired/already-
+// used/revoked code all look identical to the caller), same principle as
+// forgot-password never revealing which part was wrong.
+app.post("/api/devices/pair", async (req, res) => {
+  try {
+    const { code, deviceName } = req.body || {};
+    if (typeof code !== "string" || !code.trim()) {
+      throw new HttpError(400, "Pairing code is required");
+    }
+    if (typeof deviceName !== "string" || !deviceName.trim()) {
+      throw new HttpError(400, "Device name is required");
+    }
+    const rawCode = code.trim().toUpperCase();
+
+    const rateCheck = checkRateLimit(rawCode, "device-pair-validate");
+    if (!rateCheck.allowed) {
+      throw new HttpError(429, formatLockoutMessage(rateCheck.retryAfter));
+    }
+
+    const { rows } = await pool.query(
+      `SELECT id, device_id FROM device_pairings
+        WHERE pairing_code_hash = $1 AND code_expires_at > now()
+          AND paired_at IS NULL AND revoked_at IS NULL`,
+      [hashPairingCode(rawCode)]
+    );
+    const pending = rows[0];
+    if (!pending) {
+      const attempt = recordFailedAttempt(rawCode, "device-pair-validate");
+      if (attempt.lockedOut) {
+        throw new HttpError(429, formatLockoutMessage(attempt.retryAfter));
+      }
+      throw new HttpError(400, "This code is invalid or has expired — request a new one");
+    }
+
+    await pool.query(
+      `UPDATE device_pairings SET device_name = $1, paired_at = now(), last_seen_at = now() WHERE id = $2`,
+      [deviceName.trim(), pending.id]
+    );
+    clearAttempts(rawCode, "device-pair-validate");
+
+    issueDeviceCookie(req, res, pending.device_id);
+    res.json({ success: true });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to pair device");
+  }
+});
+
+// GET /api/backoffice/devices — owner/admin. Every device that completed
+// pairing at some point (active AND revoked — revoked rows stay visible
+// as audit history, same "never hard-delete" spirit as the rest of this
+// schema). Pending, never-redeemed codes are excluded; they're not a
+// "device" yet.
+app.get("/api/backoffice/devices", async (req, res) => {
+  try {
+    await requireBackofficeSession(req);
+    const { rows } = await pool.query(
+      `SELECT dp.id, dp.device_id, dp.device_name, dp.paired_at, dp.last_seen_at, dp.revoked_at,
+              creator.name AS created_by_name, revoker.name AS revoked_by_name
+         FROM device_pairings dp
+         JOIN staff creator ON creator.id = dp.created_by
+         LEFT JOIN staff revoker ON revoker.id = dp.revoked_by
+        WHERE dp.paired_at IS NOT NULL
+        ORDER BY dp.paired_at DESC`
+    );
+    res.json(rows);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch paired devices");
+  }
+});
+
+// PUT /api/backoffice/devices/:id — owner/admin. Rename only (device_name);
+// added for the Back Office Devices section's editable-name requirement —
+// there was no write route for this until now, everything else in this
+// section predates it. Works on revoked rows too (renaming a device
+// doesn't touch its trust status either way, and revoked rows staying
+// identifiable is part of why they're kept instead of hard-deleted).
+app.put("/api/backoffice/devices/:id", async (req, res) => {
+  try {
+    await requireBackofficeSession(req);
+    const { device_name } = req.body || {};
+    if (typeof device_name !== "string" || !device_name.trim()) {
+      throw new HttpError(400, "device_name is required");
+    }
+    const { rows } = await pool.query(
+      `UPDATE device_pairings SET device_name = $1
+        WHERE id = $2 AND paired_at IS NOT NULL
+        RETURNING id, device_id, device_name, paired_at, last_seen_at, revoked_at`,
+      [device_name.trim().slice(0, 60), req.params.id]
+    );
+    if (rows.length === 0) {
+      throw new HttpError(404, "Paired device not found");
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to rename device");
+  }
+});
+
+// POST /api/backoffice/devices/:id/revoke — owner/admin. :id is the
+// device_pairings row id (not device_id) — same convention as
+// /api/backoffice/staff/:id using staff.id. Idempotency guard (WHERE
+// revoked_at IS NULL) means re-revoking an already-revoked row 404s
+// instead of silently overwriting who/when it was originally revoked.
+app.post("/api/backoffice/devices/:id/revoke", async (req, res) => {
+  try {
+    const requester = await requireBackofficeSession(req);
+    const { rows } = await pool.query(
+      `UPDATE device_pairings
+          SET revoked_at = now(), revoked_by = $1
+        WHERE id = $2 AND paired_at IS NOT NULL AND revoked_at IS NULL
+        RETURNING id, device_name`,
+      [requester.id, req.params.id]
+    );
+    if (rows.length === 0) {
+      throw new HttpError(404, "Paired device not found (or already revoked)");
+    }
+    res.json({ success: true, id: rows[0].id, deviceName: rows[0].device_name });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to revoke device");
   }
 });
 

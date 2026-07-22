@@ -6,6 +6,7 @@ import KitchenDisplay from "./components/KitchenDisplay";
 import BackOffice from "./components/BackOffice";
 import ManageMenu from "./components/ManageMenu";
 import ResetPassword from "./components/ResetPassword";
+import RequireDevicePairing from "./components/RequireDevicePairing";
 
 // Roles allowed onto the POS-side "Manage Menu" page (mirrors Back Office's
 // Menu Management access — real enforcement is server-side on every write,
@@ -78,20 +79,24 @@ export default function App() {
           }
         />
 
-        {/* Order Entry — owner, admin, manager, cashier */}
+        {/* Order Entry — owner, admin, manager, cashier. Device pairing
+            gates this BEFORE the staff/login check below, so an unpaired
+            device never even reaches the PIN pad. */}
         <Route
           path="/order-entry"
           element={
-            staff ? (
-              <OrderEntry
-                staff={staff}
-                theme={theme}
-                onToggleTheme={handleToggleTheme}
-                onLogout={handleLogout}
-              />
-            ) : (
-              <Navigate to="/login" replace />
-            )
+            <RequireDevicePairing>
+              {staff ? (
+                <OrderEntry
+                  staff={staff}
+                  theme={theme}
+                  onToggleTheme={handleToggleTheme}
+                  onLogout={handleLogout}
+                />
+              ) : (
+                <Navigate to="/login" replace />
+              )}
+            </RequireDevicePairing>
           }
         />
 
@@ -107,9 +112,19 @@ export default function App() {
           }
         />
 
-        {/* Kitchen Display — no auth, no session, reachable directly by URL.
-            Opened once on a kitchen device and left running. */}
-        <Route path="/kds/lawrence-east-4471" element={<KitchenDisplay />} />
+        {/* Kitchen Display — no staff auth, no session, reachable directly
+            by URL. Opened once on a kitchen device and left running.
+            Device pairing is now the ONLY gate in front of it — KDS has
+            no login step of its own for this to layer underneath, unlike
+            Order Entry above. */}
+        <Route
+          path="/kds/lawrence-east-4471"
+          element={
+            <RequireDevicePairing>
+              <KitchenDisplay />
+            </RequireDevicePairing>
+          }
+        />
 
         {/* Back Office — has its own email+password+TOTP login + role gate */}
         <Route path="/backoffice" element={<BackOffice />} />

@@ -3,6 +3,7 @@ import BackofficeLogin from "./BackofficeLogin";
 import HomeDashboard from "./HomeDashboard";
 import MenuManager from "./MenuManager";
 import StaffManager from "./StaffManager";
+import DeviceManager from "./DeviceManager";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import { API_URL } from "../config";
 import "./BackOffice.css";
@@ -22,6 +23,7 @@ const NAV_ITEMS = [
   { key: "home", label: "Home", roles: ["owner", "admin"], render: (staff) => <HomeDashboard staff={staff} /> },
   { key: "staff", label: "Staff Management", roles: ["owner", "admin"], render: (staff) => <StaffManager staff={staff} /> },
   { key: "menu", label: "Menu Management", roles: ["owner", "admin"], render: (staff) => <MenuManager staff={staff} /> },
+  { key: "devices", label: "Devices", roles: ["owner", "admin"], render: () => <DeviceManager /> },
 ];
 
 const ALLOWED_ROLES = [...new Set(NAV_ITEMS.flatMap((n) => n.roles))];

@@ -28,3 +28,6 @@ npm-debug.log*
 *.csv
 *.dump
 *.sql.gz
+
+# Playwright MCP scratch output (console logs, traces)
+.playwright-mcp/

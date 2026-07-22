@@ -121,7 +121,7 @@ function playChime() {
  * order. Tapping a card advances its status; once an order hits `ready` it
  * leaves the open,preparing filter and drops off the board.
  */
-export default function KitchenDisplay() {
+export default function KitchenDisplay({ deviceName }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -511,8 +511,11 @@ export default function KitchenDisplay() {
       )}
 
       {/* Device-paired indicator — non-interactive, informational only.
-          Pairing system not built yet; shows a sensible default state.
-          Trivially wirable to real pairing status later. */}
+          KitchenDisplay only ever mounts once RequireDevicePairing (see
+          App.jsx) has confirmed this device is paired, so deviceName is
+          expected to always be present here; the "KDS Active" fallback
+          covers the (should-be-impossible) case of a paired row with a
+          null name rather than rendering nothing. */}
       <div className="kds__device-indicator" aria-hidden="true">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M5 12.55a11 11 0 0 1 14.08 0" />
@@ -520,7 +523,7 @@ export default function KitchenDisplay() {
           <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
           <circle cx="12" cy="20" r="1" fill="currentColor" />
         </svg>
-        <span>KDS Active</span>
+        <span>{deviceName ? `Paired · ${deviceName}` : "KDS Active"}</span>
       </div>
 
       {pastOpen && (
