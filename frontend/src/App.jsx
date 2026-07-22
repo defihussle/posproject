@@ -67,21 +67,29 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Login */}
+        {/* Login — device pairing gates the PIN pad itself, so an unpaired
+            device (or one whose cookie was cleared) always sees the pairing
+            screen first, never the PIN pad. Without this wrapper an unpaired
+            device landing on /login (e.g. via the catch-all from the bare
+            domain) would show the PIN pad, and since POST /api/auth/login is
+            device-gated server-side, a correct PIN would be rejected 401 —
+            looking like a "wrong PIN" with no way forward. */}
         <Route
           path="/login"
           element={
             staff ? (
               <Navigate to={roleToPath()} replace />
             ) : (
-              <PinLogin onLogin={handleLogin} />
+              <RequireDevicePairing>
+                <PinLogin onLogin={handleLogin} />
+              </RequireDevicePairing>
             )
           }
         />
 
         {/* Order Entry — owner, admin, manager, cashier. Device pairing
-            gates this BEFORE the staff/login check below, so an unpaired
-            device never even reaches the PIN pad. */}
+            gates this AND /login above, so an unpaired device never even
+            reaches the PIN pad. */}
         <Route
           path="/order-entry"
           element={
