@@ -55,6 +55,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const navigate = useNavigate();
   const [menu, setMenu] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [menuError, setMenuError] = useState(null);
   const [activeCatId, setActiveCatId] = useState(null);
   const [modalItem, setModalItem] = useState(null);
   const [modalVariant, setModalVariant] = useState(null);
@@ -133,17 +134,36 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
     return `${variantName} ${cleanItemName}`;
   };
 
-  // Fetch full menu on mount
-  useEffect(() => {
+  // Fetch full menu. Guards against a non-OK response (e.g. a 500 when the
+  // backend hits a schema/DB error) so the menu never gets set to an error
+  // object — doing that used to crash the whole screen on the next
+  // menu.map/find. On failure we keep `menu` an empty array and surface a
+  // retryable error state instead of silently rendering a broken board.
+  const loadMenu = useCallback(() => {
+    setLoading(true);
+    setMenuError(null);
     fetch(`${API_URL}/api/menu/full`)
-      .then((r) => r.json())
+      .then(async (r) => {
+        const data = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
+        if (!Array.isArray(data)) throw new Error("Unexpected menu response");
+        return data;
+      })
       .then((data) => {
         setMenu(data);
         if (data.length > 0) setActiveCatId(data[0].id);
       })
-      .catch((err) => console.error("Failed to load menu:", err))
+      .catch((err) => {
+        console.error("Failed to load menu:", err);
+        setMenu([]);
+        setMenuError(err.message || "Failed to load menu");
+      })
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    loadMenu();
+  }, [loadMenu]);
 
   // Active category items
   const activeCategory = useMemo(
@@ -352,6 +372,20 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
     return (
       <div className="order-entry">
         <div className="oe-loading">Loading menu…</div>
+      </div>
+    );
+  }
+
+  if (menuError) {
+    return (
+      <div className="order-entry">
+        <div className="oe-loading oe-loading--error">
+          <div className="oe-loading__title">Couldn’t load the menu</div>
+          <div className="oe-loading__detail">{menuError}</div>
+          <button className="oe-loading__retry" onClick={loadMenu}>
+            Retry
+          </button>
+        </div>
       </div>
     );
   }

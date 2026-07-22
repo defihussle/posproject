@@ -246,6 +246,28 @@ export default function MenuManager({ staff, showTitle = true }) {
 
   if (loading) return <div className="menued__notice">Loading menu…</div>;
 
+  // Load failed outright (nothing to show) — offer a retry instead of an
+  // empty editor with just a banner. In-place errors while data IS present
+  // (e.g. a failed save) still use the inline banner below.
+  if (error && menu.length === 0) {
+    return (
+      <div className="menued">
+        {showTitle && (
+          <div className="menued__toolbar">
+            <h2 className="menued__title">Menu</h2>
+          </div>
+        )}
+        <div className="menued__load-error">
+          <div className="menued__load-error-title">Couldn’t load the menu</div>
+          <div className="menued__load-error-detail">{error}</div>
+          <button className="menued__load-error-retry" onClick={load}>
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="menued">
       {showTitle && (

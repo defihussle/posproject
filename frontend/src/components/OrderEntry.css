@@ -975,6 +975,53 @@
   animation: pulse 1.5s ease-in-out infinite;
 }
 
+/* Error variant — not pulsing, and laid out as a small centered stack
+   with a retry action (used when the menu fetch fails). */
+.oe-loading--error {
+  flex-direction: column;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  animation: none;
+}
+
+.oe-loading__title {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.oe-loading__detail {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  max-width: 320px;
+}
+
+.oe-loading__retry {
+  margin-top: 4px;
+  padding: 10px 24px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--red);
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.12s ease, transform 0.12s ease;
+}
+
+.oe-loading__retry:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+.oe-loading__retry:active {
+  transform: translateY(0) scale(0.98);
+}
+
 /* ---------- Collapsed Cart Styles ---------- */
 .oe-cart--collapsed {
   width: 75px;
