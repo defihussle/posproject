@@ -20,6 +20,8 @@ const fmtMoney = (n) =>
   `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtInt = (n) => Number(n || 0).toLocaleString();
 const fmtPct = (n) => `${Number(n || 0).toFixed(1)}%`;
+const fmtHour = (h) => `${h % 12 === 0 ? 12 : h % 12}${h < 12 ? "a" : "p"}`; // 15 -> "3p"
+const fmtHourLong = (h) => `${h % 12 === 0 ? 12 : h % 12} ${h < 12 ? "AM" : "PM"}`; // 15 -> "3 PM"
 
 function fmtSince(iso, nowMs) {
   const seconds = Math.max(0, Math.floor((nowMs - new Date(iso).getTime()) / 1000));
@@ -50,6 +52,10 @@ export default function HomeDashboard({ staff }) {
   const [summary, setSummary] = useState(null);
   const [topItems, setTopItems] = useState([]);
   const [staffPerf, setStaffPerf] = useState([]);
+  const [hourly, setHourly] = useState([]);
+  const [trend, setTrend] = useState([]);
+  const [trendMode, setTrendMode] = useState("hourly"); // Sales Trend Hourly/Daily toggle
+  const [trendLoading, setTrendLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -65,18 +71,26 @@ export default function HomeDashboard({ staff }) {
     setLoading(true);
     try {
       const qs = `staffId=${staff.id}&range=${range}`;
-      const [sumRes, topRes, perfRes] = await Promise.all([
+      const [sumRes, topRes, perfRes, hourRes] = await Promise.all([
         fetch(`${API_URL}/api/backoffice/stats/summary?${qs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/top-items?${qs}&limit=5`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/staff-performance?${qs}`, { credentials: "include" }),
+        fetch(`${API_URL}/api/backoffice/stats/hourly?${qs}`, { credentials: "include" }),
       ]);
-      const [sumData, topData, perfData] = await Promise.all([sumRes.json(), topRes.json(), perfRes.json()]);
+      const [sumData, topData, perfData, hourData] = await Promise.all([
+        sumRes.json(),
+        topRes.json(),
+        perfRes.json(),
+        hourRes.json(),
+      ]);
       if (!sumRes.ok) throw new Error(sumData.error || `HTTP ${sumRes.status}`);
       if (!topRes.ok) throw new Error(topData.error || `HTTP ${topRes.status}`);
       if (!perfRes.ok) throw new Error(perfData.error || `HTTP ${perfRes.status}`);
+      if (!hourRes.ok) throw new Error(hourData.error || `HTTP ${hourRes.status}`);
       setSummary(sumData);
       setTopItems(topData);
       setStaffPerf(perfData);
+      setHourly(hourData);
       setError(null);
     } catch (err) {
       setError(err.message || "Failed to load dashboard stats");
@@ -88,6 +102,41 @@ export default function HomeDashboard({ staff }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Sales Trend has its own fetch — it depends on the Hourly/Daily toggle as
+  // well as the range, and shouldn't refetch the whole dashboard when the
+  // toggle flips. Errors here are non-fatal to the rest of the dashboard:
+  // the trend card falls back to its own empty state rather than blanking
+  // every card, so one endpoint hiccup doesn't take the page down.
+  useEffect(() => {
+    if (isCustom) {
+      setTrendLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setTrendLoading(true);
+    const gran = trendMode === "daily" ? "day" : "hour";
+    fetch(`${API_URL}/api/backoffice/stats/trend?staffId=${staff.id}&range=${range}&granularity=${gran}`, {
+      credentials: "include",
+    })
+      .then(async (r) => {
+        const data = await r.json().catch(() => null);
+        if (!r.ok) throw new Error((data && data.error) || `HTTP ${r.status}`);
+        return Array.isArray(data) ? data : [];
+      })
+      .then((data) => {
+        if (!cancelled) setTrend(data);
+      })
+      .catch(() => {
+        if (!cancelled) setTrend([]);
+      })
+      .finally(() => {
+        if (!cancelled) setTrendLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [staff.id, range, trendMode, isCustom]);
 
   // KPI definitions — real values from the (extended) summary endpoint;
   // Labor % awaits the labor endpoint. `delta` stays null until the
@@ -137,8 +186,8 @@ export default function HomeDashboard({ staff }) {
           <KpiStrip kpis={kpis} compare={compare} loading={loading && !isCustom} pending={isCustom} />
 
           <div className="homedash__sections">
-            <SalesTrendCard loading={loading} pending={isCustom} />
-            <HourlyBreakdownCard loading={loading} pending={isCustom} />
+            <SalesTrendCard trend={trend} mode={trendMode} onMode={setTrendMode} loading={trendLoading} pending={isCustom} />
+            <HourlyBreakdownCard data={hourly} loading={loading} pending={isCustom} />
             <CategorySalesCard loading={loading} pending={isCustom} />
             <LaborVsSalesCard loading={loading} pending={isCustom} />
             <DiscountReportCard summary={summary} loading={loading && !isCustom} pending={isCustom} />
@@ -276,46 +325,199 @@ function ChartPending({ shape = "bars", note }) {
   );
 }
 
-/* ---------------- Charts (scaffolded — inline-SVG charts land next phase) ---------------- */
-function SalesTrendCard({ pending }) {
-  const [mode, setMode] = useState("hourly");
+/* ---------------- Inline SVG charts ----------------
+   Both are single-series (sales), so per the dataviz method: line for
+   change-over-time, bar for magnitude, one brand hue (no categorical
+   palette to validate), recessive axes, ink-token text, and a hover layer.
+   viewBox coordinates scale to the container width; strokes stay crisp via
+   vector-effect (see CSS). */
+const CHART_W = 640;
+const CHART_H = 200;
+
+function LineChart({ data }) {
+  const [hover, setHover] = useState(null); // { idx, px }
+  const padL = 6, padR = 6, padT = 14, padB = 22;
+  const n = data.length;
+  const innerW = CHART_W - padL - padR;
+  const innerH = CHART_H - padT - padB;
+  const maxSales = Math.max(1, ...data.map((d) => d.sales));
+  const xAt = (i) => (n <= 1 ? padL + innerW / 2 : padL + (i / (n - 1)) * innerW);
+  const yAt = (v) => padT + innerH - (v / maxSales) * innerH;
+  const line = data.map((d, i) => `${xAt(i).toFixed(1)},${yAt(d.sales).toFixed(1)}`).join(" ");
+  const area = `${padL},${(padT + innerH).toFixed(1)} ${line} ${xAt(n - 1).toFixed(1)},${(padT + innerH).toFixed(1)}`;
+  const gridY = [0.25, 0.5, 0.75, 1].map((f) => padT + innerH - f * innerH);
+  const labelEvery = Math.max(1, Math.ceil(n / 6));
+
+  const onMove = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    setHover({ idx: Math.round(frac * (n - 1)), px: e.clientX - rect.left });
+  };
+  const hv = hover ? data[hover.idx] : null;
+
+  return (
+    <div className="homedash-chart" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+      <svg viewBox={`0 0 ${CHART_W} ${CHART_H}`} preserveAspectRatio="none" className="homedash-chart__svg" role="img" aria-label="Sales trend over time">
+        {gridY.map((y, i) => (
+          <line key={i} x1={padL} x2={CHART_W - padR} y1={y} y2={y} className="homedash-chart__grid" />
+        ))}
+        <polygon points={area} className="homedash-chart__area" />
+        <polyline points={line} className="homedash-chart__line" />
+        {hv && (
+          <>
+            <line x1={xAt(hover.idx)} x2={xAt(hover.idx)} y1={padT} y2={padT + innerH} className="homedash-chart__crosshair" />
+            <circle cx={xAt(hover.idx)} cy={yAt(hv.sales)} r="5" className="homedash-chart__dot" />
+          </>
+        )}
+      </svg>
+      <div className="homedash-chart__xlabels">
+        {data.map((d, i) =>
+          i % labelEvery === 0 || i === n - 1 ? (
+            <span key={i} style={{ left: `${(xAt(i) / CHART_W) * 100}%` }}>{d.label}</span>
+          ) : null
+        )}
+      </div>
+      {hv && (
+        <div className="homedash-chart__tip" style={{ left: `${hover.px}px` }}>
+          <div className="homedash-chart__tip-label">{hv.label}</div>
+          <div className="homedash-chart__tip-val">{fmtMoney(hv.sales)}</div>
+          <div className="homedash-chart__tip-sub">{fmtInt(hv.orders)} orders</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BarChart({ data }) {
+  const [hover, setHover] = useState(null); // { idx, px }
+  const padT = 14, padB = 20, padX = 6;
+  const n = data.length;
+  const innerW = CHART_W - 2 * padX;
+  const innerH = CHART_H - padT - padB;
+  const maxV = Math.max(1, ...data.map((d) => d.value));
+  const band = innerW / n;
+  const barW = Math.max(3, Math.min(band - 6, 48));
+  const xAt = (i) => padX + i * band + (band - barW) / 2;
+  const labelEvery = n > 14 ? 2 : 1;
+
+  const onMove = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const frac = Math.min(0.9999, Math.max(0, (e.clientX - rect.left) / rect.width));
+    setHover({ idx: Math.floor(frac * n), px: e.clientX - rect.left });
+  };
+  const hv = hover ? data[hover.idx] : null;
+
+  return (
+    <div className="homedash-chart" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+      <svg viewBox={`0 0 ${CHART_W} ${CHART_H}`} preserveAspectRatio="none" className="homedash-chart__svg" role="img" aria-label="Sales by hour of day">
+        <line x1={padX} x2={CHART_W - padX} y1={padT + innerH} y2={padT + innerH} className="homedash-chart__grid" />
+        {data.map((d, i) => {
+          const bh = (d.value / maxV) * innerH;
+          return (
+            <rect
+              key={i}
+              x={xAt(i)}
+              y={padT + innerH - bh}
+              width={barW}
+              height={Math.max(bh, 0.5)}
+              rx="4"
+              className={`homedash-chart__bar${hover && hover.idx === i ? " homedash-chart__bar--hover" : ""}`}
+            />
+          );
+        })}
+      </svg>
+      <div className="homedash-chart__xlabels">
+        {data.map((d, i) =>
+          i % labelEvery === 0 ? (
+            <span key={i} style={{ left: `${((xAt(i) + barW / 2) / CHART_W) * 100}%` }}>{d.label}</span>
+          ) : null
+        )}
+      </div>
+      {hv && (
+        <div className="homedash-chart__tip" style={{ left: `${hover.px}px` }}>
+          <div className="homedash-chart__tip-label">{fmtHourLong(hv.hour)}</div>
+          <div className="homedash-chart__tip-val">{fmtMoney(hv.sales)}</div>
+          <div className="homedash-chart__tip-sub">
+            {fmtInt(hv.orders)} orders · {hv.orders > 0 ? `${fmtMoney(hv.avg)} avg` : "—"}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Sales Trend (line) ---------------- */
+function SalesTrendCard({ trend, mode, onMode, loading, pending }) {
+  const hasData = trend.some((d) => d.sales > 0);
   return (
     <SectionCard
       title="Sales Trend"
       wide
       actions={
         <div className="homedash-toggle">
-          {["hourly", "daily"].map((m) => (
+          {[["hourly", "Hourly"], ["daily", "Daily"]].map(([m, label]) => (
             <button
               key={m}
               className={`homedash-toggle__btn${mode === m ? " homedash-toggle__btn--active" : ""}`}
-              onClick={() => setMode(m)}
+              onClick={() => onMode(m)}
             >
-              {m === "hourly" ? "Hourly" : "Daily"}
+              {label}
             </button>
           ))}
         </div>
       }
     >
-      <ChartPending shape="line" note={pending ? "Select a preset range" : `${mode === "hourly" ? "Hourly" : "Daily"} trend — needs the sales-trend endpoint`} />
+      {pending ? (
+        <ChartPending shape="line" note="Select a preset range" />
+      ) : loading ? (
+        <div className="homedash-card__notice">Loading…</div>
+      ) : !hasData ? (
+        <div className="homedash-card__notice">No sales in this range</div>
+      ) : (
+        <LineChart data={trend} />
+      )}
     </SectionCard>
   );
 }
 
-function HourlyBreakdownCard({ pending }) {
+/* ---------------- Hourly Breakdown (bar + table) ---------------- */
+function HourlyBreakdownCard({ data, loading, pending }) {
+  // Trim the gap-filled 24h series to the active operating window so the
+  // chart/table aren't padded with dead overnight hours.
+  const active = useMemo(() => {
+    const idx = data.map((d, i) => (d.orders > 0 ? i : -1)).filter((i) => i >= 0);
+    if (idx.length === 0) return [];
+    return data.slice(idx[0], idx[idx.length - 1] + 1);
+  }, [data]);
+
   return (
     <SectionCard title="Hourly Breakdown" wide>
-      <ChartPending shape="bars" note={pending ? "Select a preset range" : "Hour · Orders · Sales · Avg — needs the hourly endpoint"} />
-      <div className="homedash-table homedash-table--ghost" aria-hidden="true">
-        <div className="homedash-table__head">
-          <span>Hour</span><span>Orders</span><span>Sales</span><span>Avg</span>
-        </div>
-        {[0, 1, 2].map((i) => (
-          <div key={i} className="homedash-table__row homedash-table__row--ghost">
-            <span /><span /><span /><span />
+      {pending ? (
+        <ChartPending shape="bars" note="Select a preset range" />
+      ) : loading ? (
+        <div className="homedash-card__notice">Loading…</div>
+      ) : active.length === 0 ? (
+        <div className="homedash-card__notice">No sales in this range</div>
+      ) : (
+        <>
+          <BarChart
+            data={active.map((d) => ({ label: fmtHour(d.hour), value: d.sales, hour: d.hour, orders: d.orders, sales: d.sales, avg: d.avg }))}
+          />
+          <div className="homedash-table">
+            <div className="homedash-table__head">
+              <span>Hour</span><span>Orders</span><span>Sales</span><span>Avg</span>
+            </div>
+            {active.map((d) => (
+              <div key={d.hour} className="homedash-table__row">
+                <span className="homedash-table__name">{fmtHourLong(d.hour)}</span>
+                <span className="homedash-num">{fmtInt(d.orders)}</span>
+                <span className="homedash-num">{fmtMoney(d.sales)}</span>
+                <span className="homedash-num">{d.orders > 0 ? fmtMoney(d.avg) : "—"}</span>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      )}
     </SectionCard>
   );
 }

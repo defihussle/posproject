@@ -3285,6 +3285,103 @@ app.get("/api/backoffice/stats/staff-performance", async (req, res) => {
   }
 });
 
+// GET /api/backoffice/stats/hourly?staffId=...&range=...
+// Hour-of-day distribution across the range (0–23), gap-filled so every
+// hour is present. Feeds the Hourly Breakdown card (bar chart + table):
+// "which hours are busiest." Averaged across all days in the range.
+app.get("/api/backoffice/stats/hourly", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    const { trunc } = resolveStatsRange(req.query.range);
+    const location = await getSingleActiveLocation(client);
+
+    const { rows } = await client.query(
+      `WITH agg AS (
+         SELECT EXTRACT(HOUR FROM (completed_at AT TIME ZONE $3))::int AS hour,
+                COUNT(*) AS orders, COALESCE(SUM(total), 0) AS sales
+           FROM orders
+          WHERE location_id = $1 AND status = 'ready'
+            AND completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
+          GROUP BY 1
+       )
+       SELECT h AS hour, COALESCE(a.orders, 0) AS orders, COALESCE(a.sales, 0) AS sales
+         FROM generate_series(0, 23) h
+         LEFT JOIN agg a ON a.hour = h
+        ORDER BY h`,
+      [location.id, trunc, location.timezone]
+    );
+    res.json(
+      rows.map((r) => {
+        const orders = parseInt(r.orders, 10);
+        const sales = parseFloat(r.sales);
+        return { hour: r.hour, orders, sales, avg: orders > 0 ? sales / orders : 0 };
+      })
+    );
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch hourly breakdown");
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/backoffice/stats/trend?staffId=...&range=...&granularity=hour|day
+// Chronological sales time series, gap-filled bucket-by-bucket across the
+// range (so a zero hour/day shows as 0, not a skipped point). Feeds the
+// Sales Trend line chart; granularity is the card's Hourly/Daily toggle.
+app.get("/api/backoffice/stats/trend", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    const { trunc } = resolveStatsRange(req.query.range);
+    const location = await getSingleActiveLocation(client);
+    // Whitelisted — interpolated into date_trunc / the '1 <unit>' interval;
+    // never take the raw query value into SQL text.
+    const granularity = req.query.granularity === "day" ? "day" : "hour";
+    const labelFmt = granularity === "day" ? "Dy DD" : "FMHH12 AM";
+
+    const { rows } = await client.query(
+      `WITH bounds AS (
+         SELECT date_trunc($2, now() AT TIME ZONE $3) AS start_local,
+                now() AT TIME ZONE $3 AS end_local
+       ),
+       buckets AS (
+         SELECT generate_series(
+                  date_trunc($4, (SELECT start_local FROM bounds)),
+                  date_trunc($4, (SELECT end_local FROM bounds)),
+                  ('1 ' || $4)::interval
+                ) AS bucket
+       ),
+       agg AS (
+         SELECT date_trunc($4, (completed_at AT TIME ZONE $3)) AS bucket,
+                COUNT(*) AS orders, COALESCE(SUM(total), 0) AS sales
+           FROM orders
+          WHERE location_id = $1 AND status = 'ready'
+            AND completed_at >= ((SELECT start_local FROM bounds) AT TIME ZONE $3)
+          GROUP BY 1
+       )
+       SELECT b.bucket, to_char(b.bucket, $5) AS label,
+              COALESCE(a.orders, 0) AS orders, COALESCE(a.sales, 0) AS sales
+         FROM buckets b
+         LEFT JOIN agg a ON a.bucket = b.bucket
+        ORDER BY b.bucket`,
+      [location.id, trunc, location.timezone, granularity, labelFmt]
+    );
+    res.json(
+      rows.map((r) => ({
+        bucket: r.bucket,
+        label: (r.label || "").trim(),
+        orders: parseInt(r.orders, 10),
+        sales: parseFloat(r.sales),
+      }))
+    );
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch sales trend");
+  } finally {
+    client.release();
+  }
+});
+
 // --------------- Device pairing (Order Entry / KDS access) ---------------
 // Adds a device-trust layer UNDERNEATH staffId/PIN identity (device-
 // pairing-plan.md, "Background") — orthogonal to who's logged in, this is
