@@ -3159,24 +3159,50 @@ app.get("/api/backoffice/stats/summary", async (req, res) => {
     const { range, trunc } = resolveStatsRange(req.query.range);
     const location = await getSingleActiveLocation(client);
 
+    // Current period + the "previous period, period-to-date" for the
+    // comparison deltas: the previous period truncated to the SAME elapsed
+    // span (e.g. today 9am→now vs yesterday 9am→same-time), so the compare
+    // is apples-to-apples rather than a full past period vs a partial one.
     const { rows } = await client.query(
-      `SELECT COALESCE(SUM(total), 0) AS total_sales, COUNT(*) AS order_count,
-              COALESCE(SUM(tip), 0) AS total_tips,
-              COALESCE(SUM(subtotal), 0) AS gross_sales,
-              COALESCE(SUM(discount), 0) AS discount_total
-         FROM orders
-        WHERE location_id = $1
-          AND status = 'ready'
-          AND completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)`,
+      `WITH wins AS (
+         SELECT date_trunc($2, now() AT TIME ZONE $3) AS cur_start,
+                now() AT TIME ZONE $3 AS now_local,
+                date_trunc($2, now() AT TIME ZONE $3) - ('1 ' || $2)::interval AS prev_start,
+                date_trunc($2, now() AT TIME ZONE $3) - ('1 ' || $2)::interval
+                  + (now() AT TIME ZONE $3 - date_trunc($2, now() AT TIME ZONE $3)) AS prev_end
+       ),
+       o AS (
+         SELECT (ord.completed_at AT TIME ZONE $3) AS cl,
+                ord.total, ord.subtotal, ord.discount, ord.tip,
+                w.cur_start, w.prev_start, w.prev_end
+           FROM orders ord CROSS JOIN wins w
+          WHERE ord.location_id = $1 AND ord.status = 'ready'
+            AND ord.completed_at >= (w.prev_start AT TIME ZONE $3)
+       )
+       SELECT
+         COALESCE(SUM(total)    FILTER (WHERE cl >= cur_start), 0) AS cur_total,
+         COALESCE(SUM(subtotal) FILTER (WHERE cl >= cur_start), 0) AS cur_gross,
+         COALESCE(SUM(discount) FILTER (WHERE cl >= cur_start), 0) AS cur_disc,
+         COALESCE(SUM(tip)      FILTER (WHERE cl >= cur_start), 0) AS cur_tips,
+         COUNT(*)               FILTER (WHERE cl >= cur_start)     AS cur_orders,
+         COALESCE(SUM(total)    FILTER (WHERE cl >= prev_start AND cl < prev_end), 0) AS prev_total,
+         COALESCE(SUM(subtotal) FILTER (WHERE cl >= prev_start AND cl < prev_end), 0) AS prev_gross,
+         COALESCE(SUM(discount) FILTER (WHERE cl >= prev_start AND cl < prev_end), 0) AS prev_disc,
+         COALESCE(SUM(tip)      FILTER (WHERE cl >= prev_start AND cl < prev_end), 0) AS prev_tips,
+         COUNT(*)               FILTER (WHERE cl >= prev_start AND cl < prev_end)     AS prev_orders
+         FROM o`,
       [location.id, trunc, location.timezone]
     );
-    const totalSales = parseFloat(rows[0].total_sales);
-    const orderCount = parseInt(rows[0].order_count, 10);
+    const r = rows[0];
     // Gross = pre-discount subtotal; Net = gross minus discounts (both
     // pre-tax, matching how the dashboard's Gross/Net KPIs read). totalSales
     // stays = SUM(total), the actual revenue collected (incl. tax/tip).
-    const grossSales = parseFloat(rows[0].gross_sales);
-    const discountTotal = parseFloat(rows[0].discount_total);
+    const totalSales = parseFloat(r.cur_total);
+    const orderCount = parseInt(r.cur_orders, 10);
+    const grossSales = parseFloat(r.cur_gross);
+    const discountTotal = parseFloat(r.cur_disc);
+    const prevGross = parseFloat(r.prev_gross);
+    const prevOrders = parseInt(r.prev_orders, 10);
     res.json({
       range,
       totalSales,
@@ -3190,7 +3216,15 @@ app.get("/api/backoffice/stats/summary", async (req, res) => {
       // display-readiness only: the stat and its plumbing are correct now,
       // so tips will show up automatically the moment real tip capture is
       // wired into checkout — no dashboard change needed then.
-      totalTips: parseFloat(rows[0].total_tips),
+      totalTips: parseFloat(r.cur_tips),
+      // Previous period-to-date, for the "vs Last Period" deltas.
+      previous: {
+        grossSales: prevGross,
+        netSales: prevGross - parseFloat(r.prev_disc),
+        orderCount: prevOrders,
+        avgOrderValue: prevOrders > 0 ? parseFloat(r.prev_total) / prevOrders : 0,
+        totalTips: parseFloat(r.prev_tips),
+      },
     });
   } catch (err) {
     sendHttpError(res, err, "Failed to fetch sales summary");
@@ -3484,6 +3518,33 @@ app.get("/api/backoffice/stats/labor", async (req, res) => {
       [location.id, trunc, location.timezone]
     );
 
+    // Previous period-to-date labor % (same window logic as the summary's
+    // comparison), for the Labor Cost % KPI delta.
+    const { rows: prevRows } = await client.query(
+      `WITH wins AS (
+         SELECT date_trunc($2, now() AT TIME ZONE $3) - ('1 ' || $2)::interval AS prev_start,
+                date_trunc($2, now() AT TIME ZONE $3) - ('1 ' || $2)::interval
+                  + (now() AT TIME ZONE $3 - date_trunc($2, now() AT TIME ZONE $3)) AS prev_end
+       ),
+       sw AS (
+         SELECT COALESCE(st.hourly_rate, 0) AS rate,
+                GREATEST(
+                  EXTRACT(EPOCH FROM (COALESCE(s.clock_out, now()) - s.clock_in))
+                  - COALESCE((SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(b.break_end, now()) - b.break_start)))
+                              FROM shift_breaks b WHERE b.shift_id = s.id), 0), 0) AS worked
+           FROM shifts s JOIN staff st ON st.id = s.staff_id CROSS JOIN wins w
+          WHERE s.clock_in >= (w.prev_start AT TIME ZONE $3) AND s.clock_in < (w.prev_end AT TIME ZONE $3)
+       )
+       SELECT
+         (SELECT COALESCE(SUM((worked / 3600.0) * rate), 0) FROM sw) AS prev_labor,
+         (SELECT COALESCE(SUM(subtotal), 0)
+            FROM orders ord CROSS JOIN wins w
+           WHERE ord.location_id = $1 AND ord.status = 'ready'
+             AND ord.completed_at >= (w.prev_start AT TIME ZONE $3)
+             AND ord.completed_at <  (w.prev_end AT TIME ZONE $3)) AS prev_gross`,
+      [location.id, trunc, location.timezone]
+    );
+
     const perStaff = perStaffRows.map((r) => ({
       staff_id: r.staff_id,
       name: r.name,
@@ -3493,6 +3554,8 @@ app.get("/api/backoffice/stats/labor", async (req, res) => {
     const laborCost = perStaff.reduce((sum, s) => sum + s.laborCost, 0);
     const hours = perStaff.reduce((sum, s) => sum + s.hours, 0);
     const grossSales = parseFloat(salesRows[0].gross_sales);
+    const prevLabor = parseFloat(prevRows[0].prev_labor);
+    const prevGross = parseFloat(prevRows[0].prev_gross);
 
     res.json({
       laborCost,
@@ -3500,6 +3563,9 @@ app.get("/api/backoffice/stats/labor", async (req, res) => {
       grossSales,
       laborPct: grossSales > 0 ? (laborCost / grossSales) * 100 : 0,
       perStaff,
+      previous: {
+        laborPct: prevGross > 0 ? (prevLabor / prevGross) * 100 : 0,
+      },
     });
   } catch (err) {
     sendHttpError(res, err, "Failed to fetch labor stats");

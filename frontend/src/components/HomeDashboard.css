@@ -207,10 +207,10 @@
   font-weight: 500;
 }
 
-.homedash-delta--up {
+.homedash-delta--good {
   color: var(--green);
 }
-.homedash-delta--down {
+.homedash-delta--bad {
   color: var(--red);
 }
 

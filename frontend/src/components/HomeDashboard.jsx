@@ -151,17 +151,41 @@ export default function HomeDashboard({ staff }) {
   // KPI definitions — real values from the (extended) summary endpoint;
   // Labor % awaits the labor endpoint. `delta` stays null until the
   // comparison endpoint lands, so the arrow simply doesn't render yet.
-  const kpis = useMemo(
-    () => [
-      { key: "gross", label: "Gross Sales", value: summary ? fmtMoney(summary.grossSales) : null, delta: null },
-      { key: "net", label: "Net Sales", value: summary ? fmtMoney(summary.netSales) : null, delta: null, hint: "after discounts" },
-      { key: "orders", label: "Orders", value: summary ? fmtInt(summary.orderCount) : null, delta: null },
-      { key: "aov", label: "Avg Order", value: summary ? fmtMoney(summary.avgOrderValue) : null, delta: null },
-      { key: "tips", label: "Total Tips", value: summary ? fmtMoney(summary.totalTips) : null, delta: null },
-      { key: "labor", label: "Labor Cost %", value: labor ? fmtPct(labor.laborPct) : null, delta: null },
-    ],
-    [summary, labor]
-  );
+  const kpis = useMemo(() => {
+    const prev = summary?.previous;
+    // % change vs the previous period-to-date; null when there's no prior
+    // baseline (no arrow rather than a fake ∞/100%).
+    const pctDelta = (cur, prior) =>
+      cur != null && prior != null && prior > 0 ? ((cur - prior) / prior) * 100 : null;
+    const money = (key, label, cur, prior, extra = {}) => ({
+      key,
+      label,
+      value: cur != null ? fmtMoney(cur) : null,
+      delta: pctDelta(cur, prior),
+      goodUp: true,
+      ...extra,
+    });
+    return [
+      money("gross", "Gross Sales", summary?.grossSales, prev?.grossSales),
+      money("net", "Net Sales", summary?.netSales, prev?.netSales, { hint: "after discounts" }),
+      {
+        key: "orders",
+        label: "Orders",
+        value: summary ? fmtInt(summary.orderCount) : null,
+        delta: pctDelta(summary?.orderCount, prev?.orderCount),
+        goodUp: true,
+      },
+      money("aov", "Avg Order", summary?.avgOrderValue, prev?.avgOrderValue),
+      money("tips", "Total Tips", summary?.totalTips, prev?.totalTips),
+      {
+        key: "labor",
+        label: "Labor Cost %",
+        value: labor ? fmtPct(labor.laborPct) : null,
+        delta: pctDelta(labor?.laborPct, labor?.previous?.laborPct),
+        goodUp: false, // a rising labor % is worse, so up = red
+      },
+    ];
+  }, [summary, labor]);
 
   // Hours per staff, keyed by id, to fill the Staff Performance Hours column.
   const hoursByStaff = useMemo(() => {
@@ -291,22 +315,30 @@ function KpiCard({ kpi, compare, loading, pending }) {
         </div>
       )}
       {kpi.hint && <div className="homedash-kpi__hint">{kpi.hint}</div>}
-      {/* Delta — arrow + status color, never color alone (accessibility). Renders
-          only once the comparison endpoint provides a previous-period number. */}
-      {compare && (
-        <div className="homedash-kpi__delta homedash-kpi__delta--pending">
-          {kpi.delta == null ? "— vs last period" : <Delta value={kpi.delta} />}
-        </div>
-      )}
+      {/* Delta — arrow (direction) + status color (good/bad), never color
+          alone. Shown only with the comparison toggle on; "— vs last period"
+          when there's no prior baseline to compare against. */}
+      {compare &&
+        (kpi.delta == null ? (
+          <div className="homedash-kpi__delta homedash-kpi__delta--pending">— vs last period</div>
+        ) : (
+          <div className="homedash-kpi__delta">
+            <Delta value={kpi.delta} goodUp={kpi.goodUp} />
+          </div>
+        ))}
       {kpi.pending && <div className="homedash-kpi__badge">Soon</div>}
     </div>
   );
 }
 
-function Delta({ value }) {
+// value = signed % change; goodUp = whether an increase is a good thing
+// (true for sales/orders, false for labor cost %). Color reflects good/bad,
+// the arrow reflects direction — so neither reads on color alone.
+function Delta({ value, goodUp }) {
   const up = value >= 0;
+  const good = up === goodUp;
   return (
-    <span className={`homedash-delta homedash-delta--${up ? "up" : "down"}`}>
+    <span className={`homedash-delta homedash-delta--${good ? "good" : "bad"}`}>
       <span aria-hidden="true">{up ? "▲" : "▼"}</span> {Math.abs(value).toFixed(1)}%
     </span>
   );
