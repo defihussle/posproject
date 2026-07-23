@@ -422,6 +422,49 @@
   opacity: 0.85;
 }
 
+/* ---------- Horizontal bars (Category Sales) ---------- */
+.homedash-hbars {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  padding-top: 2px;
+}
+.homedash-hbar__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 5px;
+}
+.homedash-hbar__label {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.homedash-hbar__value {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+.homedash-hbar__track {
+  height: 8px;
+  background: var(--bg-surface-hover);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.homedash-hbar__fill {
+  height: 100%;
+  background: var(--red);
+  border-radius: var(--radius-full);
+  transition: width 0.3s ease;
+}
+
 /* ---------- Tables (discount, staff, hourly) ---------- */
 .homedash-table {
   display: flex;

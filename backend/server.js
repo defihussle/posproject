@@ -3382,6 +3382,60 @@ app.get("/api/backoffice/stats/trend", async (req, res) => {
   }
 });
 
+// GET /api/backoffice/stats/by-category?staffId=...&range=...
+// Sales per menu category, sorted high→low. Line revenue = base
+// (quantity × unit_price) + modifier price deltas + addon revenue, all
+// attributed to the item's category — so the categories sum to gross
+// sales. Feeds the Category Sales horizontal-bar chart.
+app.get("/api/backoffice/stats/by-category", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    const { trunc } = resolveStatsRange(req.query.range);
+    const location = await getSingleActiveLocation(client);
+
+    const { rows } = await client.query(
+      `SELECT mc.id, mc.name,
+              COALESCE(SUM(
+                oi.quantity * oi.unit_price
+                + COALESCE(m.mod_total, 0)
+                + COALESCE(a.addon_total, 0)
+              ), 0) AS sales,
+              COALESCE(SUM(oi.quantity), 0) AS qty
+         FROM order_items oi
+         JOIN orders o ON o.id = oi.order_id
+         JOIN menu_items mi ON mi.id = oi.item_id
+         JOIN menu_categories mc ON mc.id = mi.category_id
+         LEFT JOIN LATERAL (
+           SELECT SUM(price_delta * quantity) AS mod_total
+             FROM order_item_modifiers WHERE order_item_id = oi.id
+         ) m ON true
+         LEFT JOIN LATERAL (
+           SELECT SUM(unit_price * quantity) AS addon_total
+             FROM order_item_addons WHERE order_item_id = oi.id
+         ) a ON true
+        WHERE o.location_id = $1 AND o.status = 'ready'
+          AND o.completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
+        GROUP BY mc.id, mc.name
+        HAVING SUM(oi.quantity) > 0
+        ORDER BY sales DESC`,
+      [location.id, trunc, location.timezone]
+    );
+    res.json(
+      rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        sales: parseFloat(r.sales),
+        qty: parseInt(r.qty, 10),
+      }))
+    );
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch category sales");
+  } finally {
+    client.release();
+  }
+});
+
 // --------------- Device pairing (Order Entry / KDS access) ---------------
 // Adds a device-trust layer UNDERNEATH staffId/PIN identity (device-
 // pairing-plan.md, "Background") — orthogonal to who's logged in, this is

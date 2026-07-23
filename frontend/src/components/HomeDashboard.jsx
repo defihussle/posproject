@@ -53,6 +53,7 @@ export default function HomeDashboard({ staff }) {
   const [topItems, setTopItems] = useState([]);
   const [staffPerf, setStaffPerf] = useState([]);
   const [hourly, setHourly] = useState([]);
+  const [category, setCategory] = useState([]);
   const [trend, setTrend] = useState([]);
   const [trendMode, setTrendMode] = useState("hourly"); // Sales Trend Hourly/Daily toggle
   const [trendLoading, setTrendLoading] = useState(true);
@@ -71,26 +72,30 @@ export default function HomeDashboard({ staff }) {
     setLoading(true);
     try {
       const qs = `staffId=${staff.id}&range=${range}`;
-      const [sumRes, topRes, perfRes, hourRes] = await Promise.all([
+      const [sumRes, topRes, perfRes, hourRes, catRes] = await Promise.all([
         fetch(`${API_URL}/api/backoffice/stats/summary?${qs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/top-items?${qs}&limit=5`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/staff-performance?${qs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/hourly?${qs}`, { credentials: "include" }),
+        fetch(`${API_URL}/api/backoffice/stats/by-category?${qs}`, { credentials: "include" }),
       ]);
-      const [sumData, topData, perfData, hourData] = await Promise.all([
+      const [sumData, topData, perfData, hourData, catData] = await Promise.all([
         sumRes.json(),
         topRes.json(),
         perfRes.json(),
         hourRes.json(),
+        catRes.json(),
       ]);
       if (!sumRes.ok) throw new Error(sumData.error || `HTTP ${sumRes.status}`);
       if (!topRes.ok) throw new Error(topData.error || `HTTP ${topRes.status}`);
       if (!perfRes.ok) throw new Error(perfData.error || `HTTP ${perfRes.status}`);
       if (!hourRes.ok) throw new Error(hourData.error || `HTTP ${hourRes.status}`);
+      if (!catRes.ok) throw new Error(catData.error || `HTTP ${catRes.status}`);
       setSummary(sumData);
       setTopItems(topData);
       setStaffPerf(perfData);
       setHourly(hourData);
+      setCategory(catData);
       setError(null);
     } catch (err) {
       setError(err.message || "Failed to load dashboard stats");
@@ -188,7 +193,7 @@ export default function HomeDashboard({ staff }) {
           <div className="homedash__sections">
             <SalesTrendCard trend={trend} mode={trendMode} onMode={setTrendMode} loading={trendLoading} pending={isCustom} />
             <HourlyBreakdownCard data={hourly} loading={loading} pending={isCustom} />
-            <CategorySalesCard loading={loading} pending={isCustom} />
+            <CategorySalesCard data={category} loading={loading} pending={isCustom} />
             <LaborVsSalesCard loading={loading} pending={isCustom} />
             <DiscountReportCard summary={summary} loading={loading && !isCustom} pending={isCustom} />
             <TopItemsCard items={topItems} loading={loading && !isCustom} pending={isCustom} />
@@ -522,10 +527,35 @@ function HourlyBreakdownCard({ data, loading, pending }) {
   );
 }
 
-function CategorySalesCard({ pending }) {
+// Horizontal bars — magnitude across categories, direct-labelled with name
+// and value (so identity is the label, not color: one brand hue, per the
+// dataviz method). CSS-driven fills, no SVG needed.
+function CategorySalesCard({ data, loading, pending }) {
+  const max = Math.max(1, ...data.map((d) => d.sales));
+  const hasData = data.some((d) => d.sales > 0);
   return (
     <SectionCard title="Category Sales">
-      <ChartPending shape="bars" note={pending ? "Select a preset range" : "Sales by category — needs the category endpoint"} />
+      {pending ? (
+        <ChartPending shape="bars" note="Select a preset range" />
+      ) : loading ? (
+        <div className="homedash-card__notice">Loading…</div>
+      ) : !hasData ? (
+        <div className="homedash-card__notice">No sales in this range</div>
+      ) : (
+        <div className="homedash-hbars">
+          {data.map((d) => (
+            <div key={d.id} className="homedash-hbar">
+              <div className="homedash-hbar__top">
+                <span className="homedash-hbar__label">{d.name}</span>
+                <span className="homedash-hbar__value">{fmtMoney(d.sales)}</span>
+              </div>
+              <div className="homedash-hbar__track">
+                <div className="homedash-hbar__fill" style={{ width: `${(d.sales / max) * 100}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </SectionCard>
   );
 }
