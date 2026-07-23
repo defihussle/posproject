@@ -4,23 +4,31 @@ import "./Payroll.css";
 // jsPDF is heavy and only needed on the (infrequent) PDF export, so it's
 // dynamically imported in exportPdf() to keep it out of the main bundle.
 
-// --- Local date helpers (weeks are Mon–Sun). Parse "YYYY-MM-DD" at local
-// midnight and format back, so week math never drifts by a timezone offset.
+// --- Local date helpers (weeks are Mon–Sun). Build Dates from numeric
+// parts, never from a string: iOS Safari (JavaScriptCore) throws
+// "The string did not match the expected pattern." on new Date("YYYY-MM-DDT..")
+// where Chromium silently accepts it. Numeric construction is safe on every
+// engine and needs no timezone parsing.
 const toYmd = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const parseYmd = (ymd) => {
+  const [y, m, d] = String(ymd).split("-").map(Number);
+  return new Date(y, m - 1, d); // local midnight, no string parsing
+};
 const currentMonday = () => {
   const d = new Date();
   d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // back up to Monday
   return toYmd(d);
 };
 const addDays = (ymd, n) => {
-  const d = new Date(`${ymd}T00:00:00`);
+  const d = parseYmd(ymd);
   d.setDate(d.getDate() + n);
   return toYmd(d);
 };
 const fmtRange = (a, b) => {
-  const s = new Date(`${a}T00:00:00`);
-  const e = new Date(`${b}T00:00:00`);
+  const s = parseYmd(a);
+  const e = parseYmd(b);
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return `${a} – ${b}`;
   const mo = (x) => x.toLocaleString(undefined, { month: "short" });
   const right = s.getMonth() === e.getMonth() ? `${e.getDate()}` : `${mo(e)} ${e.getDate()}`;
   return `${mo(s)} ${s.getDate()} – ${right}, ${e.getFullYear()}`;
