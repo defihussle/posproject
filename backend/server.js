@@ -2832,8 +2832,29 @@ app.post("/api/staff/me/clock-out", async (req, res) => {
         [shiftId]
       );
 
+      // Break total for the just-ended shift (all breaks are now closed) so
+      // the card can show a "Hours worked · Break time" summary.
+      const { rows: brk } = await client.query(
+        `SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (break_end - break_start))), 0) AS break_seconds
+           FROM shift_breaks WHERE shift_id = $1`,
+        [shiftId]
+      );
+
       await client.query("COMMIT");
-      res.json({ success: true, shift: rows[0] });
+
+      const s = rows[0];
+      const breakSeconds = parseFloat(brk[0].break_seconds);
+      const grossSeconds = (new Date(s.clock_out).getTime() - new Date(s.clock_in).getTime()) / 1000;
+      res.json({
+        success: true,
+        shift: {
+          id: s.id,
+          clockIn: s.clock_in,
+          clockOut: s.clock_out,
+          workedSeconds: Math.round(Math.max(0, grossSeconds - breakSeconds)),
+          breakSeconds: Math.round(breakSeconds),
+        },
+      });
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
       throw err;

@@ -46,6 +46,9 @@ export default function ClockCard({ staff, onClose }) {
   const [breakStart, setBreakStart] = useState(null);
   const [breakSeconds, setBreakSeconds] = useState(0); // completed break time this shift
   const [loadError, setLoadError] = useState(null);
+  // Set when a shift is just ended, to show a one-line summary + Start/Close
+  // in the (now not_clocked_in) card. Cleared when any other action runs.
+  const [endedSummary, setEndedSummary] = useState(null);
 
   const [pendingAction, setPendingAction] = useState(null); // key into ACTION_LABELS, or null
   const [pin, setPin] = useState("");
@@ -110,8 +113,11 @@ export default function ClockCard({ staff, onClose }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      // Capture the ended-shift summary; any other action clears it.
+      const endedShift = pendingAction === "end_shift" ? data.shift || null : null;
       setPendingAction(null);
       setPin("");
+      setEndedSummary(endedShift);
       await loadStatus();
     } catch (err) {
       setActionError(err.message || "Something went wrong");
@@ -154,12 +160,29 @@ export default function ClockCard({ staff, onClose }) {
 
     if (status === "not_clocked_in") {
       return (
-        <button
-          className="clockcard__action-btn clockcard__action-btn--start"
-          onClick={() => startAction("start_shift")}
-        >
-          Start Shift
-        </button>
+        <>
+          {endedSummary && (
+            <div className="clockcard__summary">
+              Hours worked: <strong>{fmtDuration(endedSummary.workedSeconds)}</strong>
+              {" · "}
+              Break time: <strong>{fmtDuration(endedSummary.breakSeconds)}</strong>
+            </div>
+          )}
+          <div className="clockcard__action-row">
+            <button
+              className="clockcard__action-btn clockcard__action-btn--start"
+              onClick={() => {
+                setEndedSummary(null);
+                startAction("start_shift");
+              }}
+            >
+              Start Shift
+            </button>
+            <button className="clockcard__action-btn" onClick={onClose}>
+              Close
+            </button>
+          </div>
+        </>
       );
     }
 
@@ -220,7 +243,7 @@ export default function ClockCard({ staff, onClose }) {
         <div className="staffmgr__modal-head">
           <h3 className="staffmgr__modal-title">Clock In/Out</h3>
           <button
-            className="staffmgr__modal-close"
+            className="staffmgr__modal-close clockcard__close"
             onClick={onClose}
             disabled={busy}
             aria-label="Close"

@@ -62,7 +62,6 @@
 }
 
 .clockcard__action-btn--start {
-  width: 100%;
   background: var(--red);
   color: #fff;
   border-color: transparent;
@@ -88,4 +87,31 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* One-line summary shown after a shift ends. */
+.clockcard__summary {
+  text-align: center;
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  padding: 14px 12px;
+  background: var(--bg-primary);
+  border-radius: var(--radius-md);
+}
+.clockcard__summary strong {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+/* De-emphasized top-right close — Start/Close in the card are the primary
+   affordances now; the X stays as a quiet fallback (esp. while clocked in). */
+.clockcard__close {
+  opacity: 0.4;
+}
+.clockcard__close:hover:not(:disabled) {
+  opacity: 0.85;
 }
