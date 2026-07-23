@@ -3436,6 +3436,78 @@ app.get("/api/backoffice/stats/by-category", async (req, res) => {
   }
 });
 
+// GET /api/backoffice/stats/labor?staffId=...&range=...
+// Labor cost from shifts started in the range: worked time (clock_in →
+// clock_out, or now() for an open shift) minus break time (break_start →
+// break_end, or now() for an open break), × the staff member's hourly_rate.
+// Returns per-staff hours/cost, plus totals and labor % of gross sales.
+// Feeds the Labor Cost % KPI, the Labor card meter, and the Staff
+// Performance Hours column.
+app.get("/api/backoffice/stats/labor", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    const { trunc } = resolveStatsRange(req.query.range);
+    const location = await getSingleActiveLocation(client);
+
+    const { rows: perStaffRows } = await client.query(
+      `WITH shift_work AS (
+         SELECT s.staff_id, COALESCE(st.hourly_rate, 0) AS hourly_rate,
+                EXTRACT(EPOCH FROM (COALESCE(s.clock_out, now()) - s.clock_in)) AS gross_seconds,
+                COALESCE((
+                  SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(b.break_end, now()) - b.break_start)))
+                    FROM shift_breaks b WHERE b.shift_id = s.id
+                ), 0) AS break_seconds
+           FROM shifts s
+           JOIN staff st ON st.id = s.staff_id
+          WHERE s.clock_in >= (date_trunc($1, now() AT TIME ZONE $2) AT TIME ZONE $2)
+       ),
+       per_staff AS (
+         SELECT staff_id, hourly_rate,
+                SUM(GREATEST(gross_seconds - break_seconds, 0)) AS worked_seconds
+           FROM shift_work GROUP BY staff_id, hourly_rate
+       )
+       SELECT ps.staff_id, st.name,
+              ps.worked_seconds / 3600.0 AS hours,
+              (ps.worked_seconds / 3600.0) * ps.hourly_rate AS labor_cost
+         FROM per_staff ps
+         JOIN staff st ON st.id = ps.staff_id
+        ORDER BY labor_cost DESC`,
+      [trunc, location.timezone]
+    );
+
+    const { rows: salesRows } = await client.query(
+      `SELECT COALESCE(SUM(subtotal), 0) AS gross_sales
+         FROM orders
+        WHERE location_id = $1 AND status = 'ready'
+          AND completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)`,
+      [location.id, trunc, location.timezone]
+    );
+
+    const perStaff = perStaffRows.map((r) => ({
+      staff_id: r.staff_id,
+      name: r.name,
+      hours: parseFloat(r.hours),
+      laborCost: parseFloat(r.labor_cost),
+    }));
+    const laborCost = perStaff.reduce((sum, s) => sum + s.laborCost, 0);
+    const hours = perStaff.reduce((sum, s) => sum + s.hours, 0);
+    const grossSales = parseFloat(salesRows[0].gross_sales);
+
+    res.json({
+      laborCost,
+      hours,
+      grossSales,
+      laborPct: grossSales > 0 ? (laborCost / grossSales) * 100 : 0,
+      perStaff,
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch labor stats");
+  } finally {
+    client.release();
+  }
+});
+
 // --------------- Device pairing (Order Entry / KDS access) ---------------
 // Adds a device-trust layer UNDERNEATH staffId/PIN identity (device-
 // pairing-plan.md, "Background") — orthogonal to who's logged in, this is

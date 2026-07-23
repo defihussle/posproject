@@ -54,6 +54,7 @@ export default function HomeDashboard({ staff }) {
   const [staffPerf, setStaffPerf] = useState([]);
   const [hourly, setHourly] = useState([]);
   const [category, setCategory] = useState([]);
+  const [labor, setLabor] = useState(null);
   const [trend, setTrend] = useState([]);
   const [trendMode, setTrendMode] = useState("hourly"); // Sales Trend Hourly/Daily toggle
   const [trendLoading, setTrendLoading] = useState(true);
@@ -72,30 +73,34 @@ export default function HomeDashboard({ staff }) {
     setLoading(true);
     try {
       const qs = `staffId=${staff.id}&range=${range}`;
-      const [sumRes, topRes, perfRes, hourRes, catRes] = await Promise.all([
+      const [sumRes, topRes, perfRes, hourRes, catRes, laborRes] = await Promise.all([
         fetch(`${API_URL}/api/backoffice/stats/summary?${qs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/top-items?${qs}&limit=5`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/staff-performance?${qs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/hourly?${qs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/by-category?${qs}`, { credentials: "include" }),
+        fetch(`${API_URL}/api/backoffice/stats/labor?${qs}`, { credentials: "include" }),
       ]);
-      const [sumData, topData, perfData, hourData, catData] = await Promise.all([
+      const [sumData, topData, perfData, hourData, catData, laborData] = await Promise.all([
         sumRes.json(),
         topRes.json(),
         perfRes.json(),
         hourRes.json(),
         catRes.json(),
+        laborRes.json(),
       ]);
       if (!sumRes.ok) throw new Error(sumData.error || `HTTP ${sumRes.status}`);
       if (!topRes.ok) throw new Error(topData.error || `HTTP ${topRes.status}`);
       if (!perfRes.ok) throw new Error(perfData.error || `HTTP ${perfRes.status}`);
       if (!hourRes.ok) throw new Error(hourData.error || `HTTP ${hourRes.status}`);
       if (!catRes.ok) throw new Error(catData.error || `HTTP ${catRes.status}`);
+      if (!laborRes.ok) throw new Error(laborData.error || `HTTP ${laborRes.status}`);
       setSummary(sumData);
       setTopItems(topData);
       setStaffPerf(perfData);
       setHourly(hourData);
       setCategory(catData);
+      setLabor(laborData);
       setError(null);
     } catch (err) {
       setError(err.message || "Failed to load dashboard stats");
@@ -153,10 +158,19 @@ export default function HomeDashboard({ staff }) {
       { key: "orders", label: "Orders", value: summary ? fmtInt(summary.orderCount) : null, delta: null },
       { key: "aov", label: "Avg Order", value: summary ? fmtMoney(summary.avgOrderValue) : null, delta: null },
       { key: "tips", label: "Total Tips", value: summary ? fmtMoney(summary.totalTips) : null, delta: null },
-      { key: "labor", label: "Labor Cost %", value: null, delta: null, pending: true },
+      { key: "labor", label: "Labor Cost %", value: labor ? fmtPct(labor.laborPct) : null, delta: null },
     ],
-    [summary]
+    [summary, labor]
   );
+
+  // Hours per staff, keyed by id, to fill the Staff Performance Hours column.
+  const hoursByStaff = useMemo(() => {
+    const map = {};
+    (labor?.perStaff || []).forEach((s) => {
+      map[s.staff_id] = s.hours;
+    });
+    return map;
+  }, [labor]);
 
   return (
     <div className="homedash">
@@ -194,10 +208,10 @@ export default function HomeDashboard({ staff }) {
             <SalesTrendCard trend={trend} mode={trendMode} onMode={setTrendMode} loading={trendLoading} pending={isCustom} />
             <HourlyBreakdownCard data={hourly} loading={loading} pending={isCustom} />
             <CategorySalesCard data={category} loading={loading} pending={isCustom} />
-            <LaborVsSalesCard loading={loading} pending={isCustom} />
+            <LaborVsSalesCard labor={labor} loading={loading && !isCustom} pending={isCustom} />
             <DiscountReportCard summary={summary} loading={loading && !isCustom} pending={isCustom} />
             <TopItemsCard items={topItems} loading={loading && !isCustom} pending={isCustom} />
-            <StaffPerformanceCard rows={staffPerf} loading={loading && !isCustom} pending={isCustom} />
+            <StaffPerformanceCard rows={staffPerf} hoursByStaff={hoursByStaff} loading={loading && !isCustom} pending={isCustom} />
             <LiveStatusCard />
           </div>
         </>
@@ -560,10 +574,35 @@ function CategorySalesCard({ data, loading, pending }) {
   );
 }
 
-function LaborVsSalesCard({ pending }) {
+// Labor as a share of sales — a single-measure meter (never a dual-axis
+// labor-vs-sales chart). The track is sales; the red fill is the labor
+// portion, so "how much of sales goes to labor" is glanceable.
+function LaborVsSalesCard({ labor, loading, pending }) {
+  const hasData = labor && (labor.hours > 0 || labor.laborCost > 0);
   return (
     <SectionCard title="Labor Cost %">
-      <ChartPending shape="line" note={pending ? "Select a preset range" : "Labor cost as % of sales — needs the labor endpoint"} />
+      {pending ? (
+        <ChartPending shape="line" note="Select a preset range" />
+      ) : loading ? (
+        <div className="homedash-card__notice">Loading…</div>
+      ) : !hasData ? (
+        <div className="homedash-card__notice">No shifts in this range</div>
+      ) : (
+        <div className="homedash-labor">
+          <div className="homedash-labor__pct">{fmtPct(labor.laborPct)}</div>
+          <div className="homedash-labor__meter">
+            <div
+              className="homedash-labor__fill"
+              style={{ width: `${Math.min(100, labor.laborPct)}%` }}
+            />
+          </div>
+          <div className="homedash-labor__legend">
+            <span>Labor <b>{fmtMoney(labor.laborCost)}</b></span>
+            <span>Sales <b>{fmtMoney(labor.grossSales)}</b></span>
+            <span><b>{labor.hours.toFixed(1)}</b> hrs</span>
+          </div>
+        </div>
+      )}
     </SectionCard>
   );
 }
@@ -619,7 +658,7 @@ function TopItemsCard({ items, loading, pending }) {
 }
 
 /* ---------------- Staff performance (orders/sales real; hours pending) ---------------- */
-function StaffPerformanceCard({ rows, loading, pending }) {
+function StaffPerformanceCard({ rows, hoursByStaff, loading, pending }) {
   return (
     <SectionCard title="Staff Performance" wide>
       {loading || pending ? (
@@ -631,15 +670,19 @@ function StaffPerformanceCard({ rows, loading, pending }) {
           <div className="homedash-table__head">
             <span>Name</span><span>Orders</span><span>Sales</span><span>Hours</span>
           </div>
-          {rows.map((r) => (
-            <div key={r.staff_id} className="homedash-table__row">
-              <span className="homedash-table__name">{r.name}</span>
-              <span className="homedash-num">{fmtInt(r.orderCount)}</span>
-              <span className="homedash-num">{fmtMoney(r.totalSales)}</span>
-              <span className="homedash-num homedash-num--muted">—</span>
-            </div>
-          ))}
-          <div className="homedash-table__note">Hours column fills in with the labor/shifts endpoint.</div>
+          {rows.map((r) => {
+            const hrs = hoursByStaff?.[r.staff_id];
+            return (
+              <div key={r.staff_id} className="homedash-table__row">
+                <span className="homedash-table__name">{r.name}</span>
+                <span className="homedash-num">{fmtInt(r.orderCount)}</span>
+                <span className="homedash-num">{fmtMoney(r.totalSales)}</span>
+                <span className={`homedash-num${hrs ? "" : " homedash-num--muted"}`}>
+                  {hrs ? `${hrs.toFixed(1)}h` : "—"}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
     </SectionCard>
