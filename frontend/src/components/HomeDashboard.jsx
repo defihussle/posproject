@@ -55,6 +55,7 @@ export default function HomeDashboard({ staff }) {
   const [hourly, setHourly] = useState([]);
   const [category, setCategory] = useState([]);
   const [labor, setLabor] = useState(null);
+  const [discounts, setDiscounts] = useState([]);
   const [trend, setTrend] = useState([]);
   const [trendMode, setTrendMode] = useState("hourly"); // Sales Trend Hourly/Daily toggle
   const [trendLoading, setTrendLoading] = useState(true);
@@ -73,21 +74,23 @@ export default function HomeDashboard({ staff }) {
     setLoading(true);
     try {
       const qs = `staffId=${staff.id}&range=${range}`;
-      const [sumRes, topRes, perfRes, hourRes, catRes, laborRes] = await Promise.all([
+      const [sumRes, topRes, perfRes, hourRes, catRes, laborRes, discRes] = await Promise.all([
         fetch(`${API_URL}/api/backoffice/stats/summary?${qs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/top-items?${qs}&limit=5`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/staff-performance?${qs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/hourly?${qs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/by-category?${qs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/labor?${qs}`, { credentials: "include" }),
+        fetch(`${API_URL}/api/backoffice/stats/discounts?${qs}`, { credentials: "include" }),
       ]);
-      const [sumData, topData, perfData, hourData, catData, laborData] = await Promise.all([
+      const [sumData, topData, perfData, hourData, catData, laborData, discData] = await Promise.all([
         sumRes.json(),
         topRes.json(),
         perfRes.json(),
         hourRes.json(),
         catRes.json(),
         laborRes.json(),
+        discRes.json(),
       ]);
       if (!sumRes.ok) throw new Error(sumData.error || `HTTP ${sumRes.status}`);
       if (!topRes.ok) throw new Error(topData.error || `HTTP ${topRes.status}`);
@@ -95,12 +98,14 @@ export default function HomeDashboard({ staff }) {
       if (!hourRes.ok) throw new Error(hourData.error || `HTTP ${hourRes.status}`);
       if (!catRes.ok) throw new Error(catData.error || `HTTP ${catRes.status}`);
       if (!laborRes.ok) throw new Error(laborData.error || `HTTP ${laborRes.status}`);
+      if (!discRes.ok) throw new Error(discData.error || `HTTP ${discRes.status}`);
       setSummary(sumData);
       setTopItems(topData);
       setStaffPerf(perfData);
       setHourly(hourData);
       setCategory(catData);
       setLabor(laborData);
+      setDiscounts(discData);
       setError(null);
     } catch (err) {
       setError(err.message || "Failed to load dashboard stats");
@@ -233,7 +238,7 @@ export default function HomeDashboard({ staff }) {
             <HourlyBreakdownCard data={hourly} loading={loading} pending={isCustom} />
             <CategorySalesCard data={category} loading={loading} pending={isCustom} />
             <LaborVsSalesCard labor={labor} loading={loading && !isCustom} pending={isCustom} />
-            <DiscountReportCard summary={summary} loading={loading && !isCustom} pending={isCustom} />
+            <DiscountReportCard summary={summary} rows={discounts} loading={loading && !isCustom} pending={isCustom} />
             <TopItemsCard items={topItems} loading={loading && !isCustom} pending={isCustom} />
             <StaffPerformanceCard rows={staffPerf} hoursByStaff={hoursByStaff} loading={loading && !isCustom} pending={isCustom} />
             <LiveStatusCard />
@@ -639,24 +644,41 @@ function LaborVsSalesCard({ labor, loading, pending }) {
   );
 }
 
-/* ---------------- Discount report (total is real; per-reason pending) ---------------- */
-function DiscountReportCard({ summary, loading, pending }) {
-  const pctOfGross = summary && summary.grossSales > 0 ? (summary.discountTotal / summary.grossSales) * 100 : 0;
+/* ---------------- Discount report (per reason + total) ---------------- */
+const DISCOUNT_LABELS = {
+  family: "Family",
+  friend: "Friend",
+  employee: "Employee",
+  neighbouring_store: "Neighbouring Store",
+};
+
+function DiscountReportCard({ summary, rows, loading, pending }) {
+  const gross = summary?.grossSales || 0;
+  const pctOf = (amt) => (gross > 0 ? (amt / gross) * 100 : 0);
+  const total = summary?.discountTotal || 0;
   return (
     <SectionCard title="Discount Report">
       {loading || pending ? (
         <div className="homedash-card__notice">{pending ? "Select a preset range" : "Loading…"}</div>
+      ) : total === 0 ? (
+        <div className="homedash-card__notice">No discounts in this range</div>
       ) : (
         <div className="homedash-table">
           <div className="homedash-table__head">
             <span>Reason</span><span>Amount</span><span>% of Sales</span>
           </div>
-          <div className="homedash-table__row">
-            <span>All discounts</span>
-            <span className="homedash-num">{fmtMoney(summary?.discountTotal)}</span>
-            <span className="homedash-num">{fmtPct(pctOfGross)}</span>
+          {rows.map((d) => (
+            <div key={d.reason} className="homedash-table__row">
+              <span className="homedash-table__name">{DISCOUNT_LABELS[d.reason] || d.reason}</span>
+              <span className="homedash-num">{fmtMoney(d.amount)}</span>
+              <span className="homedash-num">{fmtPct(pctOf(d.amount))}</span>
+            </div>
+          ))}
+          <div className="homedash-table__row homedash-table__row--total">
+            <span className="homedash-table__name">All discounts</span>
+            <span className="homedash-num">{fmtMoney(total)}</span>
+            <span className="homedash-num">{fmtPct(pctOf(total))}</span>
           </div>
-          <div className="homedash-table__note">Per-reason breakdown (family / friend / employee / neighbouring store) arrives with the discount endpoint.</div>
         </div>
       )}
     </SectionCard>
@@ -680,7 +702,8 @@ function TopItemsCard({ items, loading, pending }) {
                 {it.name}
                 {it.variant && <span className="homedash-list__variant"> · {it.variant}</span>}
               </span>
-              <span className="homedash-list__value">×{it.quantity}</span>
+              <span className="homedash-list__sub">×{it.quantity}</span>
+              <span className="homedash-list__value">{fmtMoney(it.revenue)}</span>
             </li>
           ))}
         </ol>

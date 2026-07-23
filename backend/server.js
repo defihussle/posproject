@@ -3252,11 +3252,24 @@ app.get("/api/backoffice/stats/top-items", async (req, res) => {
     const { rows } = await client.query(
       `SELECT mi.id AS item_id, mi.name AS item_name,
               iv.id AS variant_id, iv.name AS variant_name,
-              SUM(oi.quantity) AS quantity
+              SUM(oi.quantity) AS quantity,
+              COALESCE(SUM(
+                oi.quantity * oi.unit_price
+                + COALESCE(m.mod_total, 0)
+                + COALESCE(a.addon_total, 0)
+              ), 0) AS revenue
          FROM order_items oi
          JOIN orders o ON o.id = oi.order_id
          JOIN menu_items mi ON mi.id = oi.item_id
          LEFT JOIN item_variants iv ON iv.id = oi.variant_id
+         LEFT JOIN LATERAL (
+           SELECT SUM(price_delta * quantity) AS mod_total
+             FROM order_item_modifiers WHERE order_item_id = oi.id
+         ) m ON true
+         LEFT JOIN LATERAL (
+           SELECT SUM(unit_price * quantity) AS addon_total
+             FROM order_item_addons WHERE order_item_id = oi.id
+         ) a ON true
         WHERE o.location_id = $1
           AND o.status = 'ready'
           AND o.completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
@@ -3271,6 +3284,7 @@ app.get("/api/backoffice/stats/top-items", async (req, res) => {
         name: r.item_name,
         variant: r.variant_name,
         quantity: parseInt(r.quantity, 10),
+        revenue: parseFloat(r.revenue),
       }))
     );
   } catch (err) {
@@ -3569,6 +3583,43 @@ app.get("/api/backoffice/stats/labor", async (req, res) => {
     });
   } catch (err) {
     sendHttpError(res, err, "Failed to fetch labor stats");
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/backoffice/stats/discounts?staffId=...&range=...
+// Discounts broken down by reason (family/friend/employee/neighbouring_
+// store), sorted high→low. Feeds the Discount Report table; the frontend
+// computes each reason's % of gross from the summary it already has.
+app.get("/api/backoffice/stats/discounts", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    const { trunc } = resolveStatsRange(req.query.range);
+    const location = await getSingleActiveLocation(client);
+
+    const { rows } = await client.query(
+      `SELECT discount_reason AS reason,
+              COALESCE(SUM(discount), 0) AS amount,
+              COUNT(*) AS orders
+         FROM orders
+        WHERE location_id = $1 AND status = 'ready'
+          AND discount > 0 AND discount_reason IS NOT NULL
+          AND completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
+        GROUP BY discount_reason
+        ORDER BY amount DESC`,
+      [location.id, trunc, location.timezone]
+    );
+    res.json(
+      rows.map((r) => ({
+        reason: r.reason,
+        amount: parseFloat(r.amount),
+        orders: parseInt(r.orders, 10),
+      }))
+    );
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch discount report");
   } finally {
     client.release();
   }

@@ -527,6 +527,14 @@
 .homedash-table__row:last-of-type {
   border-bottom: none;
 }
+.homedash-table__row--total {
+  border-top: 1px solid var(--border-color);
+  border-bottom: none;
+  margin-top: 2px;
+}
+.homedash-table__row--total .homedash-table__name {
+  font-weight: 700;
+}
 .homedash-table__head span {
   font-family: var(--font-body);
   font-size: 0.64rem;
