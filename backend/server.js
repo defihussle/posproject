@@ -3151,80 +3151,114 @@ async function getSingleActiveLocation(client) {
   return rows[0];
 }
 
+function isYmd(s) {
+  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+// Resolves the stats window as timestamptz bounds [startTs, endTs) — the
+// single source every stats endpoint filters on — from either a preset
+// ?range=today|week|month or a custom ?start=&end= (YYYY-MM-DD, interpreted
+// in the location's timezone; end is inclusive, so the upper bound is the
+// day after). For presets it also returns the previous period-to-date
+// bounds (for the comparison deltas); a custom range has no well-defined
+// "previous", so prev is null there. Preset bounds are identical to the
+// old date_trunc filter (start = date_trunc(range), end = now), so this
+// changes nothing for the existing preset behavior.
+async function getStatsBounds(client, req) {
+  const location = await getSingleActiveLocation(client);
+  const tz = location.timezone;
+  const { range, start, end } = req.query;
+  const custom = range === "custom" || start !== undefined || end !== undefined;
+
+  if (custom) {
+    if (!isYmd(start) || !isYmd(end)) {
+      throw new HttpError(400, "Custom range needs start and end as YYYY-MM-DD");
+    }
+    if (start > end) throw new HttpError(400, "start must be on or before end");
+    const { rows } = await client.query(
+      `SELECT ($1::date)::timestamp AT TIME ZONE $3 AS start_ts,
+              (($2::date + 1)::timestamp) AT TIME ZONE $3 AS end_ts`,
+      [start, end, tz]
+    );
+    return { location, tz, startTs: rows[0].start_ts, endTs: rows[0].end_ts, prev: null, isCustom: true };
+  }
+
+  const { trunc } = resolveStatsRange(range);
+  const { rows } = await client.query(
+    `SELECT (date_trunc($1, now() AT TIME ZONE $2) AT TIME ZONE $2) AS start_ts,
+            now() AS end_ts,
+            ((date_trunc($1, now() AT TIME ZONE $2) - ('1 ' || $1)::interval) AT TIME ZONE $2) AS prev_start_ts,
+            ((date_trunc($1, now() AT TIME ZONE $2) - ('1 ' || $1)::interval
+              + (now() AT TIME ZONE $2 - date_trunc($1, now() AT TIME ZONE $2))) AT TIME ZONE $2) AS prev_end_ts`,
+    [trunc, tz]
+  );
+  return {
+    location,
+    tz,
+    trunc,
+    startTs: rows[0].start_ts,
+    endTs: rows[0].end_ts,
+    prev: { startTs: rows[0].prev_start_ts, endTs: rows[0].prev_end_ts },
+    isCustom: false,
+  };
+}
+
 // GET /api/backoffice/stats/summary?staffId=...&range=today|week|month
+//   or ...&start=YYYY-MM-DD&end=YYYY-MM-DD (custom)
 app.get("/api/backoffice/stats/summary", async (req, res) => {
   const client = await pool.connect();
   try {
     await requireBackofficeSession(req);
-    const { range, trunc } = resolveStatsRange(req.query.range);
-    const location = await getSingleActiveLocation(client);
+    const b = await getStatsBounds(client, req);
 
-    // Current period + the "previous period, period-to-date" for the
-    // comparison deltas: the previous period truncated to the SAME elapsed
-    // span (e.g. today 9am→now vs yesterday 9am→same-time), so the compare
-    // is apples-to-apples rather than a full past period vs a partial one.
-    const { rows } = await client.query(
-      `WITH wins AS (
-         SELECT date_trunc($2, now() AT TIME ZONE $3) AS cur_start,
-                now() AT TIME ZONE $3 AS now_local,
-                date_trunc($2, now() AT TIME ZONE $3) - ('1 ' || $2)::interval AS prev_start,
-                date_trunc($2, now() AT TIME ZONE $3) - ('1 ' || $2)::interval
-                  + (now() AT TIME ZONE $3 - date_trunc($2, now() AT TIME ZONE $3)) AS prev_end
-       ),
-       o AS (
-         SELECT (ord.completed_at AT TIME ZONE $3) AS cl,
-                ord.total, ord.subtotal, ord.discount, ord.tip,
-                w.cur_start, w.prev_start, w.prev_end
-           FROM orders ord CROSS JOIN wins w
-          WHERE ord.location_id = $1 AND ord.status = 'ready'
-            AND ord.completed_at >= (w.prev_start AT TIME ZONE $3)
-       )
-       SELECT
-         COALESCE(SUM(total)    FILTER (WHERE cl >= cur_start), 0) AS cur_total,
-         COALESCE(SUM(subtotal) FILTER (WHERE cl >= cur_start), 0) AS cur_gross,
-         COALESCE(SUM(discount) FILTER (WHERE cl >= cur_start), 0) AS cur_disc,
-         COALESCE(SUM(tip)      FILTER (WHERE cl >= cur_start), 0) AS cur_tips,
-         COUNT(*)               FILTER (WHERE cl >= cur_start)     AS cur_orders,
-         COALESCE(SUM(total)    FILTER (WHERE cl >= prev_start AND cl < prev_end), 0) AS prev_total,
-         COALESCE(SUM(subtotal) FILTER (WHERE cl >= prev_start AND cl < prev_end), 0) AS prev_gross,
-         COALESCE(SUM(discount) FILTER (WHERE cl >= prev_start AND cl < prev_end), 0) AS prev_disc,
-         COALESCE(SUM(tip)      FILTER (WHERE cl >= prev_start AND cl < prev_end), 0) AS prev_tips,
-         COUNT(*)               FILTER (WHERE cl >= prev_start AND cl < prev_end)     AS prev_orders
-         FROM o`,
-      [location.id, trunc, location.timezone]
-    );
-    const r = rows[0];
-    // Gross = pre-discount subtotal; Net = gross minus discounts (both
-    // pre-tax, matching how the dashboard's Gross/Net KPIs read). totalSales
-    // stays = SUM(total), the actual revenue collected (incl. tax/tip).
-    const totalSales = parseFloat(r.cur_total);
-    const orderCount = parseInt(r.cur_orders, 10);
-    const grossSales = parseFloat(r.cur_gross);
-    const discountTotal = parseFloat(r.cur_disc);
-    const prevGross = parseFloat(r.prev_gross);
-    const prevOrders = parseInt(r.prev_orders, 10);
+    // One aggregate over a [start, end) window. Run once for the current
+    // window, and again for the previous period-to-date (presets only —
+    // a custom range has no well-defined "previous", so no deltas there).
+    const agg = async (startTs, endTs) => {
+      const { rows } = await client.query(
+        `SELECT COALESCE(SUM(total), 0) AS total, COALESCE(SUM(subtotal), 0) AS gross,
+                COALESCE(SUM(discount), 0) AS disc, COALESCE(SUM(tip), 0) AS tips,
+                COUNT(*) AS orders
+           FROM orders
+          WHERE location_id = $1 AND status = 'ready'
+            AND completed_at >= $2 AND completed_at < $3`,
+        [b.location.id, startTs, endTs]
+      );
+      const r = rows[0];
+      const total = parseFloat(r.total);
+      const gross = parseFloat(r.gross);
+      const orders = parseInt(r.orders, 10);
+      return {
+        totalSales: total,
+        grossSales: gross,
+        netSales: gross - parseFloat(r.disc),
+        discountTotal: parseFloat(r.disc),
+        orderCount: orders,
+        avgOrderValue: orders > 0 ? total / orders : 0,
+        totalTips: parseFloat(r.tips),
+      };
+    };
+
+    const cur = await agg(b.startTs, b.endTs);
+    const prev = b.prev ? await agg(b.prev.startTs, b.prev.endTs) : null;
+
     res.json({
-      range,
-      totalSales,
-      grossSales,
-      netSales: grossSales - discountTotal,
-      discountTotal,
-      orderCount,
-      avgOrderValue: orderCount > 0 ? totalSales / orderCount : 0,
-      // Always $0 today — checkout doesn't collect tips yet (orders.tip is
-      // hardcoded to 0 until Stripe Terminal integration lands). This is
-      // display-readiness only: the stat and its plumbing are correct now,
-      // so tips will show up automatically the moment real tip capture is
-      // wired into checkout — no dashboard change needed then.
-      totalTips: parseFloat(r.cur_tips),
-      // Previous period-to-date, for the "vs Last Period" deltas.
-      previous: {
-        grossSales: prevGross,
-        netSales: prevGross - parseFloat(r.prev_disc),
-        orderCount: prevOrders,
-        avgOrderValue: prevOrders > 0 ? parseFloat(r.prev_total) / prevOrders : 0,
-        totalTips: parseFloat(r.prev_tips),
-      },
+      range: b.isCustom ? "custom" : req.query.range || "today",
+      // Gross = pre-discount subtotal; Net = gross minus discounts (both
+      // pre-tax). totalSales = SUM(total), the revenue collected (incl.
+      // tax/tip). Tips are $0 until Stripe Terminal tip capture lands.
+      ...cur,
+      // Previous period-to-date, for the "vs Last Period" deltas (omitted
+      // for custom ranges).
+      previous: prev
+        ? {
+            grossSales: prev.grossSales,
+            netSales: prev.netSales,
+            orderCount: prev.orderCount,
+            avgOrderValue: prev.avgOrderValue,
+            totalTips: prev.totalTips,
+          }
+        : null,
     });
   } catch (err) {
     sendHttpError(res, err, "Failed to fetch sales summary");
@@ -3241,8 +3275,7 @@ app.get("/api/backoffice/stats/top-items", async (req, res) => {
   const client = await pool.connect();
   try {
     await requireBackofficeSession(req);
-    const { trunc } = resolveStatsRange(req.query.range);
-    const location = await getSingleActiveLocation(client);
+    const b = await getStatsBounds(client, req);
 
     const limit = req.query.limit === undefined ? 5 : Number(req.query.limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
@@ -3272,11 +3305,11 @@ app.get("/api/backoffice/stats/top-items", async (req, res) => {
          ) a ON true
         WHERE o.location_id = $1
           AND o.status = 'ready'
-          AND o.completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
+          AND o.completed_at >= $2 AND o.completed_at < $3
         GROUP BY mi.id, mi.name, iv.id, iv.name
         ORDER BY quantity DESC
         LIMIT $4`,
-      [location.id, trunc, location.timezone, limit]
+      [b.location.id, b.startTs, b.endTs, limit]
     );
     res.json(
       rows.map((r) => ({
@@ -3301,8 +3334,7 @@ app.get("/api/backoffice/stats/staff-performance", async (req, res) => {
   const client = await pool.connect();
   try {
     await requireBackofficeSession(req);
-    const { trunc } = resolveStatsRange(req.query.range);
-    const location = await getSingleActiveLocation(client);
+    const b = await getStatsBounds(client, req);
 
     const { rows } = await client.query(
       `SELECT s.id AS staff_id, s.name AS staff_name, s.role,
@@ -3312,10 +3344,10 @@ app.get("/api/backoffice/stats/staff-performance", async (req, res) => {
          JOIN staff s ON s.id = o.staff_id
         WHERE o.location_id = $1
           AND o.status = 'ready'
-          AND o.completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
+          AND o.completed_at >= $2 AND o.completed_at < $3
         GROUP BY s.id, s.name, s.role
         ORDER BY order_count DESC`,
-      [location.id, trunc, location.timezone]
+      [b.location.id, b.startTs, b.endTs]
     );
     res.json(
       rows.map((r) => ({
@@ -3341,23 +3373,22 @@ app.get("/api/backoffice/stats/hourly", async (req, res) => {
   const client = await pool.connect();
   try {
     await requireBackofficeSession(req);
-    const { trunc } = resolveStatsRange(req.query.range);
-    const location = await getSingleActiveLocation(client);
+    const b = await getStatsBounds(client, req);
 
     const { rows } = await client.query(
       `WITH agg AS (
-         SELECT EXTRACT(HOUR FROM (completed_at AT TIME ZONE $3))::int AS hour,
+         SELECT EXTRACT(HOUR FROM (completed_at AT TIME ZONE $4))::int AS hour,
                 COUNT(*) AS orders, COALESCE(SUM(total), 0) AS sales
            FROM orders
           WHERE location_id = $1 AND status = 'ready'
-            AND completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
+            AND completed_at >= $2 AND completed_at < $3
           GROUP BY 1
        )
        SELECT h AS hour, COALESCE(a.orders, 0) AS orders, COALESCE(a.sales, 0) AS sales
          FROM generate_series(0, 23) h
          LEFT JOIN agg a ON a.hour = h
         ORDER BY h`,
-      [location.id, trunc, location.timezone]
+      [b.location.id, b.startTs, b.endTs, b.tz]
     );
     res.json(
       rows.map((r) => {
@@ -3381,8 +3412,7 @@ app.get("/api/backoffice/stats/trend", async (req, res) => {
   const client = await pool.connect();
   try {
     await requireBackofficeSession(req);
-    const { trunc } = resolveStatsRange(req.query.range);
-    const location = await getSingleActiveLocation(client);
+    const b = await getStatsBounds(client, req);
     // Whitelisted — interpolated into date_trunc / the '1 <unit>' interval;
     // never take the raw query value into SQL text.
     const granularity = req.query.granularity === "day" ? "day" : "hour";
@@ -3390,30 +3420,33 @@ app.get("/api/backoffice/stats/trend", async (req, res) => {
 
     const { rows } = await client.query(
       `WITH bounds AS (
-         SELECT date_trunc($2, now() AT TIME ZONE $3) AS start_local,
-                now() AT TIME ZONE $3 AS end_local
+         SELECT $2::timestamptz AS start_ts, $3::timestamptz AS end_ts
        ),
        buckets AS (
+         -- end_ts is the exclusive upper bound, so bucket the last INCLUDED
+         -- instant (end_ts - 1µs); otherwise a custom end date would render
+         -- an extra empty trailing bucket.
          SELECT generate_series(
-                  date_trunc($4, (SELECT start_local FROM bounds)),
-                  date_trunc($4, (SELECT end_local FROM bounds)),
+                  date_trunc($4, (SELECT start_ts FROM bounds) AT TIME ZONE $5),
+                  date_trunc($4, ((SELECT end_ts FROM bounds) - interval '1 microsecond') AT TIME ZONE $5),
                   ('1 ' || $4)::interval
                 ) AS bucket
        ),
        agg AS (
-         SELECT date_trunc($4, (completed_at AT TIME ZONE $3)) AS bucket,
+         SELECT date_trunc($4, (completed_at AT TIME ZONE $5)) AS bucket,
                 COUNT(*) AS orders, COALESCE(SUM(total), 0) AS sales
            FROM orders
           WHERE location_id = $1 AND status = 'ready'
-            AND completed_at >= ((SELECT start_local FROM bounds) AT TIME ZONE $3)
+            AND completed_at >= (SELECT start_ts FROM bounds)
+            AND completed_at <  (SELECT end_ts FROM bounds)
           GROUP BY 1
        )
-       SELECT b.bucket, to_char(b.bucket, $5) AS label,
+       SELECT b.bucket, to_char(b.bucket, $6) AS label,
               COALESCE(a.orders, 0) AS orders, COALESCE(a.sales, 0) AS sales
          FROM buckets b
          LEFT JOIN agg a ON a.bucket = b.bucket
         ORDER BY b.bucket`,
-      [location.id, trunc, location.timezone, granularity, labelFmt]
+      [b.location.id, b.startTs, b.endTs, granularity, b.tz, labelFmt]
     );
     res.json(
       rows.map((r) => ({
@@ -3439,8 +3472,7 @@ app.get("/api/backoffice/stats/by-category", async (req, res) => {
   const client = await pool.connect();
   try {
     await requireBackofficeSession(req);
-    const { trunc } = resolveStatsRange(req.query.range);
-    const location = await getSingleActiveLocation(client);
+    const b = await getStatsBounds(client, req);
 
     const { rows } = await client.query(
       `SELECT mc.id, mc.name,
@@ -3463,11 +3495,11 @@ app.get("/api/backoffice/stats/by-category", async (req, res) => {
              FROM order_item_addons WHERE order_item_id = oi.id
          ) a ON true
         WHERE o.location_id = $1 AND o.status = 'ready'
-          AND o.completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
+          AND o.completed_at >= $2 AND o.completed_at < $3
         GROUP BY mc.id, mc.name
         HAVING SUM(oi.quantity) > 0
         ORDER BY sales DESC`,
-      [location.id, trunc, location.timezone]
+      [b.location.id, b.startTs, b.endTs]
     );
     res.json(
       rows.map((r) => ({
@@ -3495,20 +3527,19 @@ app.get("/api/backoffice/stats/labor", async (req, res) => {
   const client = await pool.connect();
   try {
     await requireBackofficeSession(req);
-    const { trunc } = resolveStatsRange(req.query.range);
-    const location = await getSingleActiveLocation(client);
+    const b = await getStatsBounds(client, req);
 
     const { rows: perStaffRows } = await client.query(
       `WITH shift_work AS (
          SELECT s.staff_id, COALESCE(st.hourly_rate, 0) AS hourly_rate,
                 EXTRACT(EPOCH FROM (COALESCE(s.clock_out, now()) - s.clock_in)) AS gross_seconds,
                 COALESCE((
-                  SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(b.break_end, now()) - b.break_start)))
-                    FROM shift_breaks b WHERE b.shift_id = s.id
+                  SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(bk.break_end, now()) - bk.break_start)))
+                    FROM shift_breaks bk WHERE bk.shift_id = s.id
                 ), 0) AS break_seconds
            FROM shifts s
            JOIN staff st ON st.id = s.staff_id
-          WHERE s.clock_in >= (date_trunc($1, now() AT TIME ZONE $2) AT TIME ZONE $2)
+          WHERE s.clock_in >= $1 AND s.clock_in < $2
        ),
        per_staff AS (
          SELECT staff_id, hourly_rate,
@@ -3521,43 +3552,41 @@ app.get("/api/backoffice/stats/labor", async (req, res) => {
          FROM per_staff ps
          JOIN staff st ON st.id = ps.staff_id
         ORDER BY labor_cost DESC`,
-      [trunc, location.timezone]
+      [b.startTs, b.endTs]
     );
 
     const { rows: salesRows } = await client.query(
       `SELECT COALESCE(SUM(subtotal), 0) AS gross_sales
          FROM orders
         WHERE location_id = $1 AND status = 'ready'
-          AND completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)`,
-      [location.id, trunc, location.timezone]
+          AND completed_at >= $2 AND completed_at < $3`,
+      [b.location.id, b.startTs, b.endTs]
     );
 
-    // Previous period-to-date labor % (same window logic as the summary's
-    // comparison), for the Labor Cost % KPI delta.
-    const { rows: prevRows } = await client.query(
-      `WITH wins AS (
-         SELECT date_trunc($2, now() AT TIME ZONE $3) - ('1 ' || $2)::interval AS prev_start,
-                date_trunc($2, now() AT TIME ZONE $3) - ('1 ' || $2)::interval
-                  + (now() AT TIME ZONE $3 - date_trunc($2, now() AT TIME ZONE $3)) AS prev_end
-       ),
-       sw AS (
-         SELECT COALESCE(st.hourly_rate, 0) AS rate,
-                GREATEST(
-                  EXTRACT(EPOCH FROM (COALESCE(s.clock_out, now()) - s.clock_in))
-                  - COALESCE((SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(b.break_end, now()) - b.break_start)))
-                              FROM shift_breaks b WHERE b.shift_id = s.id), 0), 0) AS worked
-           FROM shifts s JOIN staff st ON st.id = s.staff_id CROSS JOIN wins w
-          WHERE s.clock_in >= (w.prev_start AT TIME ZONE $3) AND s.clock_in < (w.prev_end AT TIME ZONE $3)
-       )
-       SELECT
-         (SELECT COALESCE(SUM((worked / 3600.0) * rate), 0) FROM sw) AS prev_labor,
-         (SELECT COALESCE(SUM(subtotal), 0)
-            FROM orders ord CROSS JOIN wins w
-           WHERE ord.location_id = $1 AND ord.status = 'ready'
-             AND ord.completed_at >= (w.prev_start AT TIME ZONE $3)
-             AND ord.completed_at <  (w.prev_end AT TIME ZONE $3)) AS prev_gross`,
-      [location.id, trunc, location.timezone]
-    );
+    // Previous period-to-date labor % (presets only — custom has no prev).
+    let prevLaborPct = null;
+    if (b.prev) {
+      const { rows: prevRows } = await client.query(
+        `WITH sw AS (
+           SELECT COALESCE(st.hourly_rate, 0) AS rate,
+                  GREATEST(
+                    EXTRACT(EPOCH FROM (COALESCE(s.clock_out, now()) - s.clock_in))
+                    - COALESCE((SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(bk.break_end, now()) - bk.break_start)))
+                                FROM shift_breaks bk WHERE bk.shift_id = s.id), 0), 0) AS worked
+             FROM shifts s JOIN staff st ON st.id = s.staff_id
+            WHERE s.clock_in >= $2 AND s.clock_in < $3
+         )
+         SELECT
+           (SELECT COALESCE(SUM((worked / 3600.0) * rate), 0) FROM sw) AS prev_labor,
+           (SELECT COALESCE(SUM(subtotal), 0) FROM orders
+             WHERE location_id = $1 AND status = 'ready'
+               AND completed_at >= $2 AND completed_at < $3) AS prev_gross`,
+        [b.location.id, b.prev.startTs, b.prev.endTs]
+      );
+      const prevLabor = parseFloat(prevRows[0].prev_labor);
+      const prevGross = parseFloat(prevRows[0].prev_gross);
+      prevLaborPct = prevGross > 0 ? (prevLabor / prevGross) * 100 : 0;
+    }
 
     const perStaff = perStaffRows.map((r) => ({
       staff_id: r.staff_id,
@@ -3568,8 +3597,6 @@ app.get("/api/backoffice/stats/labor", async (req, res) => {
     const laborCost = perStaff.reduce((sum, s) => sum + s.laborCost, 0);
     const hours = perStaff.reduce((sum, s) => sum + s.hours, 0);
     const grossSales = parseFloat(salesRows[0].gross_sales);
-    const prevLabor = parseFloat(prevRows[0].prev_labor);
-    const prevGross = parseFloat(prevRows[0].prev_gross);
 
     res.json({
       laborCost,
@@ -3577,9 +3604,7 @@ app.get("/api/backoffice/stats/labor", async (req, res) => {
       grossSales,
       laborPct: grossSales > 0 ? (laborCost / grossSales) * 100 : 0,
       perStaff,
-      previous: {
-        laborPct: prevGross > 0 ? (prevLabor / prevGross) * 100 : 0,
-      },
+      previous: prevLaborPct == null ? null : { laborPct: prevLaborPct },
     });
   } catch (err) {
     sendHttpError(res, err, "Failed to fetch labor stats");
@@ -3596,8 +3621,7 @@ app.get("/api/backoffice/stats/discounts", async (req, res) => {
   const client = await pool.connect();
   try {
     await requireBackofficeSession(req);
-    const { trunc } = resolveStatsRange(req.query.range);
-    const location = await getSingleActiveLocation(client);
+    const b = await getStatsBounds(client, req);
 
     const { rows } = await client.query(
       `SELECT discount_reason AS reason,
@@ -3606,10 +3630,10 @@ app.get("/api/backoffice/stats/discounts", async (req, res) => {
          FROM orders
         WHERE location_id = $1 AND status = 'ready'
           AND discount > 0 AND discount_reason IS NOT NULL
-          AND completed_at >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
+          AND completed_at >= $2 AND completed_at < $3
         GROUP BY discount_reason
         ORDER BY amount DESC`,
-      [location.id, trunc, location.timezone]
+      [b.location.id, b.startTs, b.endTs]
     );
     res.json(
       rows.map((r) => ({

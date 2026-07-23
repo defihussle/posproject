@@ -63,17 +63,24 @@ export default function HomeDashboard({ staff }) {
   const [error, setError] = useState(null);
 
   const isCustom = range === "custom";
+  // Custom range selected but not fully specified yet — sections prompt for
+  // dates instead of showing data. Once both dates are set this is false and
+  // the dashboard loads the custom window like any preset.
+  const customIncomplete = isCustom && (!customStart || !customEnd);
 
   const load = useCallback(async () => {
-    // Custom range has no backend support yet — don't fire a request the
-    // server would reject; the sections render their pending state instead.
-    if (range === "custom") {
+    // Custom needs both dates before it can query; until then the sections
+    // show a "pick dates" prompt rather than firing an incomplete request.
+    const customReady = range === "custom" && customStart && customEnd;
+    if (range === "custom" && !customReady) {
       setLoading(false);
       return;
     }
     setLoading(true);
     try {
-      const qs = `staffId=${staff.id}&range=${range}`;
+      const qs = customReady
+        ? `staffId=${staff.id}&start=${customStart}&end=${customEnd}`
+        : `staffId=${staff.id}&range=${range}`;
       const [sumRes, topRes, perfRes, hourRes, catRes, laborRes, discRes] = await Promise.all([
         fetch(`${API_URL}/api/backoffice/stats/summary?${qs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/top-items?${qs}&limit=5`, { credentials: "include" }),
@@ -112,7 +119,7 @@ export default function HomeDashboard({ staff }) {
     } finally {
       setLoading(false);
     }
-  }, [staff.id, range]);
+  }, [staff.id, range, customStart, customEnd]);
 
   useEffect(() => {
     load();
@@ -124,16 +131,19 @@ export default function HomeDashboard({ staff }) {
   // the trend card falls back to its own empty state rather than blanking
   // every card, so one endpoint hiccup doesn't take the page down.
   useEffect(() => {
-    if (isCustom) {
+    const customReady = isCustom && customStart && customEnd;
+    if (isCustom && !customReady) {
+      setTrend([]);
       setTrendLoading(false);
       return;
     }
     let cancelled = false;
     setTrendLoading(true);
     const gran = trendMode === "daily" ? "day" : "hour";
-    fetch(`${API_URL}/api/backoffice/stats/trend?staffId=${staff.id}&range=${range}&granularity=${gran}`, {
-      credentials: "include",
-    })
+    const qs = customReady
+      ? `staffId=${staff.id}&start=${customStart}&end=${customEnd}&granularity=${gran}`
+      : `staffId=${staff.id}&range=${range}&granularity=${gran}`;
+    fetch(`${API_URL}/api/backoffice/stats/trend?${qs}`, { credentials: "include" })
       .then(async (r) => {
         const data = await r.json().catch(() => null);
         if (!r.ok) throw new Error((data && data.error) || `HTTP ${r.status}`);
@@ -151,7 +161,7 @@ export default function HomeDashboard({ staff }) {
     return () => {
       cancelled = true;
     };
-  }, [staff.id, range, trendMode, isCustom]);
+  }, [staff.id, range, trendMode, isCustom, customStart, customEnd]);
 
   // KPI definitions — real values from the (extended) summary endpoint;
   // Labor % awaits the labor endpoint. `delta` stays null until the
@@ -225,22 +235,22 @@ export default function HomeDashboard({ staff }) {
         </div>
       ) : (
         <>
-          {isCustom && (
+          {customIncomplete && (
             <div className="homedash__note">
-              Custom date ranges arrive with the next backend update — the pickers above are ready to wire in.
+              Pick a start and end date to load the custom range.
             </div>
           )}
 
-          <KpiStrip kpis={kpis} compare={compare} loading={loading && !isCustom} pending={isCustom} />
+          <KpiStrip kpis={kpis} compare={compare} loading={loading && !customIncomplete} pending={customIncomplete} />
 
           <div className="homedash__sections">
-            <SalesTrendCard trend={trend} mode={trendMode} onMode={setTrendMode} loading={trendLoading} pending={isCustom} />
-            <HourlyBreakdownCard data={hourly} loading={loading} pending={isCustom} />
-            <CategorySalesCard data={category} loading={loading} pending={isCustom} />
-            <LaborVsSalesCard labor={labor} loading={loading && !isCustom} pending={isCustom} />
-            <DiscountReportCard summary={summary} rows={discounts} loading={loading && !isCustom} pending={isCustom} />
-            <TopItemsCard items={topItems} loading={loading && !isCustom} pending={isCustom} />
-            <StaffPerformanceCard rows={staffPerf} hoursByStaff={hoursByStaff} loading={loading && !isCustom} pending={isCustom} />
+            <SalesTrendCard trend={trend} mode={trendMode} onMode={setTrendMode} loading={trendLoading} pending={customIncomplete} />
+            <HourlyBreakdownCard data={hourly} loading={loading} pending={customIncomplete} />
+            <CategorySalesCard data={category} loading={loading} pending={customIncomplete} />
+            <LaborVsSalesCard labor={labor} loading={loading && !customIncomplete} pending={customIncomplete} />
+            <DiscountReportCard summary={summary} rows={discounts} loading={loading && !customIncomplete} pending={customIncomplete} />
+            <TopItemsCard items={topItems} loading={loading && !customIncomplete} pending={customIncomplete} />
+            <StaffPerformanceCard rows={staffPerf} hoursByStaff={hoursByStaff} loading={loading && !customIncomplete} pending={customIncomplete} />
             <LiveStatusCard />
           </div>
         </>
