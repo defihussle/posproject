@@ -2726,14 +2726,28 @@ app.get("/api/staff/me/clock-status", async (req, res) => {
     }
     const shift = shiftRows[0];
 
+    // Total COMPLETED break time this shift, so the client can show worked
+    // time (elapsed since clock-in minus breaks) instead of raw elapsed.
+    const { rows: brkAgg } = await pool.query(
+      `SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (break_end - break_start))), 0) AS break_seconds
+         FROM shift_breaks WHERE shift_id = $1 AND break_end IS NOT NULL`,
+      [shift.id]
+    );
+    const breakSeconds = parseFloat(brkAgg[0].break_seconds);
+
     const { rows: breakRows } = await pool.query(
       "SELECT break_start FROM shift_breaks WHERE shift_id = $1 AND break_end IS NULL ORDER BY break_start DESC LIMIT 1",
       [shift.id]
     );
     if (breakRows.length > 0) {
-      return res.json({ status: "on_break", clockIn: shift.clock_in, breakStart: breakRows[0].break_start });
+      return res.json({
+        status: "on_break",
+        clockIn: shift.clock_in,
+        breakStart: breakRows[0].break_start,
+        breakSeconds,
+      });
     }
-    return res.json({ status: "working", clockIn: shift.clock_in });
+    return res.json({ status: "working", clockIn: shift.clock_in, breakSeconds });
   } catch (err) {
     sendHttpError(res, err, "Failed to fetch clock status");
   }

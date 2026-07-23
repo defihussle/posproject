@@ -44,6 +44,7 @@ export default function ClockCard({ staff, onClose }) {
   const [status, setStatus] = useState(null); // 'not_clocked_in' | 'working' | 'on_break'
   const [clockIn, setClockIn] = useState(null);
   const [breakStart, setBreakStart] = useState(null);
+  const [breakSeconds, setBreakSeconds] = useState(0); // completed break time this shift
   const [loadError, setLoadError] = useState(null);
 
   const [pendingAction, setPendingAction] = useState(null); // key into ACTION_LABELS, or null
@@ -67,6 +68,7 @@ export default function ClockCard({ staff, onClose }) {
       setStatus(data.status);
       setClockIn(data.clockIn || null);
       setBreakStart(data.breakStart || null);
+      setBreakSeconds(data.breakSeconds || 0);
       setLoadError(null);
     } catch (err) {
       setLoadError(err.message || "Failed to load clock status");
@@ -162,12 +164,14 @@ export default function ClockCard({ staff, onClose }) {
     }
 
     if (status === "working") {
-      const seconds = (nowMs - new Date(clockIn).getTime()) / 1000;
+      // Worked time = elapsed since clock-in MINUS completed breaks, so the
+      // number reflects actual time on the clock, not raw elapsed.
+      const worked = (nowMs - new Date(clockIn).getTime()) / 1000 - breakSeconds;
       return (
         <>
           <div className="clockcard__timer">
-            Clocked in for
-            <strong>{fmtDuration(seconds)}</strong>
+            Worked
+            <strong>{fmtDuration(worked)}</strong>
           </div>
           <div className="clockcard__action-row">
             <button className="clockcard__action-btn" onClick={() => startAction("take_break")}>
