@@ -3663,6 +3663,140 @@ app.get("/api/backoffice/stats/discounts", async (req, res) => {
   }
 });
 
+// --------------- Back Office: Payroll ---------------
+// Owner/admin only. Weekly (Mon–Sun, location tz) hours + gross pay per
+// staff, plus a persisted Paid/Unpaid marker (payroll_status). Hours reuse
+// the same worked = elapsed − breaks math as stats/labor, windowed to the
+// week; owners are excluded and NULL hourly_rate surfaces as "rate not set"
+// (null pay) rather than $0. See database/payroll_status.sql.
+
+// GET /api/backoffice/payroll?staffId=...&weekStart=YYYY-MM-DD
+// weekStart is optional and normalized to that week's Monday; omit for the
+// current week.
+app.get("/api/backoffice/payroll", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    const location = await getSingleActiveLocation(client);
+    const tz = location.timezone;
+
+    const weekStartParam = req.query.weekStart;
+    if (weekStartParam !== undefined && !isYmd(weekStartParam)) {
+      throw new HttpError(400, "weekStart must be YYYY-MM-DD");
+    }
+
+    // Normalize to the Monday of the week (in the location tz); default to
+    // the current week. Also return the Sunday for display/filenames.
+    const { rows: wk } = await client.query(
+      `SELECT to_char(ws, 'YYYY-MM-DD') AS week_start, to_char(ws + 6, 'YYYY-MM-DD') AS week_end
+         FROM (SELECT date_trunc('week', COALESCE($1::date, (now() AT TIME ZONE $2)::date))::date AS ws) t`,
+      [weekStartParam ?? null, tz]
+    );
+    const weekStart = wk[0].week_start; // "YYYY-MM-DD" (Monday)
+
+    // Per non-owner staffer with a shift starting this week: worked seconds
+    // capped at the week's end (LEAST(..., end_ts)) so a forgotten open
+    // shift in a PAST week doesn't grow forever; for the current week end_ts
+    // is in the future so now() wins. Breaks handled the same way.
+    const { rows } = await client.query(
+      `WITH b AS (
+         SELECT $2::date AS week_start,
+                ($2::date::timestamp AT TIME ZONE $3) AS start_ts,
+                (($2::date + 7)::timestamp AT TIME ZONE $3) AS end_ts
+       ),
+       shift_work AS (
+         SELECT s.staff_id,
+                GREATEST(
+                  EXTRACT(EPOCH FROM (LEAST(COALESCE(s.clock_out, now()), b.end_ts) - s.clock_in))
+                  - COALESCE((
+                      SELECT SUM(GREATEST(
+                               EXTRACT(EPOCH FROM (LEAST(COALESCE(bk.break_end, now()), b.end_ts) - bk.break_start)), 0))
+                        FROM shift_breaks bk WHERE bk.shift_id = s.id), 0),
+                  0) AS worked_seconds
+           FROM shifts s CROSS JOIN b
+          WHERE s.location_id = $1
+            AND s.clock_in >= b.start_ts AND s.clock_in < b.end_ts
+       ),
+       per_staff AS (
+         SELECT staff_id, SUM(worked_seconds) AS worked_seconds
+           FROM shift_work GROUP BY staff_id
+       )
+       SELECT st.id AS staff_id, st.name, st.role, st.hourly_rate,
+              ps.worked_seconds, COALESCE(pst.paid, false) AS paid
+         FROM per_staff ps
+         JOIN staff st ON st.id = ps.staff_id
+         LEFT JOIN payroll_status pst ON pst.staff_id = st.id AND pst.week_start = $2::date
+        WHERE st.role <> 'owner'
+        ORDER BY st.name`,
+      [location.id, weekStart, tz]
+    );
+
+    const round2 = (n) => Math.round(n * 100) / 100;
+    res.json({
+      weekStart,
+      weekEnd: wk[0].week_end,
+      rows: rows.map((r) => {
+        const hours = round2(parseFloat(r.worked_seconds) / 3600);
+        const rate = r.hourly_rate == null ? null : parseFloat(r.hourly_rate);
+        return {
+          staff_id: r.staff_id,
+          name: r.name,
+          role: r.role,
+          hours,
+          hourlyRate: rate,
+          grossPay: rate == null ? null : round2(hours * rate),
+          paid: r.paid,
+        };
+      }),
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch payroll");
+  } finally {
+    client.release();
+  }
+});
+
+// PUT /api/backoffice/payroll/status
+// Body: { staffId (session), weekStart, entries: [{ staffId, paid }] }.
+// Upserts the Paid/Unpaid marker for each staffer for the given week.
+app.put("/api/backoffice/payroll/status", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const requester = await requireBackofficeSession(req);
+    const location = await getSingleActiveLocation(client);
+    const { weekStart, entries } = req.body || {};
+    if (!isYmd(weekStart)) throw new HttpError(400, "weekStart must be YYYY-MM-DD");
+    if (!Array.isArray(entries)) throw new HttpError(400, "entries must be an array");
+    for (const e of entries) {
+      if (!e || typeof e.staffId !== "string" || typeof e.paid !== "boolean") {
+        throw new HttpError(400, "each entry needs a staffId and a boolean paid");
+      }
+    }
+
+    await client.query("BEGIN");
+    for (const e of entries) {
+      await client.query(
+        `INSERT INTO payroll_status (location_id, staff_id, week_start, paid, paid_at, paid_by, updated_at)
+         VALUES ($1, $2, date_trunc('week', $3::date)::date, $4,
+                 CASE WHEN $4 THEN now() ELSE NULL END, $5, now())
+         ON CONFLICT (staff_id, week_start) DO UPDATE
+           SET paid = EXCLUDED.paid,
+               paid_at = CASE WHEN EXCLUDED.paid THEN now() ELSE NULL END,
+               paid_by = $5,
+               updated_at = now()`,
+        [location.id, e.staffId, weekStart, e.paid, requester.id]
+      );
+    }
+    await client.query("COMMIT");
+    res.json({ success: true, count: entries.length });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    sendHttpError(res, err, "Failed to save payroll status");
+  } finally {
+    client.release();
+  }
+});
+
 // --------------- Device pairing (Order Entry / KDS access) ---------------
 // Adds a device-trust layer UNDERNEATH staffId/PIN identity (device-
 // pairing-plan.md, "Background") — orthogonal to who's logged in, this is

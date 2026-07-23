@@ -1,0 +1,214 @@
+/* ============================================================
+   Back Office — Payroll
+   Weekly hours + pay table with Mark-as-Paid + CSV/PDF export.
+   Mobile-first; the table scrolls horizontally on narrow screens.
+   Uses the app design tokens, so it adapts to dark mode.
+   ============================================================ */
+
+.payroll {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: fadeIn 0.25s ease-out;
+}
+
+.payroll__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.payroll__title {
+  font-family: var(--font-headline);
+  font-size: 1.3rem;
+  color: var(--text-primary);
+}
+
+.payroll__weeknav {
+  display: flex;
+  gap: 8px;
+}
+
+.payroll__navbtn {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  white-space: nowrap;
+  transition: background-color 0.12s ease;
+}
+.payroll__navbtn:hover:not(:disabled) {
+  background: var(--border-color);
+}
+.payroll__navbtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.payroll__range {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.payroll__notice,
+.payroll__empty {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  padding: 24px 4px;
+  text-align: center;
+  background: var(--bg-surface);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-lg);
+}
+
+.payroll__errorstate {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 20px 22px;
+  background: var(--bg-surface);
+  border: 1px solid var(--red);
+  border-radius: var(--radius-lg);
+}
+.payroll__errorstate-msg {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+/* ---------- Table ---------- */
+.payroll__tablewrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+}
+
+.payroll__table {
+  width: 100%;
+  min-width: 560px; /* forces horizontal scroll rather than cramping on mobile */
+  border-collapse: collapse;
+}
+
+.payroll__table th,
+.payroll__table td {
+  padding: 12px 14px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.payroll__table thead th {
+  font-family: var(--font-body);
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.payroll__table tbody tr {
+  border-bottom: 1px dashed var(--border-color);
+}
+
+.payroll__num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text-primary);
+}
+.payroll__center {
+  text-align: center;
+}
+
+.payroll__name {
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.payroll__role {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.payroll__norate {
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.payroll__check {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--green);
+  cursor: pointer;
+}
+
+/* Totals row */
+.payroll__table tfoot .payroll__total td {
+  border-top: 2px solid var(--border-color);
+  font-family: var(--font-body);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.payroll__table tfoot .payroll__total .payroll__num {
+  font-family: var(--font-mono);
+}
+
+/* ---------- Actions row ---------- */
+.payroll__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.payroll__exports {
+  display: flex;
+  gap: 8px;
+}
+.payroll__save-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.payroll__saved {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--green);
+}
+.payroll__save {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 9px 22px;
+  border-radius: var(--radius-sm);
+  background: var(--red);
+  color: #fff;
+  transition: background-color 0.12s ease;
+}
+.payroll__save:hover:not(:disabled) {
+  background: var(--red-hover);
+}
+.payroll__save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

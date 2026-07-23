@@ -153,9 +153,16 @@ Three independent trust layers — full narrative/history:
   server-side recomputation
 - KDS: live polling board, status advance, history, recall/undo,
   new-order sound, Rush Hour aggregated view
-- Back Office: Home, Staff Management, Menu Management, Devices — plus
-  Manage Menu and a Staff popup, POS-reachable equivalents
-- Self-service: Change PIN, Clock In/Out, My Hours
+- Back Office: Home dashboard (KPIs w/ vs-last-period deltas, Sales
+  Trend/Hourly/Category/Labor charts, discounts, top items, staff
+  performance, custom date range), Staff Management, Menu Management,
+  Payroll, Devices — plus Manage Menu and a Staff popup, POS-reachable
+  equivalents
+- Payroll: weekly (Mon–Sun) hours + gross pay per staff, Mark-as-Paid
+  (persisted in `payroll_status`), CSV/PDF export; owners excluded,
+  breaks subtracted, past-week open shifts capped at week end
+- Self-service: Change PIN, Clock In/Out (timer shows worked time, breaks
+  subtracted), My Hours
 
 Full detail: `docs/architecture/features.md`
 
