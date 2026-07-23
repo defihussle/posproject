@@ -390,7 +390,7 @@
 
 .kds__empty-sub {
   font-size: 1.1rem;
-  color: #A3A3A3;
+  color: var(--text-muted);
   font-weight: 500;
 }
 
@@ -796,7 +796,7 @@
   font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.06em;
-  color: #A3A3A3;
+  color: var(--text-muted);
   background: rgba(255, 255, 255, 0.85);
   border: 1px solid #ECECEC;
   border-radius: 8px;
@@ -1042,7 +1042,7 @@
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: #A3A3A3;
+  color: var(--text-muted);
 }
 
 .kds-past-row__num {
@@ -1070,7 +1070,7 @@
 .kds-past-row__chev {
   font-family: var(--font-mono);
   font-size: 1.6rem;
-  color: #A3A3A3;
+  color: var(--text-muted);
   text-align: right;
 }
 

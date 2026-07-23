@@ -10,7 +10,11 @@
   --bg-surface-hover: #F5F5F4;
   --text-primary: #1A1A1A;
   --text-secondary: #6B6B6B;
-  --text-muted: #A3A3A3;
+  /* Secondary labels (uppercase KPI/table/date labels etc.) use this. Kept
+     stronger than a faint light grey so they read as solid/present at small
+     sizes — hierarchy comes from size + case, not from washing the color out
+     (also lifts them past the WCAG AA contrast floor). */
+  --text-muted: #757575;
   --border-color: #E5E5E5;
   --shadow-soft: 0 2px 8px rgba(0, 0, 0, 0.06);
   --shadow-medium: 0 4px 16px rgba(0, 0, 0, 0.08);
@@ -43,7 +47,9 @@
   --bg-surface-hover: #262626;
   --text-primary: #F5F5F5;
   --text-secondary: #A3A3A3;
-  --text-muted: #6B6B6B;
+  /* Dark-theme counterpart — lifted lighter so secondary labels are equally
+     present on the dark surface (see the light-theme note above). */
+  --text-muted: #8E8E8E;
   --border-color: #2E2E2E;
   --shadow-soft: 0 2px 8px rgba(0, 0, 0, 0.20);
   --shadow-medium: 0 4px 16px rgba(0, 0, 0, 0.30);
