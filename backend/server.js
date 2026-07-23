@@ -2927,40 +2927,59 @@ app.get("/api/staff/me/hours", async (req, res) => {
     const { range, trunc } = resolveStatsRange(req.query.range);
     const location = await getSingleActiveLocation(pool);
 
+    // Range window [rangeStart, rangeEnd) in the location tz.
+    const { rows: boundsRows } = await pool.query(
+      `SELECT (date_trunc($1, now() AT TIME ZONE $2) AT TIME ZONE $2) AS range_start,
+              ((date_trunc($1, now() AT TIME ZONE $2) + ('1 ' || $1)::interval) AT TIME ZONE $2) AS range_end`,
+      [trunc, location.timezone]
+    );
+    const rangeStartMs = new Date(boundsRows[0].range_start).getTime();
+    const rangeEndMs = new Date(boundsRows[0].range_end).getTime();
+
+    // Any shift that OVERLAPS the window — not just those that started in it
+    // — so an open shift begun before the window (e.g. still clocked in from
+    // late last night) shows up in Today with its worked time clipped to the
+    // window ("hours so far today"). A shift overlaps when it starts before
+    // the window ends and hasn't ended before the window starts.
     const { rows: shiftRows } = await pool.query(
       `SELECT id, clock_in, clock_out
          FROM shifts
         WHERE staff_id = $1
-          AND clock_in >= (date_trunc($2, now() AT TIME ZONE $3) AT TIME ZONE $3)
+          AND clock_in < $3
+          AND (clock_out IS NULL OR clock_out > $2)
         ORDER BY clock_in DESC`,
-      [requester.id, trunc, location.timezone]
+      [requester.id, boundsRows[0].range_start, boundsRows[0].range_end]
     );
 
-    // Break seconds per shift. A closed break uses its real duration; an
-    // open break (only possible on the currently-open shift, since
-    // clock-out always closes any open break first) counts up to now(),
-    // the same "still running" treatment the open shift itself gets below.
     const shiftIds = shiftRows.map((s) => s.id);
-    const breakSecondsByShift = {};
+    const breaksByShift = {};
     if (shiftIds.length > 0) {
       const { rows: breakRows } = await pool.query(
         "SELECT shift_id, break_start, break_end FROM shift_breaks WHERE shift_id = ANY($1)",
         [shiftIds]
       );
-      for (const b of breakRows) {
-        const endMs = b.break_end ? new Date(b.break_end).getTime() : Date.now();
-        const seconds = Math.max(0, (endMs - new Date(b.break_start).getTime()) / 1000);
-        breakSecondsByShift[b.shift_id] = (breakSecondsByShift[b.shift_id] || 0) + seconds;
-      }
+      for (const b of breakRows) (breaksByShift[b.shift_id] ||= []).push(b);
     }
+
+    // Clip an interval [start, end] to the range window and return its
+    // seconds inside it (0 if it falls entirely outside). Applied to each
+    // shift AND each break, so worked/break time is counted only for the
+    // portion that lies within the range.
+    const nowMs = Date.now();
+    const clipSeconds = (startMs, endMs) =>
+      Math.max(0, Math.min(endMs, rangeEndMs) - Math.max(startMs, rangeStartMs)) / 1000;
 
     let totalSeconds = 0;
     const shifts = shiftRows.map((s) => {
-      const clockOutMs = s.clock_out ? new Date(s.clock_out).getTime() : Date.now();
-      const grossSeconds = Math.max(0, (clockOutMs - new Date(s.clock_in).getTime()) / 1000);
-      const breakSeconds = breakSecondsByShift[s.id] || 0;
-      // Worked time = clocked time minus every break within it — floored at
-      // 0 so it can never go negative.
+      const inMs = new Date(s.clock_in).getTime();
+      const outMs = s.clock_out ? new Date(s.clock_out).getTime() : nowMs;
+      const grossSeconds = clipSeconds(inMs, outMs);
+      let breakSeconds = 0;
+      for (const b of breaksByShift[s.id] || []) {
+        const bOutMs = b.break_end ? new Date(b.break_end).getTime() : nowMs;
+        breakSeconds += clipSeconds(new Date(b.break_start).getTime(), bOutMs);
+      }
+      // Worked time = in-range clocked time minus in-range breaks, floored 0.
       const seconds = Math.max(0, grossSeconds - breakSeconds);
       totalSeconds += seconds;
       return {
