@@ -2954,61 +2954,32 @@ app.get("/api/staff/me/hours", async (req, res) => {
               ((date_trunc($1, now() AT TIME ZONE $2) + ('1 ' || $1)::interval) AT TIME ZONE $2) AS range_end`,
       [trunc, location.timezone]
     );
-    const rangeStartMs = new Date(boundsRows[0].range_start).getTime();
-    const rangeEndMs = new Date(boundsRows[0].range_end).getTime();
-
-    // Any shift that OVERLAPS the window — not just those that started in it
-    // — so an open shift begun before the window (e.g. still clocked in from
-    // late last night) shows up in Today with its worked time clipped to the
-    // window ("hours so far today"). A shift overlaps when it starts before
-    // the window ends and hasn't ended before the window starts.
+    // Shifts that OVERLAP the window (not just those that started in it), with
+    // worked/break time clipped to it — so an open shift begun before the
+    // window (e.g. still clocked in from late last night) shows up in Today
+    // with its "hours so far today". Overlap + clipping come from the shared
+    // canonical worked-time expressions, so this matches Dashboard labor and
+    // Payroll exactly.
     const { rows: shiftRows } = await pool.query(
-      `SELECT id, clock_in, clock_out
-         FROM shifts
-        WHERE staff_id = $1
-          AND clock_in < $3
-          AND (clock_out IS NULL OR clock_out > $2)
-        ORDER BY clock_in DESC`,
+      `SELECT s.id, s.clock_in, s.clock_out,
+              ${workedSecondsSql("$2", "$3")} AS worked_seconds,
+              ${clippedBreakSecondsSql("$2", "$3")} AS break_seconds
+         FROM shifts s
+        WHERE s.staff_id = $1 AND ${shiftOverlapsWindowSql("$2", "$3")}
+        ORDER BY s.clock_in DESC`,
       [requester.id, boundsRows[0].range_start, boundsRows[0].range_end]
     );
 
-    const shiftIds = shiftRows.map((s) => s.id);
-    const breaksByShift = {};
-    if (shiftIds.length > 0) {
-      const { rows: breakRows } = await pool.query(
-        "SELECT shift_id, break_start, break_end FROM shift_breaks WHERE shift_id = ANY($1)",
-        [shiftIds]
-      );
-      for (const b of breakRows) (breaksByShift[b.shift_id] ||= []).push(b);
-    }
-
-    // Clip an interval [start, end] to the range window and return its
-    // seconds inside it (0 if it falls entirely outside). Applied to each
-    // shift AND each break, so worked/break time is counted only for the
-    // portion that lies within the range.
-    const nowMs = Date.now();
-    const clipSeconds = (startMs, endMs) =>
-      Math.max(0, Math.min(endMs, rangeEndMs) - Math.max(startMs, rangeStartMs)) / 1000;
-
     let totalSeconds = 0;
     const shifts = shiftRows.map((s) => {
-      const inMs = new Date(s.clock_in).getTime();
-      const outMs = s.clock_out ? new Date(s.clock_out).getTime() : nowMs;
-      const grossSeconds = clipSeconds(inMs, outMs);
-      let breakSeconds = 0;
-      for (const b of breaksByShift[s.id] || []) {
-        const bOutMs = b.break_end ? new Date(b.break_end).getTime() : nowMs;
-        breakSeconds += clipSeconds(new Date(b.break_start).getTime(), bOutMs);
-      }
-      // Worked time = in-range clocked time minus in-range breaks, floored 0.
-      const seconds = Math.max(0, grossSeconds - breakSeconds);
+      const seconds = parseFloat(s.worked_seconds);
       totalSeconds += seconds;
       return {
         id: s.id,
         clockIn: s.clock_in,
         clockOut: s.clock_out,
         seconds: Math.round(seconds),
-        breakSeconds: Math.round(breakSeconds),
+        breakSeconds: Math.round(parseFloat(s.break_seconds)),
       };
     });
 
@@ -3203,6 +3174,50 @@ async function getSingleActiveLocation(client) {
   );
   if (rows.length === 0) throw new HttpError(500, "No active location");
   return rows[0];
+}
+
+// --------------- Canonical worked-time calculation ---------------
+// ONE implementation behind every "hours worked" number in the app —
+// Dashboard labor (stats/labor), Payroll, and My Hours — so the same figure
+// can never drift between surfaces. See docs/architecture/reports-plan.md
+// ("Shared calculation logic"); the acceptance cases that lock the behavior
+// live in tests/worked_time_acceptance.sql.
+//
+// Semantics, applied identically everywhere:
+//   - a shift COUNTS if it OVERLAPS the window [start, end)
+//   - its time is CLIPPED to that window, so a shift that began before the
+//     window contributes only its in-window portion, and one still running
+//     past the end is capped there instead of growing to now()
+//   - breaks are clipped the same way and subtracted
+//   - an open shift / open break runs to now()
+//
+// These return SQL expressions rather than whole queries, so each caller
+// passes its own bounds — placeholders ($1/$2) or CTE columns (b.start_ts) —
+// while sharing the arithmetic.
+
+function shiftOverlapsWindowSql(startExpr, endExpr, s = "s") {
+  return `${s}.clock_in < ${endExpr} AND (${s}.clock_out IS NULL OR ${s}.clock_out > ${startExpr})`;
+}
+
+function clippedShiftSecondsSql(startExpr, endExpr, s = "s") {
+  return `GREATEST(0, EXTRACT(EPOCH FROM (
+            LEAST(COALESCE(${s}.clock_out, now()), ${endExpr})
+            - GREATEST(${s}.clock_in, ${startExpr}))))`;
+}
+
+function clippedBreakSecondsSql(startExpr, endExpr, s = "s") {
+  return `COALESCE((
+            SELECT SUM(GREATEST(0, EXTRACT(EPOCH FROM (
+                     LEAST(COALESCE(bk.break_end, now()), ${endExpr})
+                     - GREATEST(bk.break_start, ${startExpr})))))
+              FROM shift_breaks bk WHERE bk.shift_id = ${s}.id), 0)`;
+}
+
+// Worked seconds for one shift row inside the window: clipped clocked time
+// minus clipped break time, floored at 0.
+function workedSecondsSql(startExpr, endExpr, s = "s") {
+  return `GREATEST(0, ${clippedShiftSecondsSql(startExpr, endExpr, s)}
+                      - ${clippedBreakSecondsSql(startExpr, endExpr, s)})`;
 }
 
 function isYmd(s) {
@@ -3586,18 +3601,13 @@ app.get("/api/backoffice/stats/labor", async (req, res) => {
     const { rows: perStaffRows } = await client.query(
       `WITH shift_work AS (
          SELECT s.staff_id, COALESCE(st.hourly_rate, 0) AS hourly_rate,
-                EXTRACT(EPOCH FROM (COALESCE(s.clock_out, now()) - s.clock_in)) AS gross_seconds,
-                COALESCE((
-                  SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(bk.break_end, now()) - bk.break_start)))
-                    FROM shift_breaks bk WHERE bk.shift_id = s.id
-                ), 0) AS break_seconds
+                ${workedSecondsSql("$1", "$2")} AS worked_seconds
            FROM shifts s
            JOIN staff st ON st.id = s.staff_id
-          WHERE s.clock_in >= $1 AND s.clock_in < $2
+          WHERE ${shiftOverlapsWindowSql("$1", "$2")}
        ),
        per_staff AS (
-         SELECT staff_id, hourly_rate,
-                SUM(GREATEST(gross_seconds - break_seconds, 0)) AS worked_seconds
+         SELECT staff_id, hourly_rate, SUM(worked_seconds) AS worked_seconds
            FROM shift_work GROUP BY staff_id, hourly_rate
        )
        SELECT ps.staff_id, st.name,
@@ -3623,12 +3633,9 @@ app.get("/api/backoffice/stats/labor", async (req, res) => {
       const { rows: prevRows } = await client.query(
         `WITH sw AS (
            SELECT COALESCE(st.hourly_rate, 0) AS rate,
-                  GREATEST(
-                    EXTRACT(EPOCH FROM (COALESCE(s.clock_out, now()) - s.clock_in))
-                    - COALESCE((SELECT SUM(EXTRACT(EPOCH FROM (COALESCE(bk.break_end, now()) - bk.break_start)))
-                                FROM shift_breaks bk WHERE bk.shift_id = s.id), 0), 0) AS worked
+                  ${workedSecondsSql("$2", "$3")} AS worked
              FROM shifts s JOIN staff st ON st.id = s.staff_id
-            WHERE s.clock_in >= $2 AND s.clock_in < $3
+            WHERE ${shiftOverlapsWindowSql("$2", "$3")}
          )
          SELECT
            (SELECT COALESCE(SUM((worked / 3600.0) * rate), 0) FROM sw) AS prev_labor,
@@ -3746,16 +3753,10 @@ app.get("/api/backoffice/payroll", async (req, res) => {
        ),
        shift_work AS (
          SELECT s.staff_id,
-                GREATEST(
-                  EXTRACT(EPOCH FROM (LEAST(COALESCE(s.clock_out, now()), b.end_ts) - s.clock_in))
-                  - COALESCE((
-                      SELECT SUM(GREATEST(
-                               EXTRACT(EPOCH FROM (LEAST(COALESCE(bk.break_end, now()), b.end_ts) - bk.break_start)), 0))
-                        FROM shift_breaks bk WHERE bk.shift_id = s.id), 0),
-                  0) AS worked_seconds
+                ${workedSecondsSql("b.start_ts", "b.end_ts")} AS worked_seconds
            FROM shifts s CROSS JOIN b
           WHERE s.location_id = $1
-            AND s.clock_in >= b.start_ts AND s.clock_in < b.end_ts
+            AND ${shiftOverlapsWindowSql("b.start_ts", "b.end_ts")}
        ),
        per_staff AS (
          SELECT staff_id, SUM(worked_seconds) AS worked_seconds
