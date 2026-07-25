@@ -1,0 +1,278 @@
+/* ============================================================
+   Back Office — Reports
+   Period-oriented range selector + report picker + shared table/export
+   scaffolding. Mobile-first; tables scroll horizontally on narrow screens.
+   Uses the app design tokens, so it adapts to dark mode.
+   ============================================================ */
+
+.reports {
+  width: 100%;
+  max-width: 1000px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  animation: fadeIn 0.25s ease-out;
+}
+
+.reports__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.reports__title {
+  font-family: var(--font-headline);
+  font-size: 1.3rem;
+  color: var(--text-primary);
+}
+
+/* ---------- Range selector ---------- */
+.reports__rangesel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+}
+
+.reports__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reports__pill {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 8px 14px;
+  border-radius: var(--radius-full);
+  background: var(--bg-surface-hover);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  white-space: nowrap;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.reports__pill:hover {
+  background: var(--border-color);
+}
+.reports__pill--active {
+  background: var(--red);
+  color: #fff;
+  border-color: transparent;
+}
+.reports__pill--active:hover {
+  background: var(--red-hover);
+}
+
+/* Custom panel */
+.reports__custom {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.reports__custom-tabs {
+  display: flex;
+  gap: 6px;
+}
+.reports__subtab {
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.reports__subtab--active {
+  background: var(--text-primary);
+  color: var(--bg-surface);
+  border-color: transparent;
+}
+
+.reports__custom-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.reports__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.reports__field-label {
+  font-family: var(--font-body);
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.reports__input {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+}
+.reports__input--year {
+  width: 90px;
+}
+
+.reports__quarter,
+.reports__daterange {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+}
+.reports__qbtns {
+  display: flex;
+  gap: 6px;
+}
+.reports__qbtn {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.reports__qbtn--active {
+  background: var(--red);
+  color: #fff;
+  border-color: transparent;
+}
+
+/* Resolved window readout */
+.reports__resolved {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 4px;
+}
+.reports__resolved-label {
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.reports__resolved-dates {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* ---------- Report picker tabs ---------- */
+.reports__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+.reports__tab {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 10px 14px;
+  color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.reports__tab:hover {
+  color: var(--text-primary);
+}
+.reports__tab--active {
+  color: var(--red);
+  border-bottom-color: var(--red);
+}
+
+/* ---------- Report body ---------- */
+.reports__body {
+  min-height: 200px;
+}
+.reports__report {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.reports__report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.reports__report-title {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.reports__exports {
+  display: flex;
+  gap: 8px;
+}
+.reports__exportbtn {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  white-space: nowrap;
+  transition: background-color 0.12s ease;
+}
+.reports__exportbtn:hover:not(:disabled) {
+  background: var(--border-color);
+}
+.reports__exportbtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Shared table shell (report bodies fill this in later slices) */
+.reports__tablewrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+}
+
+.reports__coming,
+.reports__placeholder {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  padding: 32px 20px;
+  text-align: center;
+}
+.reports__coming strong {
+  color: var(--text-secondary);
+}

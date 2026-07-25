@@ -1,6 +1,7 @@
 import { useState, useCallback, useMemo, useEffect } from "react";
 import BackofficeLogin from "./BackofficeLogin";
 import HomeDashboard from "./HomeDashboard";
+import Reports from "./Reports";
 import MenuManager from "./MenuManager";
 import StaffManager from "./StaffManager";
 import Payroll from "./Payroll";
@@ -22,6 +23,7 @@ import "./BackOffice.css";
 // no separate check needed.
 const NAV_ITEMS = [
   { key: "home", label: "Home", roles: ["owner", "admin"], render: (staff) => <HomeDashboard staff={staff} /> },
+  { key: "reports", label: "Reports", roles: ["owner", "admin"], render: (staff) => <Reports staff={staff} /> },
   { key: "staff", label: "Staff Management", roles: ["owner", "admin"], render: (staff) => <StaffManager staff={staff} /> },
   { key: "menu", label: "Menu Management", roles: ["owner", "admin"], render: (staff) => <MenuManager staff={staff} /> },
   { key: "payroll", label: "Payroll", roles: ["owner", "admin"], render: (staff) => <Payroll staff={staff} /> },
