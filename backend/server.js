@@ -4350,6 +4350,111 @@ app.get("/api/backoffice/reports/discounts", async (req, res) => {
   }
 });
 
+// GET /api/backoffice/reports/refunds?start=YYYY-MM-DD&end=YYYY-MM-DD
+// The reversal audit — every void + refund in the period, two grains like the
+// Discount Report:
+//   1. per-reason rollup — reason, count, total reversed, % of gross sales.
+//   2. per-reversal detail — when, order #, type (void/refund), amount, tax,
+//      reason, WHO requested + WHO approved (dual-control), method, and the
+//      forward-looking Stripe refund id.
+// Scoped by WHEN the reversal happened (order_refunds.created_at) — the
+// "activity this period" view, deliberately distinct from Sales Summary /
+// Transaction Log, which attribute a refund back to the ORIGINAL sale's period
+// so their money reconciles with settled payments. The rollup + headline are
+// computed from the SAME detail rows, so the rollup total equals the sum of the
+// detail lines by construction.
+app.get("/api/backoffice/reports/refunds", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    const b = await getStatsBounds(client, req);
+
+    // Gross-sales base for the % (ready orders in the window).
+    const { rows: grossRows } = await client.query(
+      `SELECT COALESCE(SUM(subtotal), 0) AS gross
+         FROM orders
+        WHERE location_id = $1 AND status = 'ready'
+          AND completed_at >= $2 AND completed_at < $3`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+    const gross = parseFloat(grossRows[0].gross);
+    const pctOf = (amount) => (gross > 0 ? (amount / gross) * 100 : 0);
+
+    // Every reversal in the window. LEFT JOIN staff so a reversal whose
+    // requester/approver was since removed still shows. Method comes from the
+    // negative payments row linked by refund_id.
+    const { rows } = await client.query(
+      `SELECT r.id, r.created_at, o.order_number, r.type, r.amount, r.tax_amount,
+              r.reason, r.reason_note, r.stripe_refund_id,
+              rq.name AS requested_by, ap.name AS approved_by,
+              (SELECT p.method FROM payments p
+                 WHERE p.refund_id = r.id ORDER BY p.created_at LIMIT 1) AS method
+         FROM order_refunds r
+         JOIN orders o ON o.id = r.order_id
+         LEFT JOIN staff rq ON rq.id = r.requested_by
+         LEFT JOIN staff ap ON ap.id = r.approved_by
+        WHERE o.location_id = $1 AND r.status <> 'failed'
+          AND r.created_at >= $2 AND r.created_at < $3
+        ORDER BY r.created_at DESC`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+
+    // Rollup + headline from the SAME rows → rollup total == sum of detail.
+    const byReasonMap = new Map();
+    let refundTotal = 0, refundCount = 0, voidTotal = 0, voidCount = 0;
+    for (const r of rows) {
+      const amount = parseFloat(r.amount);
+      const agg = byReasonMap.get(r.reason) || { reason: r.reason, amount: 0, count: 0 };
+      agg.amount = round2(agg.amount + amount);
+      agg.count += 1;
+      byReasonMap.set(r.reason, agg);
+      if (r.type === "void") {
+        voidTotal = round2(voidTotal + amount);
+        voidCount += 1;
+      } else {
+        refundTotal = round2(refundTotal + amount);
+        refundCount += 1;
+      }
+    }
+    const byReason = [...byReasonMap.values()]
+      .map((a) => ({ ...a, pctOfSales: pctOf(a.amount) }))
+      .sort((x, y) => y.amount - x.amount);
+    const reversedTotal = round2(refundTotal + voidTotal);
+    const reversedCount = refundCount + voidCount;
+
+    res.json({
+      range: b.isCustom ? "custom" : req.query.range || "today",
+      grossSales: gross,
+      refundTotal,
+      refundCount,
+      voidTotal,
+      voidCount,
+      reversedTotal,
+      reversedCount,
+      pctOfSales: pctOf(reversedTotal),
+      byReason,
+      refunds: rows.map((r) => ({
+        id: r.id,
+        createdAt: r.created_at,
+        orderNumber: r.order_number,
+        type: r.type,
+        amount: parseFloat(r.amount),
+        taxAmount: parseFloat(r.tax_amount),
+        reason: r.reason,
+        reasonNote: r.reason_note,
+        requestedBy: r.requested_by,
+        approvedBy: r.approved_by,
+        method: r.method,
+        stripeRefundId: r.stripe_refund_id,
+      })),
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch refunds report");
+  } finally {
+    client.release();
+  }
+});
+
 // GET /api/backoffice/reports/labor?start=YYYY-MM-DD&end=YYYY-MM-DD
 // Labor expense + output per staff over the period: hours worked, labor cost,
 // and — folded in from Staff Performance — orders handled and sales rung, plus

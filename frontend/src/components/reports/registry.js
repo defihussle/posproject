@@ -1,6 +1,7 @@
 import SalesSummaryReport from "./SalesSummaryReport";
 import TransactionLogReport from "./TransactionLogReport";
 import DiscountReport from "./DiscountReport";
+import RefundsReport from "./RefundsReport";
 import LaborReport from "./LaborReport";
 
 // ============================================================
@@ -15,6 +16,7 @@ export const REPORTS = [
   { key: "sales-summary", path: "sales-summary", label: "Sales Summary", roles: ["owner", "admin"], Component: SalesSummaryReport },
   { key: "transactions", path: "transactions", label: "Transaction Log", roles: ["owner", "admin"], Component: TransactionLogReport },
   { key: "discounts", path: "discounts", label: "Discount Report", roles: ["owner", "admin"], Component: DiscountReport },
+  { key: "refunds", path: "refunds", label: "Refunds", roles: ["owner", "admin"], Component: RefundsReport },
   { key: "labor", path: "labor", label: "Labor Report", roles: ["owner", "admin"], Component: LaborReport },
 ];
 
