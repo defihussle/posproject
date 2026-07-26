@@ -461,6 +461,46 @@
   color: var(--red);
   background: var(--red-light);
 }
+
+/* Refund/void footnotes under the Sales Summary P&L. */
+.reports__footnotes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Per-row reversal state pill in the Transaction Log. */
+.reports__statepill {
+  font-family: var(--font-body);
+  font-size: 0.66rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+.reports__statepill--voided {
+  color: var(--red);
+  background: var(--red-light);
+}
+.reports__statepill--refunded,
+.reports__statepill--partial {
+  color: var(--text-secondary);
+  background: var(--bg-surface-hover);
+}
+
+/* Voided rows: struck + muted so a reversal reads as reversed at a glance,
+   while staying visible for audit (not just missing). */
+.reports__row--voided td {
+  color: var(--text-muted);
+}
+.reports__row--voided .reports__num,
+.reports__row--voided .reports__strong-cell,
+.reports__row--voided .reports__mono {
+  text-decoration: line-through;
+}
+.reports__row--voided .reports__statepill {
+  text-decoration: none;
+}
 .reports__logbar-cmp {
   display: flex;
   align-items: center;

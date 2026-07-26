@@ -31,6 +31,16 @@ const fmtDateTime = (iso) => {
   });
 };
 
+// Per-row reversal state. Voided orders are 'cancelled'; otherwise a row is
+// fully/partially refunded when it carries refunds, else a clean sale.
+const rowState = (r) => {
+  if (r.status === "cancelled") return "voided";
+  if (r.refunded >= r.total - 0.005) return "refunded"; // fully
+  if (r.refunded > 0.005) return "partial";
+  return "clean";
+};
+const STATE_LABELS = { voided: "Voided", refunded: "Refunded", partial: "Partially refunded", clean: "" };
+
 // PDF is offered only up to this row count — beyond it a PDF is neither
 // printable nor fast to render, so CSV is the real format (see reports-plan).
 const PDF_ROW_LIMIT = 500;
@@ -89,7 +99,7 @@ export default function TransactionLogReport({ range }) {
 
   const exportHeaders = [
     "Order #", "Date/Time", "Staff", "Subtotal", "Discount", "Reason",
-    "Tax", "Tip", "Total", "Payment", "Status",
+    "Tax", "Tip", "Total", "Refunded", "Payment", "State",
   ];
   const exportRows = () =>
     rows.map((r) => [
@@ -102,12 +112,14 @@ export default function TransactionLogReport({ range }) {
       r.tax.toFixed(2),
       r.tip.toFixed(2),
       r.total.toFixed(2),
+      r.refunded > 0 ? r.refunded.toFixed(2) : "",
       fmtMethods(r.methods),
-      r.status,
+      STATE_LABELS[rowState(r)],
     ]);
   const footer = totals
     ? ["Total", "", "", totals.subtotal.toFixed(2), totals.discount.toFixed(2), "",
-       totals.tax.toFixed(2), totals.tip.toFixed(2), totals.total.toFixed(2), "", ""]
+       totals.tax.toFixed(2), totals.tip.toFixed(2), totals.total.toFixed(2),
+       totals.refunded > 0 ? totals.refunded.toFixed(2) : "", "", `Net ${totals.net.toFixed(2)}`]
     : null;
 
   const doCsv = () =>
@@ -176,18 +188,26 @@ export default function TransactionLogReport({ range }) {
                 {totals.count} transaction{totals.count === 1 ? "" : "s"}
               </span>
               <span className="reports__logbar-sep">·</span>
-              <span className="reports__logbar-total">{fmtMoney(totals.total)} collected</span>
+              <span className="reports__logbar-total">{fmtMoney(totals.net)} collected</span>
+              {totals.refunded > 0 && (
+                <>
+                  <span className="reports__logbar-sep">·</span>
+                  <span className="reports__logbar-count" title="Refunds on orders in this period">
+                    −{fmtMoney(totals.refunded)} refunded
+                  </span>
+                </>
+              )}
               {data.reconciliation.balanced ? (
                 <span
                   className="reports__badge reports__badge--ok"
-                  title={`Order total ${fmtMoney(totals.total)} == payments ${fmtMoney(totals.paymentsTotal)}`}
+                  title={`Net (total ${fmtMoney(data.reconciliation.transactionTotal)} − refunds ${fmtMoney(data.reconciliation.refundedTotal)}) = ${fmtMoney(data.reconciliation.netTotal)} == payments ${fmtMoney(data.reconciliation.paymentsTotal)}`}
                 >
                   ✓ Reconciled
                 </span>
               ) : (
                 <span
                   className="reports__badge reports__badge--warn"
-                  title={`Orders ${fmtMoney(data.reconciliation.transactionTotal)} vs payments ${fmtMoney(data.reconciliation.paymentsTotal)}`}
+                  title={`Net ${fmtMoney(data.reconciliation.netTotal)} vs payments ${fmtMoney(data.reconciliation.paymentsTotal)}`}
                 >
                   ⚠ Mismatch
                 </span>
@@ -226,28 +246,49 @@ export default function TransactionLogReport({ range }) {
                   <th className="reports__num">Tax</th>
                   <th className="reports__num">Tip</th>
                   <th className="reports__num">Total</th>
+                  <th className="reports__num">Refunded</th>
                   <th>Payment</th>
+                  <th>State</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
-                  <tr key={r.orderNumber}>
-                    <td className="reports__mono">#{r.orderNumber}</td>
-                    <td>{fmtDateTime(r.completedAt)}</td>
-                    <td>{r.staffName}</td>
-                    <td className="reports__num">{fmtMoney(r.subtotal)}</td>
-                    <td className="reports__num">
-                      {r.discount > 0 ? `−${fmtMoney(r.discount)}` : "—"}
-                    </td>
-                    <td className="reports__reason">
-                      {r.discountReason ? REASON_LABELS[r.discountReason] || r.discountReason : "—"}
-                    </td>
-                    <td className="reports__num">{fmtMoney(r.tax)}</td>
-                    <td className="reports__num">{r.tip > 0 ? fmtMoney(r.tip) : "—"}</td>
-                    <td className="reports__num reports__strong-cell">{fmtMoney(r.total)}</td>
-                    <td>{fmtMethods(r.methods)}</td>
-                  </tr>
-                ))}
+                {rows.map((r) => {
+                  const state = rowState(r);
+                  const voided = state === "voided";
+                  return (
+                    <tr
+                      key={r.orderNumber}
+                      className={voided ? "reports__row--voided" : ""}
+                    >
+                      <td className="reports__mono">#{r.orderNumber}</td>
+                      <td>{fmtDateTime(r.completedAt)}</td>
+                      <td>{r.staffName}</td>
+                      <td className="reports__num">{fmtMoney(r.subtotal)}</td>
+                      <td className="reports__num">
+                        {r.discount > 0 ? `−${fmtMoney(r.discount)}` : "—"}
+                      </td>
+                      <td className="reports__reason">
+                        {r.discountReason ? REASON_LABELS[r.discountReason] || r.discountReason : "—"}
+                      </td>
+                      <td className="reports__num">{fmtMoney(r.tax)}</td>
+                      <td className="reports__num">{r.tip > 0 ? fmtMoney(r.tip) : "—"}</td>
+                      <td className="reports__num reports__strong-cell">{fmtMoney(r.total)}</td>
+                      <td className="reports__num">
+                        {r.refunded > 0 ? `−${fmtMoney(r.refunded)}` : "—"}
+                      </td>
+                      <td>{fmtMethods(r.methods)}</td>
+                      <td>
+                        {state !== "clean" && (
+                          <span
+                            className={`reports__statepill reports__statepill--${state}`}
+                          >
+                            {STATE_LABELS[state]}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
               <tfoot>
                 <tr className="reports__row--total">
@@ -258,7 +299,11 @@ export default function TransactionLogReport({ range }) {
                   <td className="reports__num">{fmtMoney(totals.tax)}</td>
                   <td className="reports__num">{fmtMoney(totals.tip)}</td>
                   <td className="reports__num">{fmtMoney(totals.total)}</td>
+                  <td className="reports__num">
+                    {totals.refunded > 0 ? `−${fmtMoney(totals.refunded)}` : "—"}
+                  </td>
                   <td />
+                  <td className="reports__num">Net {fmtMoney(totals.net)}</td>
                 </tr>
               </tfoot>
             </table>

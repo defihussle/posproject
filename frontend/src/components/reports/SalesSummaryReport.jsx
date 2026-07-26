@@ -42,12 +42,15 @@ export default function SalesSummaryReport({ range }) {
   }, [load]);
 
   // Ordered P&L line items. `sign` drives the +/− prefix; `strong` marks the
-  // Net and Total subtotal lines.
+  // Net and Total subtotal lines. Refunds sit in the pre-tax column (the line
+  // is the pre-tax portion of refunds); the refunded tax is netted into the Tax
+  // line, so Net + Tax + Tips == Total collected still holds exactly.
   const lineItems = useMemo(() => {
     if (!data) return [];
     return [
       { label: "Gross sales", value: data.grossSales },
       { label: "Discounts", value: data.discountTotal, sign: "-" },
+      { label: "Refunds", value: data.refundsPreTax || 0, sign: "-" },
       { label: "Net sales", value: data.netSales, strong: true },
       { label: "Tax collected", value: data.taxCollected, sign: "+" },
       { label: "Tips", value: data.totalTips, sign: "+" },
@@ -64,6 +67,14 @@ export default function SalesSummaryReport({ range }) {
     ]);
     rows.push(["Order count", String(data.orderCount)]);
     rows.push(["Average order value", data.avgOrderValue.toFixed(2)]);
+    if (data.refundTotal > 0) {
+      rows.push(["Refunds (incl. tax)", `-${Number(data.refundTotal).toFixed(2)}`]);
+      rows.push(["Refund count", String(data.refundCount)]);
+    }
+    if (data.voidCount > 0) {
+      rows.push(["Voided orders (excluded from sales)", String(data.voidCount)]);
+      rows.push(["Voided value (excluded from sales)", Number(data.voidTotal).toFixed(2)]);
+    }
     for (const m of data.paymentMix) {
       rows.push([`Payment — ${METHOD_LABELS[m.method] || m.method}`, Number(m.amount).toFixed(2)]);
     }
@@ -139,6 +150,27 @@ export default function SalesSummaryReport({ range }) {
               </tbody>
             </table>
           </div>
+
+          {/* Refund/void footnotes — the Refunds line above is pre-tax; the full
+              refunded amount (incl. tax) and voided activity are surfaced here
+              for audit. Voids never count in the sales figures above. */}
+          {(data.refundTotal > 0 || data.voidCount > 0) && (
+            <div className="reports__footnotes">
+              {data.refundTotal > 0 && (
+                <p className="reports__note">
+                  Refunds: {fmtMoney(data.refundTotal)} incl. {fmtMoney(data.refundTax)} tax across{" "}
+                  {data.refundCount} refund{data.refundCount === 1 ? "" : "s"} — the pre-tax portion
+                  reduces Net sales, the tax portion reduces Tax collected.
+                </p>
+              )}
+              {data.voidCount > 0 && (
+                <p className="reports__note">
+                  Voids: {data.voidCount} order{data.voidCount === 1 ? "" : "s"} voided this period
+                  ({fmtMoney(data.voidTotal)}) — excluded from all sales figures above.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Secondary stats */}
           <div className="reports__statgrid">

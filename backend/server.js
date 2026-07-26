@@ -4009,16 +4009,58 @@ app.get("/api/backoffice/reports/sales-summary", async (req, res) => {
     const total = parseFloat(s.total);
     const orderCount = parseInt(s.orders, 10);
 
-    // Payment-method mix — SUM(amount) GROUP BY method over the SAME set of
-    // orders, filtered to settled rows via settledPaymentsWhere(). Summed
-    // across methods this equals SUM(orders.total) == Total collected (verified:
-    // every ready order's payments sum to its total; today every row is
-    // 'captured' so the filter is a no-op and the invariant holds), so it's the
-    // reconciliation anchor. Payments are still mocked (nothing settled through
-    // a processor), so the method reflects what the cashier SELECTED at
+    // Refunds on these (ready) orders — scoped by the ORDER's completed_at, the
+    // same window the settled-payments sum uses, so the two stay reconciled even
+    // if the refund itself happened in a later period. amount is tax-inclusive;
+    // tax_amount is its tax portion. (Voids aren't here — a voided order is
+    // 'cancelled', not 'ready', so it's already excluded from every line above.)
+    const { rows: refRows } = await client.query(
+      `SELECT COALESCE(SUM(r.amount), 0) AS refund_total,
+              COALESCE(SUM(r.tax_amount), 0) AS refund_tax,
+              COUNT(*) AS refund_count
+         FROM order_refunds r
+         JOIN orders o ON o.id = r.order_id
+        WHERE o.location_id = $1 AND o.status = 'ready'
+          AND o.completed_at >= $2 AND o.completed_at < $3
+          AND r.status <> 'failed'`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+    const refundTotal = parseFloat(refRows[0].refund_total);
+    const refundTax = parseFloat(refRows[0].refund_tax);
+    const refundsPreTax = round2(refundTotal - refundTax);
+    const refundCount = parseInt(refRows[0].refund_count, 10);
+
+    // Voids memo (footnote only) — voided orders are excluded from the P&L
+    // entirely, but shown for audit so reversal activity is never invisible.
+    // Scoped by the void event time (when it happened this period).
+    const { rows: voidRows } = await client.query(
+      `SELECT COUNT(*) AS void_count, COALESCE(SUM(r.amount), 0) AS void_total
+         FROM order_refunds r
+         JOIN orders o ON o.id = r.order_id
+        WHERE o.location_id = $1 AND r.type = 'void' AND r.status <> 'failed'
+          AND r.created_at >= $2 AND r.created_at < $3`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+
+    // Line items (accounting-correct): the pre-tax column is
+    //   Gross − Discounts − Refunds(pre-tax) = Net sales
+    // and the tax line is net of refunded tax, so
+    //   Total collected = Net + Tax + Tips = SUM(orders.total) − refundTotal
+    // which equals SUM(settled payments) by construction.
+    const netSales = round2(gross - discount - refundsPreTax);
+    const taxCollected = round2(tax - refundTax);
+    const totalCollected = round2(total - refundTotal);
+
+    // Payment-method mix — net SUM(amount) GROUP BY method over the settled set
+    // (captures + negative refunds), so a method's bucket is what it NET
+    // collected. Summed across methods this equals totalCollected (the
+    // reconciliation anchor). `count` counts only captures (amount > 0) so it
+    // still reads as "orders paid by this method", not payment rows. Payments
+    // are still mocked, so the method reflects what the cashier SELECTED at
     // checkout, not verified settlement.
     const { rows: mixRows } = await client.query(
-      `SELECT p.method, COALESCE(SUM(p.amount), 0) AS amount, COUNT(*) AS count
+      `SELECT p.method, COALESCE(SUM(p.amount), 0) AS amount,
+              COUNT(*) FILTER (WHERE p.amount > 0) AS count
          FROM payments p
          JOIN orders o ON o.id = p.order_id
         WHERE o.location_id = $1 AND o.status = 'ready'
@@ -4033,12 +4075,18 @@ app.get("/api/backoffice/reports/sales-summary", async (req, res) => {
       range: b.isCustom ? "custom" : req.query.range || "today",
       grossSales: gross,
       discountTotal: discount,
-      netSales: gross - discount,
-      taxCollected: tax,
+      refundsPreTax,
+      refundTax,
+      refundTotal,
+      refundCount,
+      netSales,
+      taxCollected,
       totalTips: tips,
-      totalCollected: total,
+      totalCollected,
       orderCount,
       avgOrderValue: orderCount > 0 ? total / orderCount : 0,
+      voidCount: parseInt(voidRows[0].void_count, 10),
+      voidTotal: parseFloat(voidRows[0].void_total),
       paymentMix: mixRows.map((r) => ({
         method: r.method,
         amount: parseFloat(r.amount),
@@ -4083,10 +4131,16 @@ app.get("/api/backoffice/reports/transactions", async (req, res) => {
     await requireBackofficeSession(req);
     const b = await getStatsBounds(client, req);
 
+    // One row per order. Includes VOIDED (cancelled) orders so a reversal is
+    // clearly marked, not just missing (voids sort by their own date, which may
+    // be created_at when the order was voided before completing). Per-row
+    // `refunded` is the sum of non-failed refunds on that order.
     const { rows } = await client.query(
-      `SELECT o.order_number, o.completed_at, st.name AS staff_name,
+      `SELECT o.order_number, o.completed_at, o.created_at, st.name AS staff_name,
               o.subtotal, o.discount, o.discount_reason, o.tax, o.tip, o.total,
               o.status,
+              COALESCE((SELECT SUM(r.amount) FROM order_refunds r
+                          WHERE r.order_id = o.id AND r.status <> 'failed'), 0) AS refunded,
               COALESCE(
                 (SELECT array_agg(DISTINCT p.method::text ORDER BY p.method::text)
                    FROM payments p
@@ -4095,17 +4149,26 @@ app.get("/api/backoffice/reports/transactions", async (req, res) => {
               ) AS methods
          FROM orders o
          JOIN staff st ON st.id = o.staff_id
-        WHERE o.location_id = $1 AND o.status = 'ready'
-          AND o.completed_at >= $2 AND o.completed_at < $3
-        ORDER BY o.completed_at DESC, o.order_number DESC`,
+        WHERE o.location_id = $1
+          AND ( (o.status = 'ready'     AND o.completed_at >= $2 AND o.completed_at < $3)
+             OR (o.status = 'cancelled' AND COALESCE(o.completed_at, o.created_at) >= $2
+                                        AND COALESCE(o.completed_at, o.created_at) < $3) )
+        ORDER BY COALESCE(o.completed_at, o.created_at) DESC, o.order_number DESC`,
       [b.location.id, b.startTs, b.endTs]
     );
 
-    // Order-side totals (summary grain) + payments-side total (reconciliation).
+    // Order-side totals (READY only — voids contribute nothing) + refunds +
+    // payments-side total (reconciliation). Net = total − refunds must equal
+    // the settled payments sum (captures + negative refunds).
     const { rows: totRows } = await client.query(
       `SELECT COUNT(*) AS count, COALESCE(SUM(subtotal),0) AS subtotal,
               COALESCE(SUM(discount),0) AS discount, COALESCE(SUM(tax),0) AS tax,
               COALESCE(SUM(tip),0) AS tip, COALESCE(SUM(total),0) AS total,
+              COALESCE((SELECT SUM(r.amount) FROM order_refunds r
+                          JOIN orders o3 ON o3.id = r.order_id
+                         WHERE o3.location_id = $1 AND o3.status = 'ready'
+                           AND o3.completed_at >= $2 AND o3.completed_at < $3
+                           AND r.status <> 'failed'), 0) AS refunded_total,
               COALESCE((SELECT SUM(p.amount) FROM payments p
                           JOIN orders o2 ON o2.id = p.order_id
                          WHERE o2.location_id = $1 AND o2.status = 'ready'
@@ -4118,7 +4181,9 @@ app.get("/api/backoffice/reports/transactions", async (req, res) => {
       [b.location.id, b.startTs, b.endTs]
     );
     const t = totRows[0];
-    const txnTotal = parseFloat(t.total);
+    const grossTotal = parseFloat(t.total);
+    const refundedTotal = parseFloat(t.refunded_total);
+    const netTotal = round2(grossTotal - refundedTotal);
     const payTotal = parseFloat(t.payments_total);
 
     // Optional comparison vs a prior window supplied by the caller (the
@@ -4146,7 +4211,7 @@ app.get("/api/backoffice/reports/transactions", async (req, res) => {
       range: b.isCustom ? "custom" : req.query.range || "today",
       rows: rows.map((r) => ({
         orderNumber: r.order_number,
-        completedAt: r.completed_at,
+        completedAt: r.completed_at || r.created_at,
         staffName: r.staff_name,
         subtotal: parseFloat(r.subtotal),
         discount: parseFloat(r.discount),
@@ -4154,24 +4219,29 @@ app.get("/api/backoffice/reports/transactions", async (req, res) => {
         tax: parseFloat(r.tax),
         tip: parseFloat(r.tip),
         total: parseFloat(r.total),
-        status: r.status,
+        refunded: parseFloat(r.refunded),
+        status: r.status, // 'ready' | 'cancelled' (voided)
         methods: r.methods,
       })),
       totals: {
-        count: parseInt(t.count, 10),
+        count: parseInt(t.count, 10), // ready orders only (voids excluded)
         subtotal: parseFloat(t.subtotal),
         discount: parseFloat(t.discount),
         tax: parseFloat(t.tax),
         tip: parseFloat(t.tip),
-        total: txnTotal,
+        total: grossTotal,
+        refunded: refundedTotal,
+        net: netTotal,
         paymentsTotal: payTotal,
       },
-      // Three surfaces, one number — surfaced so the client can show a
-      // balanced/mismatch badge. Rounded to cents before comparing.
+      // Three surfaces, one number — now on the NET total (gross − refunds),
+      // which equals the settled payments sum. Rounded to cents before comparing.
       reconciliation: {
-        transactionTotal: txnTotal,
+        transactionTotal: grossTotal,
+        refundedTotal,
+        netTotal,
         paymentsTotal: payTotal,
-        balanced: Math.round(txnTotal * 100) === Math.round(payTotal * 100),
+        balanced: Math.round(netTotal * 100) === Math.round(payTotal * 100),
       },
       comparison,
     });
