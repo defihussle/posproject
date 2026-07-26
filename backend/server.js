@@ -4038,6 +4038,106 @@ app.get("/api/backoffice/reports/discounts", async (req, res) => {
   }
 });
 
+// GET /api/backoffice/reports/labor?start=YYYY-MM-DD&end=YYYY-MM-DD
+// Labor expense + output per staff over the period: hours worked, labor cost,
+// and — folded in from Staff Performance — orders handled and sales rung, plus
+// report-level total labor cost and labor % of sales.
+//
+// Same-source invariant: hours/cost come from the SAME canonical worked-time
+// helpers (shiftOverlapsWindowSql / workedSecondsSql) as stats/labor, Payroll,
+// and My Hours, over the SAME getStatsBounds window — so for a given staffer
+// and window this report's worked-time is identical to those surfaces by
+// construction (no second formula). Rows are shift-driven (exactly stats/labor's
+// population: everyone with a shift overlapping the window, owners included —
+// unlike Payroll, which is a Mon–Sun payroll workflow that excludes owners);
+// orders/sales are LEFT JOINed on, so a worker who rang nothing (e.g. kitchen)
+// still shows their hours/cost with 0 orders. NULL hourly_rate costs $0 (matches
+// stats/labor) and is surfaced as a null rate so the UI can flag "rate not set".
+app.get("/api/backoffice/reports/labor", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    const b = await getStatsBounds(client, req);
+
+    // Per-staff worked seconds (canonical) + orders/sales (staff-performance
+    // grain). $1=startTs, $2=endTs, $3=location.id.
+    const { rows: perStaffRows } = await client.query(
+      `WITH shift_work AS (
+         SELECT s.staff_id,
+                ${workedSecondsSql("$1", "$2")} AS worked_seconds
+           FROM shifts s
+          WHERE ${shiftOverlapsWindowSql("$1", "$2")}
+       ),
+       per_staff AS (
+         SELECT staff_id, SUM(worked_seconds) AS worked_seconds
+           FROM shift_work GROUP BY staff_id
+       ),
+       perf AS (
+         SELECT o.staff_id, COUNT(*) AS order_count,
+                COALESCE(SUM(o.total), 0) AS total_sales
+           FROM orders o
+          WHERE o.location_id = $3 AND o.status = 'ready'
+            AND o.completed_at >= $1 AND o.completed_at < $2
+          GROUP BY o.staff_id
+       )
+       SELECT ps.staff_id, st.name, st.role, st.hourly_rate,
+              ps.worked_seconds / 3600.0 AS hours,
+              (ps.worked_seconds / 3600.0) * COALESCE(st.hourly_rate, 0) AS labor_cost,
+              COALESCE(pf.order_count, 0) AS order_count,
+              COALESCE(pf.total_sales, 0) AS total_sales
+         FROM per_staff ps
+         JOIN staff st ON st.id = ps.staff_id
+         LEFT JOIN perf pf ON pf.staff_id = ps.staff_id
+        ORDER BY labor_cost DESC, hours DESC, st.name`,
+      [b.startTs, b.endTs, b.location.id]
+    );
+
+    // Gross-sales base for labor % — SUM(subtotal) over ALL ready orders in the
+    // window, identical to stats/labor's grossSales (so the % matches too).
+    const { rows: salesRows } = await client.query(
+      `SELECT COALESCE(SUM(subtotal), 0) AS gross_sales
+         FROM orders
+        WHERE location_id = $1 AND status = 'ready'
+          AND completed_at >= $2 AND completed_at < $3`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+
+    const perStaff = perStaffRows.map((r) => ({
+      staffId: r.staff_id,
+      name: r.name,
+      role: r.role,
+      hourlyRate: r.hourly_rate == null ? null : parseFloat(r.hourly_rate),
+      hours: parseFloat(r.hours),
+      laborCost: parseFloat(r.labor_cost),
+      orderCount: parseInt(r.order_count, 10),
+      totalSales: parseFloat(r.total_sales),
+    }));
+
+    // Totals summed the SAME way as stats/labor (JS reduce of parsed floats),
+    // so total labor cost / hours are byte-identical to that endpoint.
+    const totalLaborCost = perStaff.reduce((a, s) => a + s.laborCost, 0);
+    const totalHours = perStaff.reduce((a, s) => a + s.hours, 0);
+    const totalOrders = perStaff.reduce((a, s) => a + s.orderCount, 0);
+    const totalSales = perStaff.reduce((a, s) => a + s.totalSales, 0);
+    const grossSales = parseFloat(salesRows[0].gross_sales);
+
+    res.json({
+      range: b.isCustom ? "custom" : req.query.range || "today",
+      grossSales,
+      totalLaborCost,
+      totalHours,
+      totalOrders,
+      totalSales,
+      laborPct: grossSales > 0 ? (totalLaborCost / grossSales) * 100 : 0,
+      perStaff,
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch labor report");
+  } finally {
+    client.release();
+  }
+});
+
 // --------------- Back Office: Payroll ---------------
 // Owner/admin only. Weekly (Mon–Sun, location tz) hours + gross pay per
 // staff, plus a persisted Paid/Unpaid marker (payroll_status). Hours reuse
