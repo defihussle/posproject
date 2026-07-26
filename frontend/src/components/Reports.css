@@ -412,6 +412,102 @@
   color: var(--text-muted);
 }
 
+/* ---------- Transaction Log ---------- */
+.reports__logbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 12px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+.reports__logbar-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.reports__logbar-count {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.reports__logbar-sep {
+  color: var(--text-muted);
+}
+.reports__logbar-total {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.reports__badge {
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+.reports__badge--ok {
+  color: var(--green);
+  background: var(--green-light);
+}
+.reports__badge--warn {
+  color: var(--red);
+  background: var(--red-light);
+}
+.reports__logbar-cmp {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+.reports__cmp-label {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.reports__delta {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+.reports__delta--up {
+  color: var(--green);
+}
+.reports__delta--down {
+  color: var(--red);
+}
+.reports__delta--flat {
+  color: var(--text-muted);
+}
+
+.reports__table--log {
+  min-width: 860px; /* forces horizontal scroll rather than cramping on mobile */
+}
+.reports__table--log tbody td {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+.reports__mono {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-primary) !important;
+}
+.reports__reason {
+  font-style: italic;
+}
+.reports__strong-cell {
+  color: var(--text-primary) !important;
+  font-weight: 700;
+}
+
 /* Error state */
 .reports__errorstate {
   display: flex;

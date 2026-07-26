@@ -9,6 +9,7 @@ import {
   resolveCustomRange,
 } from "./reportRange";
 import SalesSummaryReport from "./reports/SalesSummaryReport";
+import TransactionLogReport from "./reports/TransactionLogReport";
 import "./Reports.css";
 
 // ============================================================
@@ -31,7 +32,7 @@ import "./Reports.css";
 // Component === null renders the shared placeholder until its slice lands.
 const REPORTS = [
   { key: "sales-summary", label: "Sales Summary", roles: ["owner", "admin"], Component: SalesSummaryReport },
-  { key: "transactions", label: "Transaction Log", roles: ["owner", "admin"], Component: null },
+  { key: "transactions", label: "Transaction Log", roles: ["owner", "admin"], Component: TransactionLogReport },
   { key: "discounts", label: "Discount Report", roles: ["owner", "admin"], Component: null },
   { key: "labor", label: "Labor Report", roles: ["owner", "admin"], Component: null },
 ];

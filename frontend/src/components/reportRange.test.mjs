@@ -5,6 +5,7 @@ import {
   resolveMonth,
   resolveQuarter,
   resolveCustomRange,
+  previousPeriod,
 } from "./reportRange.js";
 
 const TODAY = new Date(2026, 6, 24); // 2026-07-24 (local), mid-Q3
@@ -83,6 +84,38 @@ check("last-month across year boundary", resolvePreset("last-month", new Date(20
   start: "2025-12-01",
   end: "2025-12-31",
   label: "December 2025",
+});
+
+// --- previousPeriod (comparison window) ---
+check("prev of full month → prior month", previousPeriod("2026-06-01", "2026-06-30"), {
+  start: "2026-05-01",
+  end: "2026-05-31",
+});
+check("prev of full month across year → prior Dec", previousPeriod("2026-01-01", "2026-01-31"), {
+  start: "2025-12-01",
+  end: "2025-12-31",
+});
+check("prev of full quarter → prior quarter", previousPeriod("2026-04-01", "2026-06-30"), {
+  start: "2026-01-01",
+  end: "2026-03-31",
+});
+check("prev of Q1 across year → prior Q4", previousPeriod("2026-01-01", "2026-03-31"), {
+  start: "2025-10-01",
+  end: "2025-12-31",
+});
+check("prev of full year → prior year", previousPeriod("2026-01-01", "2026-12-31"), {
+  start: "2025-01-01",
+  end: "2025-12-31",
+});
+// To-date window is NOT a full month → equal-length immediately-preceding window.
+check("prev of to-date window → equal-length preceding", previousPeriod("2026-07-01", "2026-07-24"), {
+  start: "2026-06-07",
+  end: "2026-06-30",
+});
+// Arbitrary custom range → equal-length preceding window.
+check("prev of 11-day custom range → equal-length preceding", previousPeriod("2026-02-10", "2026-02-20"), {
+  start: "2026-01-30",
+  end: "2026-02-09",
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

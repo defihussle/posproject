@@ -3794,6 +3794,133 @@ app.get("/api/backoffice/reports/sales-summary", async (req, res) => {
   }
 });
 
+// GET /api/backoffice/reports/transactions?start=YYYY-MM-DD&end=YYYY-MM-DD
+//   &prevStart=YYYY-MM-DD&prevEnd=YYYY-MM-DD (optional comparison window)
+// The audit backbone: one row per completed (ready) order — number, time,
+// staff, the full money breakdown, discount reason, and payment method(s).
+// NET-NEW query (orders + payments + staff); no current equivalent.
+//
+// Reconciliation invariant & payment states (as built): Reports count only
+// status='ready' orders. Checkout writes one or more 'captured', positive
+// payments per order that sum exactly to orders.total (see the payments
+// INSERT above; verified: every ready order's payments == its total). No code
+// path today writes 'failed'/'refunded'/'pending' or negative amounts — those
+// payment_status values are unreachable (no refund/void flow exists). So the
+// rollup deliberately uses NO status filter and SUM(payments.amount) ==
+// SUM(orders.total) by construction, which is why Sales Summary total ==
+// SUM(payments.amount) == Transaction Log total holds exactly. If a
+// refund/void/failed flow is ever added, unfiltered SUM(payments.amount)
+// would include money never collected or since returned and the invariant
+// would break — at which point payments must be filtered to settled states
+// (net of refunds) and reversed orders routed to the Voids report. Flagged as
+// the biggest audit gap in docs/architecture/reports-plan.md.
+//
+// The per-order row query is the row-grain source a future end-of-day report
+// aggregates; the totals query is the same summary grain as Sales Summary.
+// Both key off getStatsBounds so windows never diverge.
+app.get("/api/backoffice/reports/transactions", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    const b = await getStatsBounds(client, req);
+
+    const { rows } = await client.query(
+      `SELECT o.order_number, o.completed_at, st.name AS staff_name,
+              o.subtotal, o.discount, o.discount_reason, o.tax, o.tip, o.total,
+              o.status,
+              COALESCE(
+                (SELECT array_agg(DISTINCT p.method::text ORDER BY p.method::text)
+                   FROM payments p WHERE p.order_id = o.id),
+                '{}'
+              ) AS methods
+         FROM orders o
+         JOIN staff st ON st.id = o.staff_id
+        WHERE o.location_id = $1 AND o.status = 'ready'
+          AND o.completed_at >= $2 AND o.completed_at < $3
+        ORDER BY o.completed_at DESC, o.order_number DESC`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+
+    // Order-side totals (summary grain) + payments-side total (reconciliation).
+    const { rows: totRows } = await client.query(
+      `SELECT COUNT(*) AS count, COALESCE(SUM(subtotal),0) AS subtotal,
+              COALESCE(SUM(discount),0) AS discount, COALESCE(SUM(tax),0) AS tax,
+              COALESCE(SUM(tip),0) AS tip, COALESCE(SUM(total),0) AS total,
+              COALESCE((SELECT SUM(p.amount) FROM payments p
+                          JOIN orders o2 ON o2.id = p.order_id
+                         WHERE o2.location_id = $1 AND o2.status = 'ready'
+                           AND o2.completed_at >= $2 AND o2.completed_at < $3), 0)
+                AS payments_total
+         FROM orders o
+        WHERE o.location_id = $1 AND o.status = 'ready'
+          AND o.completed_at >= $2 AND o.completed_at < $3`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+    const t = totRows[0];
+    const txnTotal = parseFloat(t.total);
+    const payTotal = parseFloat(t.payments_total);
+
+    // Optional comparison vs a prior window supplied by the caller (the
+    // frontend computes "prior equivalent period" — prior calendar month/
+    // quarter/year, else an equal-length preceding window). Generic on
+    // purpose so every aggregate report reuses this same prev-window layer.
+    let comparison = null;
+    const { prevStart, prevEnd } = req.query;
+    if (isYmd(prevStart) && isYmd(prevEnd)) {
+      const { rows: cmp } = await client.query(
+        `SELECT COUNT(*) AS count, COALESCE(SUM(total),0) AS total
+           FROM orders
+          WHERE location_id = $1 AND status = 'ready'
+            AND completed_at >= ($2::date)::timestamp AT TIME ZONE $4
+            AND completed_at <  (($3::date + 1)::timestamp) AT TIME ZONE $4`,
+        [b.location.id, prevStart, prevEnd, b.tz]
+      );
+      comparison = {
+        count: parseInt(cmp[0].count, 10),
+        total: parseFloat(cmp[0].total),
+      };
+    }
+
+    res.json({
+      range: b.isCustom ? "custom" : req.query.range || "today",
+      rows: rows.map((r) => ({
+        orderNumber: r.order_number,
+        completedAt: r.completed_at,
+        staffName: r.staff_name,
+        subtotal: parseFloat(r.subtotal),
+        discount: parseFloat(r.discount),
+        discountReason: r.discount_reason,
+        tax: parseFloat(r.tax),
+        tip: parseFloat(r.tip),
+        total: parseFloat(r.total),
+        status: r.status,
+        methods: r.methods,
+      })),
+      totals: {
+        count: parseInt(t.count, 10),
+        subtotal: parseFloat(t.subtotal),
+        discount: parseFloat(t.discount),
+        tax: parseFloat(t.tax),
+        tip: parseFloat(t.tip),
+        total: txnTotal,
+        paymentsTotal: payTotal,
+      },
+      // Three surfaces, one number — surfaced so the client can show a
+      // balanced/mismatch badge. Rounded to cents before comparing.
+      reconciliation: {
+        transactionTotal: txnTotal,
+        paymentsTotal: payTotal,
+        balanced: Math.round(txnTotal * 100) === Math.round(payTotal * 100),
+      },
+      comparison,
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch transaction log report");
+  } finally {
+    client.release();
+  }
+});
+
 // --------------- Back Office: Payroll ---------------
 // Owner/admin only. Weekly (Mon–Sun, location tz) hours + gross pay per
 // staff, plus a persisted Paid/Unpaid marker (payroll_status). Hours reuse
