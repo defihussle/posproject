@@ -444,6 +444,19 @@ const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const DISCOUNT_REASONS = ["family", "friend", "employee", "neighbouring_store"];
 const DISCOUNT_FLAG_THRESHOLD = 50; // % — not blocked, but logged so it's not silently invisible
 
+// Refund/Void — fixed reason set (CHECK-constrained in database/refunds.sql,
+// same spirit as DISCOUNT_REASONS) and the two reversal types. See
+// docs/architecture/refunds-plan.md.
+const REFUND_REASONS = [
+  "wrong_order", "kitchen_error", "quality_issue",
+  "customer_cancelled", "overcharge", "duplicate", "other",
+];
+const REFUND_TYPES = ["void", "refund"];
+const REFUND_FLAG_THRESHOLD = 50; // $ — logged, never silently invisible (mirrors discounts)
+// At/above this $ amount a manager PIN is NOT enough — an owner/admin must
+// approve (misuse guard). Back Office callers are already owner/admin.
+const REFUND_OWNER_APPROVAL_THRESHOLD = 100; // $
+
 app.post("/api/orders", requireDevicePairing, async (req, res) => {
   const { staffId, paymentMethod, items, discount } = req.body || {};
 
@@ -1196,6 +1209,234 @@ app.patch("/api/orders/:id/status/revert", requireDevicePairing, async (req, res
     await client.query("ROLLBACK");
     console.error("KDS status revert failed:", err.message);
     res.status(500).json({ error: "Failed to revert order status" });
+  } finally {
+    client.release();
+  }
+});
+
+// --------------- Refunds & Voids ---------------
+// See docs/architecture/refunds-plan.md. Two reversal types:
+//   - VOID   — erase a sale that should never have counted; full-order only;
+//              sets orders.status='cancelled' so it drops out of every report
+//              (all report queries already filter status='ready').
+//   - REFUND — return money on a standing (ready) sale; full or partial-by-
+//              amount; the order stays 'ready' and remains in gross/net/tax,
+//              the refund is a deduction from money collected.
+// The MONEY lives in the existing payments ledger: every reversal writes a
+// negative payments row (status='refunded', amount=−refunded, refund_id → the
+// audit record), so SUM(payments.amount) over settled rows (settledPaymentsWhere:
+// captured + refunded) is net collected by construction and every report
+// reconciles through one predicate. order_refunds holds the audit + forward-
+// looking Stripe fields. (Line-item refunds arrive with the POS UI slice; the
+// `items`/order_refund_items plumbing is already here.)
+async function applyRefund(client, {
+  orderId, type, reason, reasonNote, amount, items, requestedBy, approvedBy, approverRole,
+}) {
+  if (!REFUND_TYPES.includes(type)) {
+    throw new HttpError(400, "type must be 'void' or 'refund'");
+  }
+  if (!REFUND_REASONS.includes(reason)) {
+    throw new HttpError(400, `reason must be one of: ${REFUND_REASONS.join(", ")}`);
+  }
+  const note = typeof reasonNote === "string" && reasonNote.trim() ? reasonNote.trim() : null;
+  if (reason === "other" && !note) {
+    throw new HttpError(400, "reason_note is required when reason is 'other'");
+  }
+
+  // Lock the order for the duration of the reversal.
+  const { rows: oRows } = await client.query(
+    "SELECT id, status, total, tax FROM orders WHERE id = $1 FOR UPDATE",
+    [orderId]
+  );
+  if (oRows.length === 0) throw new HttpError(404, "Order not found");
+  const order = oRows[0];
+  if (order.status === "cancelled") {
+    throw new HttpError(409, "Order is already voided — nothing to reverse");
+  }
+  const orderTotal = parseFloat(order.total);
+  const orderTax = parseFloat(order.tax);
+
+  // Prior (non-failed) refunds on this order.
+  const { rows: rRows } = await client.query(
+    `SELECT COALESCE(SUM(amount), 0) AS refunded, COALESCE(SUM(tax_amount), 0) AS refunded_tax
+       FROM order_refunds WHERE order_id = $1 AND status <> 'failed'`,
+    [orderId]
+  );
+  const alreadyRefunded = parseFloat(rRows[0].refunded);
+  const alreadyRefundedTax = parseFloat(rRows[0].refunded_tax);
+  const remaining = round2(orderTotal - alreadyRefunded);
+
+  let refundAmount, refundTax;
+  if (type === "void") {
+    // Full-order erase — only valid before any partial refund exists.
+    if (alreadyRefunded > 0) {
+      throw new HttpError(409, "Order has partial refunds — reverse the remainder with a refund, not a void");
+    }
+    refundAmount = orderTotal;
+    refundTax = orderTax;
+  } else {
+    // Refund — a standing completed sale. In-progress orders reverse via void.
+    if (order.status !== "ready") {
+      throw new HttpError(409, "Only completed (ready) orders can be refunded; reverse an in-progress order with a void");
+    }
+    if (amount === undefined || amount === null) {
+      refundAmount = remaining; // full remaining
+      refundTax = round2(orderTax - alreadyRefundedTax);
+    } else {
+      const amt = Number(amount);
+      if (!Number.isFinite(amt) || amt <= 0) {
+        throw new HttpError(400, "amount must be a positive number");
+      }
+      refundAmount = round2(amt);
+      // Tax portion proportional to the money returned.
+      refundTax = orderTotal > 0 ? round2(refundAmount * (orderTax / orderTotal)) : 0;
+    }
+  }
+
+  if (refundAmount <= 0) throw new HttpError(409, "Order is already fully refunded");
+  if (refundAmount > remaining + 0.005) {
+    throw new HttpError(
+      400,
+      `Refund amount ${refundAmount.toFixed(2)} exceeds remaining refundable ${remaining.toFixed(2)}`
+    );
+  }
+
+  // Misuse guard: a manager PIN can't approve a high-value reversal — owner/admin only.
+  if (approverRole === "manager" && refundAmount >= REFUND_OWNER_APPROVAL_THRESHOLD) {
+    throw new HttpError(403, `Reversals of $${REFUND_OWNER_APPROVAL_THRESHOLD}+ require owner/admin approval`);
+  }
+  // High-value reversals are logged (not blocked) — never silently invisible.
+  if (refundAmount >= REFUND_FLAG_THRESHOLD) {
+    console.warn(
+      `High-value ${type}: $${refundAmount.toFixed(2)} (reason: ${reason}) order=${orderId} requested_by=${requestedBy} approved_by=${approvedBy}`
+    );
+  }
+
+  // 1. Audit record — mock settles immediately ('completed'); a Stripe webhook
+  //    would later flip a 'pending' row to 'completed'/'failed'.
+  const { rows: insRows } = await client.query(
+    `INSERT INTO order_refunds (order_id, type, amount, tax_amount, reason, reason_note,
+                                requested_by, approved_by, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed')
+     RETURNING id, created_at`,
+    [orderId, type, refundAmount, refundTax, reason, note, requestedBy, approvedBy]
+  );
+  const refundId = insRows[0].id;
+
+  // 2. Optional line-item detail (populated by the line-item refund path).
+  if (Array.isArray(items)) {
+    for (const it of items) {
+      await client.query(
+        `INSERT INTO order_refund_items (refund_id, order_item_id, quantity, amount)
+         VALUES ($1, $2, $3, $4)`,
+        [refundId, it.orderItemId, it.quantity, it.amount]
+      );
+    }
+  }
+
+  // 3. Negative money row on the ledger; method mirrors the original capture.
+  const { rows: payRows } = await client.query(
+    "SELECT method FROM payments WHERE order_id = $1 AND refund_id IS NULL ORDER BY created_at LIMIT 1",
+    [orderId]
+  );
+  const method = payRows[0] ? payRows[0].method : "other";
+  await client.query(
+    `INSERT INTO payments (order_id, method, amount, status, refund_id)
+     VALUES ($1, $2, $3, 'refunded', $4)`,
+    [orderId, method, -refundAmount, refundId]
+  );
+
+  // 4. A void erases the sale.
+  let orderStatus = order.status;
+  if (type === "void") {
+    await client.query("UPDATE orders SET status = 'cancelled' WHERE id = $1", [orderId]);
+    orderStatus = "cancelled";
+  }
+
+  return {
+    refund: {
+      id: refundId,
+      orderId,
+      type,
+      amount: refundAmount,
+      taxAmount: refundTax,
+      reason,
+      reasonNote: note,
+      requestedBy,
+      approvedBy,
+      status: "completed",
+      createdAt: insRows[0].created_at,
+    },
+    orderStatus,
+    remainingRefundable: round2(remaining - refundAmount),
+  };
+}
+
+// POST /api/orders/:id/refund   (POS — device-paired)
+// Body: { staffId, approverStaffId, approverPin, type, reason, reasonNote, amount, items }
+// Dual-control: a cashier INITIATES; a manager/owner/admin APPROVES with their
+// PIN before it commits (guards against a cashier reversing sales to pocket
+// cash). The approver may equal the initiator when the initiator is manager+.
+app.post("/api/orders/:id/refund", requireDevicePairing, async (req, res) => {
+  const { id } = req.params;
+  const { staffId, approverStaffId, approverPin, type, reason, reasonNote, amount, items } =
+    req.body || {};
+  const client = await pool.connect();
+  try {
+    // Initiator: any working role except kitchen.
+    const initiator = await requireStaffIdParam(staffId, ["owner", "admin", "manager", "cashier"]);
+    // Approver: manager+ AND must prove their PIN (dual-control).
+    const approver = await requireStaffIdParam(approverStaffId, ["owner", "admin", "manager"]);
+    await verifyStaffPin(approver.id, approverPin);
+
+    await client.query("BEGIN");
+    const result = await applyRefund(client, {
+      orderId: id,
+      type,
+      reason,
+      reasonNote,
+      amount,
+      items,
+      requestedBy: initiator.id,
+      approvedBy: approver.id,
+      approverRole: approver.role,
+    });
+    await client.query("COMMIT");
+    res.status(201).json(result);
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    sendHttpError(res, err, "Failed to process refund");
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/backoffice/orders/:id/refund   (Back Office — owner/admin session)
+// Body: { type, reason, reasonNote, amount, items }. Owner/admin are the top of
+// the trust hierarchy and self-approve (approved_by = requested_by = session staff).
+app.post("/api/backoffice/orders/:id/refund", async (req, res) => {
+  const { id } = req.params;
+  const { type, reason, reasonNote, amount, items } = req.body || {};
+  const client = await pool.connect();
+  try {
+    const staff = await requireBackofficeSession(req); // owner/admin only
+    await client.query("BEGIN");
+    const result = await applyRefund(client, {
+      orderId: id,
+      type,
+      reason,
+      reasonNote,
+      amount,
+      items,
+      requestedBy: staff.id,
+      approvedBy: staff.id,
+      approverRole: staff.role,
+    });
+    await client.query("COMMIT");
+    res.status(201).json(result);
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    sendHttpError(res, err, "Failed to process refund");
   } finally {
     client.release();
   }
@@ -3719,15 +3960,16 @@ app.get("/api/backoffice/stats/discounts", async (req, res) => {
 
 // The SINGLE source of truth for which payment rows count as collected revenue
 // in EVERY report rollup (Sales Summary payment mix, Transaction Log
-// reconciliation + method list, and future reports). Today checkout writes
-// only 'captured', positive payments that sum to the order total, so this
-// matches every payment row and the reconciliation invariant
-// (SUM(payments.amount) == SUM(orders.total)) holds. When a refund/void flow
-// ships, change ONLY this predicate (exclude 'failed', net or exclude
-// 'refunded') and every report's money reconciles together — never a second
-// copy of the rule to hunt down.
+// reconciliation + method list, and future reports). Two settled kinds now:
+// positive 'captured' rows from checkout, and negative 'refunded' rows written
+// by the refund/void flow (see applyRefund). Because refunds are negative,
+// SUM(payments.amount) over this set is NET collected — captures minus refunds
+// — by construction, so every report nets refunds together through this one
+// predicate. The reconciliation invariant evolves to:
+//   SUM(orders.total) [ready] − SUM(refunds on those orders) == SUM(payments) [settled]
+// A future 'failed'/'pending' Stripe row stays excluded until it settles.
 function settledPaymentsWhere(alias = "p") {
-  return `${alias}.status = 'captured'`;
+  return `${alias}.status IN ('captured', 'refunded')`;
 }
 
 // GET /api/backoffice/reports/sales-summary?start=YYYY-MM-DD&end=YYYY-MM-DD
@@ -4562,6 +4804,13 @@ app.post("/api/backoffice/devices/:id/revoke", async (req, res) => {
 });
 
 // --------------- Start server ---------------
-app.listen(PORT, () => {
-  console.log(`Narcos Tacos POS API running on http://localhost:${PORT}`);
-});
+// Guarded so tests can `require('./server.js')` to exercise helpers/handlers
+// directly without opening the port. `node server.js` / `npm run dev` still
+// start listening exactly as before.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Narcos Tacos POS API running on http://localhost:${PORT}`);
+  });
+}
+
+module.exports = { app, pool, applyRefund, requireStaffIdParam, verifyStaffPin };
