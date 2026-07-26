@@ -3717,6 +3717,19 @@ app.get("/api/backoffice/stats/discounts", async (req, res) => {
 // custom start/end (YYYY-MM-DD, location tz) needs no new date logic. See
 // docs/architecture/reports-plan.md.
 
+// The SINGLE source of truth for which payment rows count as collected revenue
+// in EVERY report rollup (Sales Summary payment mix, Transaction Log
+// reconciliation + method list, and future reports). Today checkout writes
+// only 'captured', positive payments that sum to the order total, so this
+// matches every payment row and the reconciliation invariant
+// (SUM(payments.amount) == SUM(orders.total)) holds. When a refund/void flow
+// ships, change ONLY this predicate (exclude 'failed', net or exclude
+// 'refunded') and every report's money reconciles together — never a second
+// copy of the rule to hunt down.
+function settledPaymentsWhere(alias = "p") {
+  return `${alias}.status = 'captured'`;
+}
+
 // GET /api/backoffice/reports/sales-summary?start=YYYY-MM-DD&end=YYYY-MM-DD
 //   (also accepts range=today|week|month, but Reports drives it with custom
 //   start/end). A P&L-style single-period snapshot:
@@ -3755,17 +3768,20 @@ app.get("/api/backoffice/reports/sales-summary", async (req, res) => {
     const orderCount = parseInt(s.orders, 10);
 
     // Payment-method mix — SUM(amount) GROUP BY method over the SAME set of
-    // orders. Summed across methods this equals SUM(orders.total) == Total
-    // collected (verified: every ready order's payments sum to its total), so
-    // it's the reconciliation anchor. No status filter: payments are mocked
-    // (nothing settled through a processor), so this reflects the method the
-    // cashier SELECTED at checkout, not verified settlement.
+    // orders, filtered to settled rows via settledPaymentsWhere(). Summed
+    // across methods this equals SUM(orders.total) == Total collected (verified:
+    // every ready order's payments sum to its total; today every row is
+    // 'captured' so the filter is a no-op and the invariant holds), so it's the
+    // reconciliation anchor. Payments are still mocked (nothing settled through
+    // a processor), so the method reflects what the cashier SELECTED at
+    // checkout, not verified settlement.
     const { rows: mixRows } = await client.query(
       `SELECT p.method, COALESCE(SUM(p.amount), 0) AS amount, COUNT(*) AS count
          FROM payments p
          JOIN orders o ON o.id = p.order_id
         WHERE o.location_id = $1 AND o.status = 'ready'
           AND o.completed_at >= $2 AND o.completed_at < $3
+          AND ${settledPaymentsWhere("p")}
         GROUP BY p.method
         ORDER BY amount DESC`,
       [b.location.id, b.startTs, b.endTs]
@@ -3805,15 +3821,16 @@ app.get("/api/backoffice/reports/sales-summary", async (req, res) => {
 // payments per order that sum exactly to orders.total (see the payments
 // INSERT above; verified: every ready order's payments == its total). No code
 // path today writes 'failed'/'refunded'/'pending' or negative amounts — those
-// payment_status values are unreachable (no refund/void flow exists). So the
-// rollup deliberately uses NO status filter and SUM(payments.amount) ==
-// SUM(orders.total) by construction, which is why Sales Summary total ==
-// SUM(payments.amount) == Transaction Log total holds exactly. If a
-// refund/void/failed flow is ever added, unfiltered SUM(payments.amount)
-// would include money never collected or since returned and the invariant
-// would break — at which point payments must be filtered to settled states
-// (net of refunds) and reversed orders routed to the Voids report. Flagged as
-// the biggest audit gap in docs/architecture/reports-plan.md.
+// payment_status values are unreachable (no refund/void flow exists). Payment
+// rows are filtered through settledPaymentsWhere() (currently 'captured'), so
+// today the filter is a no-op and SUM(payments.amount) == SUM(orders.total) by
+// construction — which is why Sales Summary total == SUM(payments.amount) ==
+// Transaction Log total holds exactly. When a refund/void/failed flow is added,
+// unfiltered SUM(payments.amount) would include money never collected or since
+// returned and the invariant would break; because every rollup already routes
+// through settledPaymentsWhere(), tightening that ONE predicate (net of refunds)
+// fixes all reports together, with reversed orders routed to the Voids report.
+// Flagged as the biggest audit gap in docs/architecture/reports-plan.md.
 //
 // The per-order row query is the row-grain source a future end-of-day report
 // aggregates; the totals query is the same summary grain as Sales Summary.
@@ -3830,7 +3847,8 @@ app.get("/api/backoffice/reports/transactions", async (req, res) => {
               o.status,
               COALESCE(
                 (SELECT array_agg(DISTINCT p.method::text ORDER BY p.method::text)
-                   FROM payments p WHERE p.order_id = o.id),
+                   FROM payments p
+                  WHERE p.order_id = o.id AND ${settledPaymentsWhere("p")}),
                 '{}'
               ) AS methods
          FROM orders o
@@ -3849,7 +3867,8 @@ app.get("/api/backoffice/reports/transactions", async (req, res) => {
               COALESCE((SELECT SUM(p.amount) FROM payments p
                           JOIN orders o2 ON o2.id = p.order_id
                          WHERE o2.location_id = $1 AND o2.status = 'ready'
-                           AND o2.completed_at >= $2 AND o2.completed_at < $3), 0)
+                           AND o2.completed_at >= $2 AND o2.completed_at < $3
+                           AND ${settledPaymentsWhere("p")}), 0)
                 AS payments_total
          FROM orders o
         WHERE o.location_id = $1 AND o.status = 'ready'

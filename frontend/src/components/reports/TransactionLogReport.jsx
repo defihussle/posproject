@@ -44,7 +44,7 @@ export default function TransactionLogReport({ range }) {
     if (!range?.start || !range?.end) return;
     setLoading(true);
     try {
-      const prev = previousPeriod(range.start, range.end);
+      const prev = previousPeriod(range.start, range.end, range.kind);
       const qs = new URLSearchParams({ start: range.start, end: range.end });
       if (prev) {
         qs.set("prevStart", prev.start);
@@ -195,7 +195,12 @@ export default function TransactionLogReport({ range }) {
             </div>
             {cmp && (
               <div className="reports__logbar-cmp">
-                <span className="reports__cmp-label">vs prior period</span>
+                <span
+                  className="reports__cmp-label"
+                  title="Compared to the same elapsed span of the prior period (same day-of-period). Day-of-week composition may differ between the two windows."
+                >
+                  vs prior period
+                </span>
                 <Delta pct={cmp.countPct} suffix=" orders" />
                 <Delta pct={cmp.totalPct} suffix=" sales" />
               </div>
