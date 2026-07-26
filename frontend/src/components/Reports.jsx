@@ -8,6 +8,7 @@ import {
   resolveQuarter,
   resolveCustomRange,
 } from "./reportRange";
+import SalesSummaryReport from "./reports/SalesSummaryReport";
 import "./Reports.css";
 
 // ============================================================
@@ -29,7 +30,7 @@ import "./Reports.css";
 // to owner-only later is a one-line change per report, not a refactor.
 // Component === null renders the shared placeholder until its slice lands.
 const REPORTS = [
-  { key: "sales-summary", label: "Sales Summary", roles: ["owner", "admin"], Component: null },
+  { key: "sales-summary", label: "Sales Summary", roles: ["owner", "admin"], Component: SalesSummaryReport },
   { key: "transactions", label: "Transaction Log", roles: ["owner", "admin"], Component: null },
   { key: "discounts", label: "Discount Report", roles: ["owner", "admin"], Component: null },
   { key: "labor", label: "Labor Report", roles: ["owner", "admin"], Component: null },

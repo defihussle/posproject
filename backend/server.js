@@ -3710,6 +3710,90 @@ app.get("/api/backoffice/stats/discounts", async (req, res) => {
   }
 });
 
+// --------------- Back Office: Reports ---------------
+// Owner/admin only. Portable, exportable records for record-keeping/filing/
+// audit — distinct from the Dashboard (live/visual). Every report reuses the
+// same getStatsBounds window resolution as the stats endpoints, so a Reports
+// custom start/end (YYYY-MM-DD, location tz) needs no new date logic. See
+// docs/architecture/reports-plan.md.
+
+// GET /api/backoffice/reports/sales-summary?start=YYYY-MM-DD&end=YYYY-MM-DD
+//   (also accepts range=today|week|month, but Reports drives it with custom
+//   start/end). A P&L-style single-period snapshot:
+//     Gross → Discounts → Net → Tax → Tips → Total collected
+//   plus order count, AOV, and a payment-method mix. Reuses the stats/summary
+//   money math (gross = SUM(subtotal), net = gross − discounts, total =
+//   SUM(total)); NET-NEW here are the explicit Tax line (SUM(orders.tax)) and
+//   the payment-method rollup (SUM(payments.amount) GROUP BY method).
+app.get("/api/backoffice/reports/sales-summary", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    const b = await getStatsBounds(client, req);
+
+    // One aggregate over the [start, end) window of completed (ready) orders.
+    // total = subtotal − discount + tax + tip, so net + tax + tips == total
+    // (the line items reconcile by construction).
+    const { rows: sumRows } = await client.query(
+      `SELECT COALESCE(SUM(subtotal), 0) AS gross,
+              COALESCE(SUM(discount), 0) AS discount,
+              COALESCE(SUM(tax), 0)      AS tax,
+              COALESCE(SUM(tip), 0)      AS tips,
+              COALESCE(SUM(total), 0)    AS total,
+              COUNT(*)                   AS orders
+         FROM orders
+        WHERE location_id = $1 AND status = 'ready'
+          AND completed_at >= $2 AND completed_at < $3`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+    const s = sumRows[0];
+    const gross = parseFloat(s.gross);
+    const discount = parseFloat(s.discount);
+    const tax = parseFloat(s.tax);
+    const tips = parseFloat(s.tips);
+    const total = parseFloat(s.total);
+    const orderCount = parseInt(s.orders, 10);
+
+    // Payment-method mix — SUM(amount) GROUP BY method over the SAME set of
+    // orders. Summed across methods this equals SUM(orders.total) == Total
+    // collected (verified: every ready order's payments sum to its total), so
+    // it's the reconciliation anchor. No status filter: payments are mocked
+    // (nothing settled through a processor), so this reflects the method the
+    // cashier SELECTED at checkout, not verified settlement.
+    const { rows: mixRows } = await client.query(
+      `SELECT p.method, COALESCE(SUM(p.amount), 0) AS amount, COUNT(*) AS count
+         FROM payments p
+         JOIN orders o ON o.id = p.order_id
+        WHERE o.location_id = $1 AND o.status = 'ready'
+          AND o.completed_at >= $2 AND o.completed_at < $3
+        GROUP BY p.method
+        ORDER BY amount DESC`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+
+    res.json({
+      range: b.isCustom ? "custom" : req.query.range || "today",
+      grossSales: gross,
+      discountTotal: discount,
+      netSales: gross - discount,
+      taxCollected: tax,
+      totalTips: tips,
+      totalCollected: total,
+      orderCount,
+      avgOrderValue: orderCount > 0 ? total / orderCount : 0,
+      paymentMix: mixRows.map((r) => ({
+        method: r.method,
+        amount: parseFloat(r.amount),
+        count: parseInt(r.count, 10),
+      })),
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch sales summary report");
+  } finally {
+    client.release();
+  }
+});
+
 // --------------- Back Office: Payroll ---------------
 // Owner/admin only. Weekly (Mon–Sun, location tz) hours + gross pay per
 // staff, plus a persisted Paid/Unpaid marker (payroll_status). Hours reuse
