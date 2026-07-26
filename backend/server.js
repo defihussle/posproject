@@ -3940,6 +3940,104 @@ app.get("/api/backoffice/reports/transactions", async (req, res) => {
   }
 });
 
+// GET /api/backoffice/reports/discounts?start=YYYY-MM-DD&end=YYYY-MM-DD
+// The comp/discount audit report — two grains over the SAME [start, end)
+// window of completed (ready) orders that carry a discount:
+//   1. per-reason rollup — reason, order count, total discount, % of gross
+//      sales (reuses the stats/discounts rollup shape).
+//   2. per-order detail — order #, time, subtotal, discount $, the applied %,
+//      reason, and WHO applied it (discount_applied_by → staff). This is the
+//      audit line that justifies every family/friend/employee/neighbouring-
+//      store comp; it's NET-NEW (the by-reason rollup exists, the line-level
+//      who/when/how-much did not).
+// Both grains share one WHERE (discount > 0 AND discount_reason IS NOT NULL),
+// so SUM(rollup.amount) == SUM(detail.discount) by construction. The %-of-
+// sales base is gross = SUM(subtotal) over ALL ready orders in the window (the
+// same gross the Sales Summary reports). This report is order-side only — a
+// discount is not a payment — so settledPaymentsWhere() is deliberately not
+// involved.
+app.get("/api/backoffice/reports/discounts", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    const b = await getStatsBounds(client, req);
+
+    // Gross-sales base for the % — ALL ready orders in the window, not just
+    // discounted ones (a comp's weight is measured against total sales).
+    const { rows: grossRows } = await client.query(
+      `SELECT COALESCE(SUM(subtotal), 0) AS gross
+         FROM orders
+        WHERE location_id = $1 AND status = 'ready'
+          AND completed_at >= $2 AND completed_at < $3`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+    const gross = parseFloat(grossRows[0].gross);
+    const pctOf = (amount) => (gross > 0 ? (amount / gross) * 100 : 0);
+
+    // Per-reason rollup (same filter/shape as stats/discounts).
+    const { rows: reasonRows } = await client.query(
+      `SELECT discount_reason AS reason,
+              COALESCE(SUM(discount), 0) AS amount,
+              COUNT(*) AS orders
+         FROM orders
+        WHERE location_id = $1 AND status = 'ready'
+          AND discount > 0 AND discount_reason IS NOT NULL
+          AND completed_at >= $2 AND completed_at < $3
+        GROUP BY discount_reason
+        ORDER BY amount DESC`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+
+    // Per-order detail — the audit line. LEFT JOIN so a comp whose applier
+    // was since removed still shows (applied_by = null → "—" in the UI).
+    const { rows: detailRows } = await client.query(
+      `SELECT o.order_number, o.completed_at, o.subtotal, o.discount,
+              o.discount_percent, o.discount_reason, st.name AS applied_by
+         FROM orders o
+         LEFT JOIN staff st ON st.id = o.discount_applied_by
+        WHERE o.location_id = $1 AND o.status = 'ready'
+          AND o.discount > 0 AND o.discount_reason IS NOT NULL
+          AND o.completed_at >= $2 AND o.completed_at < $3
+        ORDER BY o.completed_at DESC, o.order_number DESC`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+
+    const byReason = reasonRows.map((r) => {
+      const amount = parseFloat(r.amount);
+      return {
+        reason: r.reason,
+        amount,
+        orders: parseInt(r.orders, 10),
+        pctOfSales: pctOf(amount),
+      };
+    });
+    const discountTotal = byReason.reduce((a, r) => a + r.amount, 0);
+    const discountedOrders = byReason.reduce((a, r) => a + r.orders, 0);
+
+    res.json({
+      range: b.isCustom ? "custom" : req.query.range || "today",
+      grossSales: gross,
+      discountTotal,
+      discountedOrders,
+      pctOfSales: pctOf(discountTotal),
+      byReason,
+      orders: detailRows.map((r) => ({
+        orderNumber: r.order_number,
+        completedAt: r.completed_at,
+        subtotal: parseFloat(r.subtotal),
+        discount: parseFloat(r.discount),
+        discountPercent: r.discount_percent == null ? null : parseFloat(r.discount_percent),
+        discountReason: r.discount_reason,
+        appliedBy: r.applied_by, // null if the applier row was removed
+      })),
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch discount report");
+  } finally {
+    client.release();
+  }
+});
+
 // --------------- Back Office: Payroll ---------------
 // Owner/admin only. Weekly (Mon–Sun, location tz) hours + gross pay per
 // staff, plus a persisted Paid/Unpaid marker (payroll_status). Hours reuse
