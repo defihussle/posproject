@@ -106,7 +106,10 @@
 }
 
 .backoffice__navitem {
+  display: block;
+  width: 100%;
   text-align: left;
+  text-decoration: none; /* NavLink renders an <a> */
   font-family: var(--font-body);
   font-size: 0.85rem;
   font-weight: 600;
@@ -134,6 +137,40 @@
 .backoffice__navitem--active {
   background: var(--red-light);
   color: var(--red);
+}
+
+/* ---- Reports dropdown (expandable nav group) ---- */
+.backoffice__navgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.backoffice__navitem--group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.backoffice__caret {
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+.backoffice__caret--open {
+  transform: rotate(90deg);
+}
+/* Sub-items indented under the parent with a guide rail. */
+.backoffice__navsub {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 2px 10px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border-color);
+}
+.backoffice__navitem--sub {
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 9px 14px;
 }
 
 /* Log Out — bottom of the same nav list (desktop: bottom of the permanent

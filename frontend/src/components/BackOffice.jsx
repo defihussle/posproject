@@ -1,55 +1,51 @@
 import { useState, useCallback, useMemo, useEffect } from "react";
+import { Routes, Route, Navigate, NavLink, useLocation } from "react-router-dom";
 import BackofficeLogin from "./BackofficeLogin";
 import HomeDashboard from "./HomeDashboard";
-import Reports from "./Reports";
 import MenuManager from "./MenuManager";
 import StaffManager from "./StaffManager";
 import Payroll from "./Payroll";
 import DeviceManager from "./DeviceManager";
+import ReportsLayout, { ReportRoute } from "./reports/ReportsLayout";
+import { REPORTS, visibleReports } from "./reports/registry";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import { API_URL } from "../config";
 import "./BackOffice.css";
 
-// Persistent nav config — add future Back Office sections here, each with
-// the roles allowed to see/use it. Nothing else in this file needs to
-// change to add a new section (e.g. Reports, Orders).
+// Persistent nav config — add future Back Office sections here, each with the
+// roles allowed to see/use it and a URL path (sections are real routes under
+// /backoffice/*). `element` renders the section; a `group: true` item (Reports)
+// is an expandable dropdown whose sub-items come from the reports registry —
+// nothing else in this file changes to add a report.
 //
-// Back Office access is owner/admin ONLY — Manager's access was fully
-// revoked (they used to see Staff Management only; that capability moved
-// to a POS-side quick-add action instead, see OrderEntry's account
-// dropdown + StaffAddForm's `endpoint` prop). Since ALLOWED_ROLES below is
-// derived from these roles lists, removing "manager" here also makes PIN
-// login correctly reject Manager with the "Access Restricted" screen —
-// no separate check needed.
+// Back Office access is owner/admin ONLY — Manager's access was fully revoked
+// (that capability moved to a POS-side quick-add action, see OrderEntry's
+// account dropdown). ALLOWED_ROLES is derived from these lists, so removing
+// "manager" here also makes PIN login reject Manager with "Access Restricted".
+//
+// Order: Home, Staff, Menu, Payroll, Reports (dropdown), Devices.
 const NAV_ITEMS = [
-  { key: "home", label: "Home", roles: ["owner", "admin"], render: (staff) => <HomeDashboard staff={staff} /> },
-  { key: "reports", label: "Reports", roles: ["owner", "admin"], render: (staff) => <Reports staff={staff} /> },
-  { key: "staff", label: "Staff Management", roles: ["owner", "admin"], render: (staff) => <StaffManager staff={staff} /> },
-  { key: "menu", label: "Menu Management", roles: ["owner", "admin"], render: (staff) => <MenuManager staff={staff} /> },
-  { key: "payroll", label: "Payroll", roles: ["owner", "admin"], render: (staff) => <Payroll staff={staff} /> },
-  { key: "devices", label: "Devices", roles: ["owner", "admin"], render: () => <DeviceManager /> },
+  { key: "home", label: "Home", path: "home", roles: ["owner", "admin"], element: (staff) => <HomeDashboard staff={staff} /> },
+  { key: "staff", label: "Staff Management", path: "staff", roles: ["owner", "admin"], element: (staff) => <StaffManager staff={staff} /> },
+  { key: "menu", label: "Menu Management", path: "menu", roles: ["owner", "admin"], element: (staff) => <MenuManager staff={staff} /> },
+  { key: "payroll", label: "Payroll", path: "payroll", roles: ["owner", "admin"], element: (staff) => <Payroll staff={staff} /> },
+  { key: "reports", label: "Reports", path: "reports", roles: ["owner", "admin"], group: true },
+  { key: "devices", label: "Devices", path: "devices", roles: ["owner", "admin"], element: () => <DeviceManager /> },
 ];
 
 const ALLOWED_ROLES = [...new Set(NAV_ITEMS.flatMap((n) => n.roles))];
-// Sections whose body should scroll top-aligned rather than be centered
-// (every real section does — only the "Coming Soon" placeholder centers).
+// Sections whose body should scroll top-aligned rather than be centered.
 const TOP_ALIGNED = true;
 
 export default function BackOffice() {
   const [staff, setStaff] = useState(null);
   const [denied, setDenied] = useState(false);
-  const [activeKey, setActiveKey] = useState(null);
-  // True until the initial GET /auth/me check resolves — avoids flashing
-  // the login screen on every page refresh when a valid session cookie
-  // already exists.
+  // True until the initial GET /auth/me check resolves — avoids flashing the
+  // login screen on every page refresh when a valid session cookie exists.
   const [checkingSession, setCheckingSession] = useState(true);
-  // Mobile-only drawer state — collapsed by default; irrelevant on desktop,
-  // where the sidebar stays permanently visible regardless of this value
-  // (enforced in CSS, see BackOffice.css).
+  // Mobile-only drawer state — collapsed by default; irrelevant on desktop.
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Nav items visible to the logged-in role — a manager never even sees
-  // "Home" in this list, not just blocked from opening it.
   const visibleNav = useMemo(
     () => (staff ? NAV_ITEMS.filter((n) => n.roles.includes(staff.role)) : []),
     [staff]
@@ -61,14 +57,9 @@ export default function BackOffice() {
       return;
     }
     setStaff(staffData);
-    // Land on the first section this role can see (owner/admin -> Home,
-    // manager -> Staff Management, since Home isn't in their list).
-    const firstVisible = NAV_ITEMS.find((n) => n.roles.includes(staffData.role));
-    setActiveKey(firstVisible?.key ?? null);
   }, []);
 
-  // On mount, silently check for an existing valid session cookie (e.g.
-  // after a page refresh) rather than always forcing a fresh login.
+  // On mount, silently check for an existing valid session cookie.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -80,7 +71,7 @@ export default function BackOffice() {
           handleLogin(staffData);
         }
       } catch {
-        // No session / connection error — just fall through to the login screen
+        // No session / connection error — fall through to the login screen
       } finally {
         if (!cancelled) setCheckingSession(false);
       }
@@ -94,7 +85,6 @@ export default function BackOffice() {
     fetch(`${API_URL}/api/backoffice/auth/logout`, { method: "POST", credentials: "include" }).catch(() => {});
     setStaff(null);
     setDenied(false);
-    setActiveKey(null);
     setSidebarOpen(false);
   }, []);
 
@@ -116,9 +106,7 @@ export default function BackOffice() {
     return (
       <div className="backoffice__denied">
         <h1 className="backoffice__denied-title">Access Restricted</h1>
-        <p className="backoffice__denied-msg">
-          Access restricted to owners and admins
-        </p>
+        <p className="backoffice__denied-msg">Access restricted to owners and admins</p>
         <button className="backoffice__btn" onClick={handleLogout}>
           Back to Login
         </button>
@@ -126,20 +114,15 @@ export default function BackOffice() {
     );
   }
 
-  const active = NAV_ITEMS.find((n) => n.key === activeKey);
+  // Landing section for this role (owner/admin → Home) and first report route.
+  const defaultPath = visibleNav.find((n) => !n.group)?.path ?? "home";
+  const firstReportPath = visibleReports(staff.role)[0]?.path ?? "sales-summary";
+  const closeDrawer = () => setSidebarOpen(false);
 
   return (
     <div className="backoffice">
-      {/* Header — three-column grid so the logo stays the true visual
-          center regardless of what's in the outer columns (hamburger on
-          mobile, nothing on desktop — no staff name/Log Out here anymore,
-          both moved into the nav list itself, see sidebar below). */}
       <header className="backoffice__header">
         <div className="backoffice__header-side backoffice__header-side--left">
-          {/* Hamburger — hidden on desktop via CSS. Single SVG whose path
-              swaps between the three-line "menu" glyph and an "X" based on
-              sidebarOpen, so there's always a visible, correct affordance
-              to open OR close the drawer — never a dead/missing icon. */}
           <button
             className="backoffice__hamburger"
             onClick={() => setSidebarOpen((v) => !v)}
@@ -168,35 +151,31 @@ export default function BackOffice() {
         <div className="backoffice__header-side backoffice__header-side--right" aria-hidden="true" />
       </header>
 
-      {/* Persistent nav + content */}
       <div className="backoffice__shell">
-        {/* Backdrop — mobile only (CSS-gated); click to close the drawer */}
         {sidebarOpen && (
-          <div
-            className="backoffice__sidebar-backdrop"
-            onClick={() => setSidebarOpen(false)}
-          />
+          <div className="backoffice__sidebar-backdrop" onClick={closeDrawer} />
         )}
 
         <nav className={`backoffice__sidebar${sidebarOpen ? " backoffice__sidebar--open" : ""}`}>
           <div className="backoffice__navlist">
-            {visibleNav.map((item) => (
-              <button
-                key={item.key}
-                className={`backoffice__navitem${item.key === activeKey ? " backoffice__navitem--active" : ""}`}
-                onClick={() => {
-                  setActiveKey(item.key);
-                  setSidebarOpen(false); // no-op on desktop, closes the drawer on mobile
-                }}
-              >
-                {item.label}
-              </button>
-            ))}
+            {visibleNav.map((item) =>
+              item.group ? (
+                <ReportsNavGroup key={item.key} item={item} staff={staff} onNavigate={closeDrawer} />
+              ) : (
+                <NavLink
+                  key={item.key}
+                  to={`/backoffice/${item.path}`}
+                  className={({ isActive }) =>
+                    `backoffice__navitem${isActive ? " backoffice__navitem--active" : ""}`
+                  }
+                  onClick={closeDrawer}
+                >
+                  {item.label}
+                </NavLink>
+              )
+            )}
           </div>
 
-          {/* Log Out lives at the bottom of the nav list itself — same
-              persistent sidebar on desktop, same drawer on mobile — rather
-              than a separate top-bar element. */}
           <div className="backoffice__navfoot">
             <button className="backoffice__navitem backoffice__navitem--logout" onClick={handleLogout}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -210,15 +189,71 @@ export default function BackOffice() {
         </nav>
 
         <main className={`backoffice__body${TOP_ALIGNED ? " backoffice__body--top" : ""}`}>
-          {active ? (
-            active.render(staff)
-          ) : (
-            <div className="backoffice__placeholder">
-              <h1 className="backoffice__placeholder-title">No sections available</h1>
-            </div>
-          )}
+          <Routes>
+            <Route index element={<Navigate to={defaultPath} replace />} />
+            {NAV_ITEMS.filter((n) => !n.group && n.roles.includes(staff.role)).map((n) => (
+              <Route key={n.key} path={n.path} element={n.element(staff)} />
+            ))}
+            <Route path="reports" element={<ReportsLayout staff={staff} />}>
+              <Route index element={<Navigate to={firstReportPath} replace />} />
+              {REPORTS.map((r) => (
+                <Route key={r.key} path={r.path} element={<ReportRoute report={r} />} />
+              ))}
+              <Route path="*" element={<Navigate to={firstReportPath} replace />} />
+            </Route>
+            <Route path="*" element={<Navigate to={defaultPath} replace />} />
+          </Routes>
         </main>
       </div>
+    </div>
+  );
+}
+
+// Expandable Reports section in the sidebar. Tapping the parent reveals the
+// per-report sub-items (each a real route); it auto-expands whenever a reports
+// route is active so the current report is always visible in context.
+function ReportsNavGroup({ item, staff, onNavigate }) {
+  const location = useLocation();
+  const onReports = location.pathname.startsWith("/backoffice/reports");
+  const [open, setOpen] = useState(onReports);
+  useEffect(() => {
+    if (onReports) setOpen(true);
+  }, [onReports]);
+
+  const subs = visibleReports(staff.role);
+
+  return (
+    <div className="backoffice__navgroup">
+      <button
+        className={`backoffice__navitem backoffice__navitem--group${onReports ? " backoffice__navitem--active" : ""}`}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <span>{item.label}</span>
+        <svg
+          className={`backoffice__caret${open ? " backoffice__caret--open" : ""}`}
+          width="14" height="14" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
+        >
+          <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+      </button>
+      {open && (
+        <div className="backoffice__navsub">
+          {subs.map((r) => (
+            <NavLink
+              key={r.key}
+              to={`/backoffice/${item.path}/${r.path}`}
+              className={({ isActive }) =>
+                `backoffice__navitem backoffice__navitem--sub${isActive ? " backoffice__navitem--active" : ""}`
+              }
+              onClick={onNavigate}
+            >
+              {r.label}
+            </NavLink>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

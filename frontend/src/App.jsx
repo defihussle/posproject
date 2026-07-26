@@ -134,8 +134,11 @@ export default function App() {
           }
         />
 
-        {/* Back Office — has its own email+password+TOTP login + role gate */}
-        <Route path="/backoffice" element={<BackOffice />} />
+        {/* Back Office — has its own email+password+TOTP login + role gate.
+            Splat so its sections are real nested routes (/backoffice/home,
+            /backoffice/reports/sales-summary, …). The exact reset-password
+            route below still wins by specificity. */}
+        <Route path="/backoffice/*" element={<BackOffice />} />
 
         {/* Reached via the emailed forgot-password link — no auth required
             to view, the token in the query string is the proof. */}
