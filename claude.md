@@ -161,13 +161,19 @@ Three independent trust layers — full narrative/history:
 - Payroll: weekly (Mon–Sun) hours + gross pay per staff, Mark-as-Paid
   (persisted in `payroll_status`), CSV/PDF export; owners excluded,
   breaks subtracted, past-week open shifts capped at week end
+- Reports: period-oriented range selector + role-aware registry; four
+  Phase-1 reports — Sales Summary, Transaction Log, Discount Report, Labor
+  Report — each with CSV/PDF export. Money reconciles across surfaces via
+  one settled-payments predicate; hours/cost reuse the canonical worked-time
+  helpers (same numbers as `stats/labor`/Payroll). Phase 2 (Category & Item
+  Sales) deferred. See `docs/architecture/reports-plan.md`
 - Self-service: Change PIN, Clock In/Out (timer shows worked time, breaks
   subtracted), My Hours
 
 Full detail: `docs/architecture/features.md`
 
 ## What's NOT built yet
-- Back Office Reports/Orders sections
+- Back Office Orders section
 - Real Stripe Terminal integration (payments mocked, no tip UI)
 - Owner/admin accounts still need first-time Back Office setup — see
   `seed_test_staff.sql` for test PINs
