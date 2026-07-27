@@ -6,6 +6,7 @@ import StaffManagementModal from "./StaffManagementModal";
 import ChangePinModal from "./ChangePinModal";
 import MyHoursModal from "./MyHoursModal";
 import ClockCard from "./ClockCard";
+import OrderRecallModal from "./OrderRecallModal";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import { API_URL } from "../config";
 import "./OrderEntry.css";
@@ -68,6 +69,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [changePinOpen, setChangePinOpen] = useState(false);
   const [myHoursOpen, setMyHoursOpen] = useState(false);
   const [clockCardOpen, setClockCardOpen] = useState(false);
+  const [orderRecallOpen, setOrderRecallOpen] = useState(false);
 
   // Just for the dropdown entry's label — 'not_clocked_in' | 'working' |
   // 'on_break' | null (not checked yet). ClockCard fetches its own fresh
@@ -399,6 +401,13 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
           <img src={logoImg} alt="NARCOS TACOS" className="oe-topbar__logo" />
         </div>
         <div className="oe-topbar__right">
+          <button
+            className="oe-topbar__btn"
+            onClick={() => setOrderRecallOpen(true)}
+            title="Recall recent orders or issue refunds"
+          >
+            Recall Orders
+          </button>
           <span className="oe-topbar__staff">{staff.name}</span>
           <div className="oe-account-menu-container">
             <button 
@@ -416,6 +425,16 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
               <>
                 <div className="oe-account-menu-backdrop" onClick={() => setAccountMenuOpen(false)} />
                 <div className="oe-account-menu-dropdown">
+                  <button
+                    className="oe-account-menu-item"
+                    onClick={() => {
+                      setAccountMenuOpen(false);
+                      setOrderRecallOpen(true);
+                    }}
+                  >
+                    Recall / Refund Orders
+                  </button>
+                  <div className="oe-account-menu-divider" />
                   {staff.role === "owner" && (
                     <div className="oe-account-menu-row">
                       <span>Dark Mode</span>
@@ -844,6 +863,13 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
             )}
           </div>
         </div>
+      )}
+
+      {orderRecallOpen && (
+        <OrderRecallModal
+          staff={staff}
+          onClose={() => setOrderRecallOpen(false)}
+        />
       )}
     </div>
   );

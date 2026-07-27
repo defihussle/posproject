@@ -1,0 +1,479 @@
+/* Order Recall & Refund Modal — modern, mobile-first design matching Narcos Tacos POS */
+
+.orm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.orm-modal {
+  background: var(--bg-surface, #ffffff);
+  color: var(--text-main, #111111);
+  width: 100%;
+  max-width: 840px;
+  max-height: 90vh;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.1));
+}
+
+.orm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border-color, #e5e5e5);
+  background: var(--bg-header, #f9f9fb);
+}
+
+.orm-title-group {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.orm-title {
+  font-family: "Archivo Black", sans-serif;
+  font-size: 1.35rem;
+  text-transform: uppercase;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.orm-close-btn {
+  background: transparent;
+  border: none;
+  font-size: 1.5rem;
+  color: var(--text-muted, #666666);
+  cursor: pointer;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.orm-close-btn:hover {
+  background: var(--bg-hover, #eee);
+  color: #000;
+}
+
+.orm-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 480px;
+}
+
+/* Left sidebar: order search & list */
+.orm-sidebar {
+  width: 320px;
+  border-right: 1px solid var(--border-color, #e5e5e5);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-sidebar, #fafafa);
+}
+
+.orm-search-box {
+  padding: 1rem;
+  border-bottom: 1px solid var(--border-color, #eee);
+}
+
+.orm-search-input {
+  width: 100%;
+  padding: 0.65rem 0.85rem;
+  border: 1.5px solid var(--border-color, #ccc);
+  border-radius: 8px;
+  font-size: 0.95rem;
+  background: var(--bg-surface, #fff);
+  color: var(--text-main, #111);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.orm-search-input:focus {
+  border-color: var(--brand-red, #e8442e);
+}
+
+.orm-order-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem;
+}
+
+.orm-order-card {
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  margin-bottom: 0.5rem;
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border-color, #e5e5e5);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.orm-order-card:hover {
+  border-color: #bbb;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+}
+
+.orm-order-card--active {
+  border-color: var(--brand-red, #e8442e);
+  background: rgba(232, 68, 46, 0.04);
+}
+
+.orm-order-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+
+.orm-order-number {
+  font-family: "IBM Plex Mono", monospace;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.orm-order-total {
+  font-family: "IBM Plex Mono", monospace;
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--brand-red, #e8442e);
+}
+
+.orm-order-card-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8rem;
+  color: var(--text-muted, #666);
+}
+
+.orm-badge {
+  display: inline-block;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.orm-badge--ready { background: #e6f4ea; color: #137333; }
+.orm-badge--preparing { background: #fef7e0; color: #b06000; }
+.orm-badge--open { background: #e8f0fe; color: #1a73e8; }
+.orm-badge--cancelled { background: #fce8e6; color: #c5221f; }
+.orm-badge--refunded { background: #feefc3; color: #805b00; }
+
+/* Right main pane: Order Details & Action controls */
+.orm-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+
+.orm-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted, #888);
+  text-align: center;
+}
+
+.orm-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-color, #eee);
+  margin-bottom: 1.25rem;
+}
+
+.orm-detail-title {
+  font-family: "Archivo Black", sans-serif;
+  font-size: 1.4rem;
+  margin: 0 0 0.25rem 0;
+}
+
+.orm-detail-meta {
+  font-size: 0.85rem;
+  color: var(--text-muted, #666);
+  display: flex;
+  gap: 1rem;
+}
+
+.orm-items-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1.25rem;
+  font-size: 0.9rem;
+}
+
+.orm-items-table th {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid var(--border-color, #eee);
+  color: var(--text-muted, #666);
+  font-weight: 600;
+}
+
+.orm-items-table td {
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid var(--border-color, #f0f0f0);
+}
+
+.orm-summary-box {
+  background: var(--bg-sidebar, #f9f9fb);
+  border: 1px solid var(--border-color, #eee);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.orm-summary-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+  margin-bottom: 0.4rem;
+}
+
+.orm-summary-row--total {
+  font-weight: 700;
+  font-size: 1.1rem;
+  border-top: 1px solid var(--border-color, #ddd);
+  padding-top: 0.5rem;
+  margin-top: 0.5rem;
+  color: var(--brand-red, #e8442e);
+}
+
+.orm-actions-bar {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.orm-btn {
+  padding: 0.75rem 1.25rem;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 0.9rem;
+  cursor: pointer;
+  border: none;
+  transition: transform 0.1s ease, filter 0.15s ease;
+}
+
+.orm-btn:active {
+  transform: scale(0.98);
+}
+
+.orm-btn--danger { background: #d93025; color: #ffffff; }
+.orm-btn--warning { background: #f2994a; color: #ffffff; }
+.orm-btn--secondary { background: var(--bg-hover, #eeeeee); color: #333333; }
+.orm-btn--primary { background: #34a853; color: #ffffff; }
+
+/* Form fields for reversal */
+.orm-form {
+  background: var(--bg-sidebar, #f7f7f9);
+  border: 1.5px solid var(--brand-red, #e8442e);
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin-top: 1.25rem;
+}
+
+.orm-form-title {
+  font-family: "Archivo Black", sans-serif;
+  font-size: 1.1rem;
+  margin: 0 0 1rem 0;
+  color: var(--brand-red, #e8442e);
+  text-transform: uppercase;
+}
+
+.orm-field {
+  margin-bottom: 1rem;
+}
+
+.orm-label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+.orm-select, .orm-input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, #ccc);
+  font-size: 0.95rem;
+  background: #fff;
+  color: #111;
+}
+
+/* Inline PIN Modal */
+.orm-pin-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(5px);
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.orm-pin-modal {
+  background: #ffffff;
+  border-radius: 20px;
+  width: 100%;
+  max-width: 360px;
+  padding: 1.75rem 1.5rem;
+  text-align: center;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.3);
+}
+
+.orm-pin-title {
+  font-family: "Archivo Black", sans-serif;
+  font-size: 1.25rem;
+  margin: 0 0 0.25rem 0;
+  text-transform: uppercase;
+}
+
+.orm-pin-subtitle {
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 1.25rem;
+}
+
+.orm-pin-dots {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.orm-pin-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #ccc;
+  transition: all 0.15s ease;
+}
+
+.orm-pin-dot--filled {
+  background: var(--brand-red, #e8442e);
+  border-color: var(--brand-red, #e8442e);
+}
+
+.orm-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.orm-keypad-btn {
+  height: 54px;
+  border-radius: 50%;
+  border: 1px solid #e0e0e0;
+  background: #fcfcfc;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 1.4rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+  width: 54px;
+  transition: background 0.15s;
+}
+
+.orm-keypad-btn:active {
+  background: #e0e0e0;
+}
+
+.orm-error {
+  color: #d93025;
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+  font-weight: 600;
+}
+
+.orm-approvers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 1rem 0 1.25rem 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.orm-approver-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.8rem 1rem;
+  border-radius: 10px;
+  border: 1.5px solid #e0e0e0;
+  background: #f9f9fb;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.orm-approver-btn:hover {
+  border-color: var(--brand-red, #e8442e);
+  background: rgba(232, 68, 46, 0.04);
+}
+
+.orm-approver-role {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  background: #eee;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  color: #555;
+}
+
+.orm-change-approver-btn {
+  background: transparent;
+  border: none;
+  color: var(--brand-red, #e8442e);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 0.75rem;
+  text-decoration: underline;
+}
+
+@media (max-width: 640px) {
+  .orm-body {
+    flex-direction: column;
+  }
+  .orm-sidebar {
+    width: 100%;
+    max-height: 200px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-color, #eee);
+  }
+}

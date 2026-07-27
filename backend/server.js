@@ -1301,6 +1301,83 @@ async function applyRefund(client, {
     );
   }
 
+  // Line-item detail is caller-supplied, so it is validated against the ORDER
+  // before anything is written — never trusted from the request. The dollar
+  // ceiling above already stops money leaking; this stops the *audit* lying:
+  // without it the same line could be refunded twice across two partial
+  // refunds (each individually under the remaining balance) and the per-line
+  // record would claim more units were returned than were ever sold.
+  //   1. the order_item must belong to THIS order
+  //   2. quantity must be a positive integer, ≤ the quantity ordered
+  //   3. quantity must be ≤ (ordered − already refunded on prior non-failed
+  //      refunds), so cumulative line refunds can't exceed what was sold
+  let validatedItems = null;
+  if (Array.isArray(items) && items.length > 0) {
+    const { rows: lineRows } = await client.query(
+      `SELECT oi.id, oi.quantity,
+              COALESCE((SELECT SUM(ori.quantity)
+                          FROM order_refund_items ori
+                          JOIN order_refunds r ON r.id = ori.refund_id
+                         WHERE ori.order_item_id = oi.id AND r.status <> 'failed'), 0)
+                AS refunded_qty
+         FROM order_items oi
+        WHERE oi.order_id = $1`,
+      [orderId]
+    );
+    const byId = new Map(
+      lineRows.map((r) => [
+        r.id,
+        { ordered: parseInt(r.quantity, 10), refunded: parseInt(r.refunded_qty, 10) },
+      ])
+    );
+
+    // Collapse duplicates first — the same line listed twice in one request
+    // must be checked on its combined quantity, not per entry.
+    const requested = new Map();
+    for (const it of items) {
+      const lineId = it.orderItemId;
+      const line = byId.get(lineId);
+      if (!line) {
+        throw new HttpError(400, `Line item ${lineId} does not belong to this order`);
+      }
+      const qty = Number(it.quantity);
+      if (!Number.isInteger(qty) || qty <= 0) {
+        throw new HttpError(400, `Line item ${lineId}: quantity must be a positive integer`);
+      }
+      const amt = Number(it.amount);
+      if (!Number.isFinite(amt) || amt < 0) {
+        throw new HttpError(400, `Line item ${lineId}: amount must be a non-negative number`);
+      }
+      const prev = requested.get(lineId) || { quantity: 0, amount: 0 };
+      requested.set(lineId, {
+        quantity: prev.quantity + qty,
+        amount: round2(prev.amount + amt),
+      });
+    }
+
+    for (const [lineId, req] of requested) {
+      const { ordered, refunded } = byId.get(lineId);
+      if (req.quantity > ordered) {
+        throw new HttpError(
+          400,
+          `Line item ${lineId}: cannot refund ${req.quantity} of ${ordered} ordered`
+        );
+      }
+      const refundableQty = ordered - refunded;
+      if (req.quantity > refundableQty) {
+        throw new HttpError(
+          409,
+          `Line item ${lineId}: ${refunded} of ${ordered} already refunded — only ${refundableQty} remain refundable`
+        );
+      }
+    }
+    validatedItems = [...requested.entries()].map(([orderItemId, r]) => ({
+      orderItemId,
+      quantity: r.quantity,
+      amount: r.amount,
+    }));
+  }
+
   // Misuse guard: a manager PIN can't approve a high-value reversal — owner/admin only.
   if (approverRole === "manager" && refundAmount >= REFUND_OWNER_APPROVAL_THRESHOLD) {
     throw new HttpError(403, `Reversals of $${REFUND_OWNER_APPROVAL_THRESHOLD}+ require owner/admin approval`);
@@ -1323,9 +1400,10 @@ async function applyRefund(client, {
   );
   const refundId = insRows[0].id;
 
-  // 2. Optional line-item detail (populated by the line-item refund path).
-  if (Array.isArray(items)) {
-    for (const it of items) {
+  // 2. Optional line-item detail (populated by the line-item refund path) —
+  //    the validated/de-duplicated set from above, never the raw request.
+  if (validatedItems) {
+    for (const it of validatedItems) {
       await client.query(
         `INSERT INTO order_refund_items (refund_id, order_item_id, quantity, amount)
          VALUES ($1, $2, $3, $4)`,
@@ -1385,7 +1463,10 @@ app.post("/api/orders/:id/refund", requireDevicePairing, async (req, res) => {
   try {
     // Initiator: any working role except kitchen.
     const initiator = await requireStaffIdParam(staffId, ["owner", "admin", "manager", "cashier"]);
-    // Approver: manager+ AND must prove their PIN (dual-control).
+    // Approver: explicit manager+ AND must prove their PIN (dual-control).
+    if (!approverStaffId) {
+      throw new HttpError(400, "approverStaffId is required");
+    }
     const approver = await requireStaffIdParam(approverStaffId, ["owner", "admin", "manager"]);
     await verifyStaffPin(approver.id, approverPin);
 
@@ -1408,6 +1489,167 @@ app.post("/api/orders/:id/refund", requireDevicePairing, async (req, res) => {
     sendHttpError(res, err, "Failed to process refund");
   } finally {
     client.release();
+  }
+});
+
+// GET /api/orders/pos-recall?search=...&limit=20   (POS — device-paired)
+// Order-recall endpoint for POS. Returns recent orders with financial totals,
+// line-item breakdown, payment details, and prior refund history.
+app.get("/api/orders/pos-recall", requireDevicePairing, async (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit || "20", 10) || 20, 1), 50);
+  const search = req.query.search ? req.query.search.toString().trim() : "";
+
+  const client = await pool.connect();
+  try {
+    const { rows: locRows } = await client.query(
+      "SELECT id FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
+    );
+    if (locRows.length === 0) return res.status(500).json({ error: "No active location" });
+    const locationId = locRows[0].id;
+
+    let whereClause = "WHERE o.location_id = $1";
+    const params = [locationId];
+
+    if (search) {
+      params.push(`%${search}%`);
+      whereClause += ` AND (o.order_number::text ILIKE $${params.length} OR o.customer_name ILIKE $${params.length})`;
+    }
+
+    params.push(limit);
+    const { rows: orders } = await client.query(
+      `SELECT o.id, o.order_number, o.status, o.fulfillment_type, o.customer_name,
+              o.staff_id, s.name AS staff_name,
+              o.subtotal, o.tax, o.tip, o.discount, o.discount_percent, o.discount_reason, o.total,
+              o.created_at, o.completed_at,
+              COALESCE(p.method, 'other') AS payment_method
+         FROM orders o
+         JOIN staff s ON s.id = o.staff_id
+    LEFT JOIN payments p ON p.order_id = o.id AND p.refund_id IS NULL
+       ${whereClause}
+       ORDER BY o.created_at DESC
+       LIMIT $${params.length}`,
+      params
+    );
+
+    if (orders.length === 0) {
+      return res.json({ orders: [] });
+    }
+
+    const orderIds = orders.map((o) => o.id);
+
+    const { rows: itemsRows } = await client.query(
+      `SELECT oi.id AS order_item_id, oi.order_id, oi.item_id, oi.variant_id, oi.quantity, oi.unit_price,
+              mi.name AS item_name, iv.name AS variant_name
+         FROM order_items oi
+    LEFT JOIN menu_items mi ON mi.id = oi.item_id
+    LEFT JOIN item_variants iv ON iv.id = oi.variant_id
+        WHERE oi.order_id = ANY($1::uuid[])
+        ORDER BY oi.id`,
+      [orderIds]
+    );
+
+    const { rows: refundsRows } = await client.query(
+      `SELECT r.id, r.order_id, r.type, r.amount, r.tax_amount, r.reason, r.reason_note,
+              r.status, r.created_at,
+              req.name AS requested_by_name, app.name AS approved_by_name
+         FROM order_refunds r
+         JOIN staff req ON req.id = r.requested_by
+         JOIN staff app ON app.id = r.approved_by
+        WHERE r.order_id = ANY($1::uuid[]) AND r.status <> 'failed'
+        ORDER BY r.created_at ASC`,
+      [orderIds]
+    );
+
+    const itemsByOrder = {};
+    for (const item of itemsRows) {
+      (itemsByOrder[item.order_id] ||= []).push({
+        order_item_id: item.order_item_id,
+        item_id: item.item_id,
+        variant_id: item.variant_id,
+        name: item.item_name || "Unknown Item",
+        variant_name: item.variant_name || null,
+        quantity: item.quantity,
+        unit_price: parseFloat(item.unit_price),
+        line_total: round2(item.quantity * parseFloat(item.unit_price)),
+      });
+    }
+
+    const refundsByOrder = {};
+    for (const ref of refundsRows) {
+      (refundsByOrder[ref.order_id] ||= []).push({
+        id: ref.id,
+        type: ref.type,
+        amount: parseFloat(ref.amount),
+        tax_amount: parseFloat(ref.tax_amount),
+        reason: ref.reason,
+        reason_note: ref.reason_note,
+        status: ref.status,
+        created_at: ref.created_at,
+        requested_by_name: ref.requested_by_name,
+        approved_by_name: ref.approved_by_name,
+      });
+    }
+
+    const result = orders.map((o) => {
+      const oTotal = parseFloat(o.total);
+      const oTax = parseFloat(o.tax);
+      const refs = refundsByOrder[o.id] || [];
+      const totalRefunded = round2(refs.reduce((acc, r) => acc + r.amount, 0));
+      const totalRefundedTax = round2(refs.reduce((acc, r) => acc + r.tax_amount, 0));
+      const remainingRefundable = Math.max(0, round2(oTotal - totalRefunded));
+
+      return {
+        id: o.id,
+        order_number: o.order_number,
+        status: o.status,
+        fulfillment_type: o.fulfillment_type,
+        customer_name: o.customer_name,
+        staff_id: o.staff_id,
+        staff_name: o.staff_name,
+        subtotal: parseFloat(o.subtotal),
+        tax: oTax,
+        tip: parseFloat(o.tip),
+        discount: parseFloat(o.discount),
+        discount_percent: o.discount_percent ? parseFloat(o.discount_percent) : null,
+        discount_reason: o.discount_reason,
+        total: oTotal,
+        payment_method: o.payment_method,
+        created_at: o.created_at,
+        completed_at: o.completed_at,
+        items: itemsByOrder[o.id] || [],
+        refund_summary: {
+          total_refunded: totalRefunded,
+          total_refunded_tax: totalRefundedTax,
+          remaining_refundable: remainingRefundable,
+          is_fully_refunded: remainingRefundable === 0 && refs.length > 0,
+        },
+        refunds: refs,
+      };
+    });
+
+    res.json({ orders: result });
+  } catch (err) {
+    console.error("POS recall failed:", err.message);
+    res.status(500).json({ error: "Failed to fetch orders for recall" });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/staff/approvers   (POS — device-paired)
+// Active staff members eligible for dual-control reversal approval (owner, admin, manager).
+// Used by OrderRecallModal's name-picker approval flow.
+app.get("/api/staff/approvers", requireDevicePairing, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name, role FROM staff
+        WHERE active = true AND role IN ('owner', 'admin', 'manager')
+        ORDER BY array_position(ARRAY['owner','admin','manager'], role::text), name`
+    );
+    res.json({ approvers: rows });
+  } catch (err) {
+    console.error("Failed to fetch approvers:", err.message);
+    res.status(500).json({ error: "Failed to fetch eligible approvers" });
   }
 });
 
