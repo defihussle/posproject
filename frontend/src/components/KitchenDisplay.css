@@ -1225,3 +1225,161 @@
   animation: kdsUndoSlideUp 0.25s ease-out;
   white-space: nowrap;
 }
+
+/* ============================================================
+   VOIDED tickets (Refunds Slice 5)
+   A voided ticket is an interrupt, not a queue entry, so it reads as an
+   alert rather than a card: red-on-dark, a striped warning banner, struck-
+   through items, and an explicit Acknowledge button as the only affordance.
+   The colour language is deliberately outside the green/yellow/red elapsed-
+   tier scale used by live cards — a cook must never confuse "this order is
+   late" with "stop cooking this order".
+   ============================================================ */
+.kds-card--voided {
+  background: #1A1010;
+  border: 1px solid #E8442E;
+  border-left: 6px solid #E8442E;
+  cursor: default;
+  box-shadow: 0 2px 8px rgba(232, 68, 46, 0.25), 0 10px 30px rgba(232, 68, 46, 0.18);
+  animation: kdsVoidIn 0.28s ease-out;
+}
+
+.kds-card--voided:hover {
+  box-shadow: 0 2px 8px rgba(232, 68, 46, 0.25), 0 10px 30px rgba(232, 68, 46, 0.18);
+}
+
+@keyframes kdsVoidIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* Diagonal hazard stripes — recognisable as "do not proceed" at a glance,
+   from across the kitchen, before any text is read. */
+.kds-card__voidbanner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 14px;
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  color: #FFFFFF;
+  background: repeating-linear-gradient(
+    45deg,
+    #E8442E,
+    #E8442E 12px,
+    #C4331F 12px,
+    #C4331F 24px
+  );
+}
+
+.kds-card--voided .kds-card__top {
+  background: #241414;
+  border-bottom: 1px solid #3A1E1E;
+}
+
+.kds-card--voided .kds-card__number {
+  color: #FFFFFF;
+}
+
+.kds-card__timer--voided {
+  color: #FF9A8A;
+}
+
+.kds-card__voidmsg {
+  padding: 14px 18px 10px;
+  font-family: var(--font-body);
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #FFD9D2;
+}
+
+/* Items stay listed (the kitchen needs to know WHAT to pull and bin) but are
+   struck through so they can never be misread as something to make. */
+.kds-card__items--voided {
+  opacity: 0.72;
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 154, 138, 0.75);
+  text-decoration-thickness: 2px;
+}
+
+.kds-card__items--voided .kds-item {
+  border-bottom-color: #3A1E1E;
+}
+
+.kds-card__items--voided,
+.kds-card__items--voided * {
+  color: #F3D9D4;
+}
+
+.kds-card__ackbtn {
+  margin-top: auto;
+  width: 100%;
+  border: none;
+  border-top: 1px solid #3A1E1E;
+  background: #E8442E;
+  color: #FFFFFF;
+  font-family: var(--font-mono);
+  font-size: var(--kds-cta-size);
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  padding: var(--kds-cta-pad);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.kds-card__ackbtn:hover:not(:disabled) {
+  background: #F2543E;
+}
+
+.kds-card__ackbtn:active:not(:disabled) {
+  background: #C4331F;
+}
+
+.kds-card__ackbtn:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+/* Rush Hour: the voided ticket spans the full aggregated grid so it can't be
+   scrolled past among the make-lines. */
+.kds-card--voided-compact {
+  grid-column: 1 / -1;
+}
+
+/* ---- Voided entries in Past Orders ---- */
+.kds-past-row--voided .kds-past-row__num {
+  color: #E8442E;
+}
+
+.kds-past-row__voidtag,
+.kds-detail__voidtag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: #FFFFFF;
+  background: #E8442E;
+  border-radius: 4px;
+  padding: 3px 8px;
+}
+
+.kds-detail__items--voided {
+  opacity: 0.7;
+  text-decoration: line-through;
+  text-decoration-color: rgba(232, 68, 46, 0.6);
+  text-decoration-thickness: 2px;
+}
+
+.kds-detail__voidnote {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  line-height: 1.45;
+  color: #8A8A85;
+  text-align: center;
+  padding: 4px 8px;
+}

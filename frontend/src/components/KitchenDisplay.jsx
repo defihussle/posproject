@@ -4,7 +4,10 @@ import logoImg from "../assets/narcos-tacos-logo.png";
 import "./KitchenDisplay.css";
 
 const POLL_MS = 5000;
-const KDS_STATUSES = "open,preparing";
+// 'cancelled' pulls VOIDED tickets onto the board. The backend narrows those to
+// voids the kitchen was already cooking and hasn't acknowledged yet — a void of
+// an order that never got fired produces no ticket at all.
+const KDS_STATUSES = "open,preparing,cancelled";
 const FAIL_FLASH_MS = 2500; // how long a card shows its "update failed" state
 const UNDO_TOAST_MS = 6000; // how long the undo toast stays visible
 
@@ -114,6 +117,41 @@ function playChime() {
   osc2.stop(now + 0.25);
 }
 
+// ---- Void alert via Web Audio API ----
+// Deliberately NOT a sibling of the new-order chime: a void means stop cooking
+// food that is no longer being paid for, and it must never be mistaken for
+// "another order arrived". Where the chime is two short ascending sine tones,
+// this is three DESCENDING sawtooth tones — different contour, different
+// timbre, longer, and louder — so it reads as an interrupt across a noisy
+// kitchen without needing anyone to look at the screen first.
+function playVoidAlert() {
+  const ctx = ensureAudioCtx();
+  if (!ctx || ctx.state === "suspended") return;
+
+  const now = ctx.currentTime;
+  // G4 → E4 → C4: a falling minor-ish figure, the opposite contour to the chime.
+  const tones = [
+    { freq: 392, at: 0.0 },
+    { freq: 330, at: 0.18 },
+    { freq: 262, at: 0.36 },
+  ];
+
+  for (const { freq, at } of tones) {
+    const gain = ctx.createGain();
+    gain.connect(ctx.destination);
+    gain.gain.setValueAtTime(0.0001, now + at);
+    gain.gain.exponentialRampToValueAtTime(0.22, now + at + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + at + 0.3);
+
+    const osc = ctx.createOscillator();
+    osc.type = "sawtooth"; // harsher than the chime's sine — reads as an alert
+    osc.frequency.setValueAtTime(freq, now + at);
+    osc.connect(gain);
+    osc.start(now + at);
+    osc.stop(now + at + 0.3);
+  }
+}
+
 /**
  * Kitchen Display System — live order queue.
  * No auth: this screen is opened once on a kitchen device and left running.
@@ -148,8 +186,15 @@ export default function KitchenDisplay({ deviceName }) {
   const undoTimer = useRef(null);
   // Known order IDs — for detecting genuinely new orders (vs. existing on reload).
   const knownOrderIds = useRef(null); // null = first load, Set after
+  // Voided order IDs already seen. Tracked SEPARATELY from knownOrderIds
+  // because a void is usually a status TRANSITION on an order already on the
+  // board (preparing → cancelled), so its id is not new and the new-order
+  // check above would never fire for it.
+  const knownVoidedIds = useRef(null); // null = first load, Set after
   // Track if initial load is complete for chime gating.
   const initialLoadDone = useRef(false);
+  // Voided tickets being acknowledged right now — guards double-taps.
+  const [ackingIds, setAckingIds] = useState(() => new Set());
 
   // Unlock Web Audio on first user interaction anywhere on the KDS.
   useEffect(() => {
@@ -218,17 +263,31 @@ export default function KitchenDisplay({ deviceName }) {
       const data = await res.json();
       // Backend already sorts FIFO (oldest created_at first) — do NOT re-sort.
 
-      // Detect genuinely new orders for the chime. Skip on first load.
+      const voidedIds = new Set(data.filter((o) => o.voided).map((o) => o.id));
+
+      // Detect genuinely new orders for the chime, and newly voided tickets for
+      // the (distinct) void alert. Skip both on first load. A void takes
+      // precedence: if an order was voided in the same poll it arrived, the
+      // kitchen needs the stop signal, not a "new order" cue.
       if (knownOrderIds.current !== null && initialLoadDone.current) {
-        const newIds = data.filter((o) => !knownOrderIds.current.has(o.id));
-        if (newIds.length > 0) {
+        const newlyVoided = [...voidedIds].filter((id) => !knownVoidedIds.current.has(id));
+        const newLive = data.filter(
+          (o) => !o.voided && !knownOrderIds.current.has(o.id)
+        );
+        if (newlyVoided.length > 0) {
+          playVoidAlert();
+        } else if (newLive.length > 0) {
           playChime();
         }
       }
       knownOrderIds.current = new Set(data.map((o) => o.id));
+      knownVoidedIds.current = voidedIds;
       if (!initialLoadDone.current) initialLoadDone.current = true;
 
-      setOrders(data);
+      // Voided tickets jump to the front of the board regardless of FIFO age —
+      // they are an interrupt ("stop cooking this"), not a queue entry. Stable
+      // within each group, so live tickets keep the backend's FIFO order.
+      setOrders([...data.filter((o) => o.voided), ...data.filter((o) => !o.voided)]);
       setError(null);
     } catch {
       // Keep the last good queue on screen; just surface a quiet notice.
@@ -358,6 +417,55 @@ export default function KitchenDisplay({ deviceName }) {
     [fetchOrders, clearFailed, markFailed, startUndoTimer]
   );
 
+  // Dismiss a VOIDED ticket. This is the only way one leaves the board — there
+  // is deliberately no auto-clear timer, because a void that scrolls away
+  // unseen is exactly the failure this feature exists to prevent. The
+  // acknowledgement is persisted server-side, so it clears on every KDS device
+  // and survives a reload; afterwards the ticket lives on in Past Orders,
+  // still marked voided.
+  const acknowledgeVoid = useCallback(
+    async (order) => {
+      let blocked = false;
+      setAckingIds((prev) => {
+        if (prev.has(order.id)) {
+          blocked = true;
+          return prev;
+        }
+        const s = new Set(prev);
+        s.add(order.id);
+        return s;
+      });
+      if (blocked) return;
+
+      clearFailed(order.id);
+      try {
+        const res = await fetch(`${API_URL}/api/orders/${order.id}/acknowledge-void`, {
+          method: "POST",
+          credentials: "include", // device-gated route — must send the pairing cookie
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        // Drop it immediately rather than waiting up to POLL_MS — the kitchen
+        // just told us they've seen it.
+        setOrders((prev) => prev.filter((o) => o.id !== order.id));
+        knownVoidedIds.current?.delete(order.id);
+      } catch (err) {
+        console.error("Void acknowledge failed:", err.message);
+        markFailed(order.id);
+        fetchOrders(); // resync so the ticket isn't left in a lying state
+      } finally {
+        setAckingIds((prev) => {
+          const s = new Set(prev);
+          s.delete(order.id);
+          return s;
+        });
+      }
+    },
+    [clearFailed, markFailed, fetchOrders]
+  );
+
   // Rush Hour aggregation — pure client-side reshaping of the SAME polled
   // order data (open/preparing only, no extra fetching). Two lines merge only
   // when item_id + variant_id + the FULL modifier set (option ids AND
@@ -366,6 +474,10 @@ export default function KitchenDisplay({ deviceName }) {
   const fastLines = useMemo(() => {
     const map = new Map();
     for (const order of orders) {
+      // Voided tickets are never aggregated into a make-line — that would tell
+      // the cook to produce food that has just been cancelled. They stay
+      // visible as their own banner above the Rush Hour view instead.
+      if (order.voided) continue;
       for (const it of order.items) {
         const modKey = (it.modifiers_raw || [])
           .map((m) => `${m.option_id}:${m.quantity}`)
@@ -479,23 +591,49 @@ export default function KitchenDisplay({ deviceName }) {
           </div>
         ) : fastMode ? (
           /* Rush Hour — aggregated, VIEW-ONLY. No tap targets: orders are
-             completed via the normal ticket view. */
+             completed via the normal ticket view. Voided tickets are the one
+             exception: they stay actionable even here, because "stop making
+             this" can't wait for a view switch. */
           <div className="kds-fast">
+            {orders
+              .filter((o) => o.voided)
+              .map((order) => (
+                <VoidedCard
+                  key={order.id}
+                  order={order}
+                  nowMs={nowMs}
+                  busy={ackingIds.has(order.id)}
+                  failed={failedIds.has(order.id)}
+                  onAcknowledge={() => acknowledgeVoid(order)}
+                  compact
+                />
+              ))}
             {fastLines.map((line) => (
               <FastLine key={line.key} line={line} nowMs={nowMs} />
             ))}
           </div>
         ) : (
-          orders.map((order) => (
-            <OrderCard
-              key={order.id}
-              order={order}
-              nowMs={nowMs}
-              busy={patchingIds.has(order.id)}
-              failed={failedIds.has(order.id)}
-              onAdvance={() => advanceOrder(order)}
-            />
-          ))
+          orders.map((order) =>
+            order.voided ? (
+              <VoidedCard
+                key={order.id}
+                order={order}
+                nowMs={nowMs}
+                busy={ackingIds.has(order.id)}
+                failed={failedIds.has(order.id)}
+                onAcknowledge={() => acknowledgeVoid(order)}
+              />
+            ) : (
+              <OrderCard
+                key={order.id}
+                order={order}
+                nowMs={nowMs}
+                busy={patchingIds.has(order.id)}
+                failed={failedIds.has(order.id)}
+                onAdvance={() => advanceOrder(order)}
+              />
+            )
+          )
         )}
       </main>
 
@@ -589,6 +727,65 @@ function OrderCard({ order, nowMs, busy, failed, onAdvance }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// A VOIDED ticket. Deliberately NOT a variant of OrderCard: it is not a thing
+// to work through, it is an interrupt telling the kitchen to stop and discard.
+// So it inherits none of the queue affordances — no elapsed-tier color (the
+// timer is irrelevant once the sale is gone), no whole-card tap-to-advance
+// (which would risk "completing" a cancelled order with a stray touch), and
+// items are struck through rather than presented as a make-spec. The only
+// action is an explicit, separate Acknowledge button.
+function VoidedCard({ order, nowMs, busy, failed, onAcknowledge, compact = false }) {
+  const sec = elapsedSeconds(order.created_at, nowMs);
+  // Whether the kitchen had actually started cooking changes the instruction:
+  // food may already be on the pass, or may be mid-make.
+  const wasReady = order.voided_from_status === "ready";
+
+  return (
+    <div
+      className={`kds-card kds-card--voided${compact ? " kds-card--voided-compact" : ""}${
+        busy ? " kds-card--busy" : ""
+      }${failed ? " kds-card--failed" : ""}`}
+      role="alert"
+      aria-live="assertive"
+    >
+      <div className="kds-card__voidbanner">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" />
+          <path d="M4.9 4.9l14.2 14.2" />
+        </svg>
+        <span>VOIDED</span>
+      </div>
+
+      <div className="kds-card__top">
+        <span className="kds-card__number">#{order.order_number}</span>
+        <div className="kds-card__meta">
+          <span className="kds-card__timer kds-card__timer--voided">{formatMMSS(sec)}</span>
+        </div>
+      </div>
+
+      <div className="kds-card__voidmsg">
+        {wasReady
+          ? "This order was cancelled after it was finished — pull it from the pass and discard."
+          : "This order was cancelled while being made — stop now and discard."}
+      </div>
+
+      <div className="kds-card__items kds-card__items--voided">
+        {order.items.map((item) => (
+          <ItemBlock key={item.id} item={item} />
+        ))}
+      </div>
+
+      <button
+        className="kds-card__ackbtn"
+        onClick={busy ? undefined : onAcknowledge}
+        disabled={busy}
+      >
+        {busy ? "DISMISSING…" : failed ? "DISMISS FAILED · TAP TO RETRY" : "ACKNOWLEDGE & DISMISS"}
+      </button>
     </div>
   );
 }
@@ -826,11 +1023,22 @@ function PastOrdersOverlay({ onClose, onReverted }) {
             </li>
             {rows.map((o) => (
               <li key={o.id}>
-                <button className="kds-past-row" onClick={() => openDetail(o)}>
+                <button
+                  className={`kds-past-row${o.voided ? " kds-past-row--voided" : ""}`}
+                  onClick={() => openDetail(o)}
+                >
                   <span className="kds-past-row__num">#{o.order_number}</span>
-                  <span className="kds-past-row__time">{formatClock(o.completed_at)}</span>
+                  {/* A ticket voided mid-prep never got a completed_at, so fall
+                      back to when it was placed. */}
+                  <span className="kds-past-row__time">
+                    {formatClock(o.completed_at || o.created_at)}
+                  </span>
                   <span className="kds-past-row__prep">
-                    {formatDuration(o.created_at, o.completed_at)}
+                    {o.voided ? (
+                      <span className="kds-past-row__voidtag">VOIDED</span>
+                    ) : (
+                      formatDuration(o.created_at, o.completed_at)
+                    )}
                   </span>
                   <span className="kds-past-row__chev">›</span>
                 </button>
@@ -873,19 +1081,41 @@ function PastOrderDetail({ order, onClose, onUndo, undoBusy, undoError }) {
         </div>
 
         <div className="kds-detail__meta">
-          <span className="kds-detail__meta-item">Completed {formatClock(order.completed_at)}</span>
-          <span className="kds-detail__prep">
-            Prep {formatDuration(order.created_at, order.completed_at)}
-          </span>
+          {order.voided ? (
+            <>
+              <span className="kds-detail__meta-item">
+                Voided {formatClock(order.completed_at || order.created_at)}
+              </span>
+              <span className="kds-detail__voidtag">VOIDED</span>
+            </>
+          ) : (
+            <>
+              <span className="kds-detail__meta-item">
+                Completed {formatClock(order.completed_at)}
+              </span>
+              <span className="kds-detail__prep">
+                Prep {formatDuration(order.created_at, order.completed_at)}
+              </span>
+            </>
+          )}
         </div>
 
-        <div className="kds-detail__items">
+        <div className={`kds-detail__items${order.voided ? " kds-detail__items--voided" : ""}`}>
           {order.items.map((item) => (
             <ItemBlock key={item.id} item={item} />
           ))}
         </div>
 
+        {/* A void is terminal (refunds-plan.md) — there is no "return to queue"
+            for a cancelled sale, so the undo affordance is withheld entirely
+            rather than offered and rejected by the server. */}
         <div className="kds-detail__actions">
+          {order.voided ? (
+            <div className="kds-detail__voidnote">
+              This order was cancelled and refunded. It stays here as a record.
+            </div>
+          ) : (
+          <>
           {undoError && <div className="kds-detail__undo-error">{undoError}</div>}
           <button
             className="kds-detail__undo-btn"
@@ -898,6 +1128,8 @@ function PastOrderDetail({ order, onClose, onUndo, undoBusy, undoError }) {
             </svg>
             {undoBusy ? "Reverting…" : "Undo — Return to Active Queue"}
           </button>
+          </>
+          )}
         </div>
       </div>
     </div>

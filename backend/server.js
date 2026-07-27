@@ -836,7 +836,8 @@ async function fetchKdsOrders(client, orderIds, { includeCompletedAt = false } =
   if (orderIds.length === 0) return [];
 
   const { rows: orders } = await client.query(
-    `SELECT id, order_number, status, fulfillment_type, created_at, completed_at
+    `SELECT id, order_number, status, fulfillment_type, created_at, completed_at,
+            voided_from_status, void_acknowledged_at
        FROM orders
       WHERE id = ANY($1::uuid[])`,
     [orderIds]
@@ -988,6 +989,11 @@ async function fetchKdsOrders(client, orderIds, { includeCompletedAt = false } =
       fulfillment_type: o.fulfillment_type,
       created_at: o.created_at,
       ...(includeCompletedAt ? { completed_at: o.completed_at } : {}),
+      // Void context (Slice 5). `voided` is the flag the KDS renders off;
+      // voided_from_status says whether the kitchen ever saw the ticket.
+      voided: o.status === "cancelled",
+      voided_from_status: o.voided_from_status,
+      void_acknowledged_at: o.void_acknowledged_at,
       items: itemsByOrder[o.id] || [],
     };
   }
@@ -1025,11 +1031,25 @@ app.get("/api/orders", requireDevicePairing, async (req, res) => {
     }
     const locationId = locRows[0].id;
 
+    // Live statuses match plainly. 'cancelled' is special (Slice 5): a voided
+    // order only belongs on the board if the kitchen was ALREADY cooking it
+    // (voided_from_status in preparing/ready — a void of an 'open' order never
+    // reached the line) and has not yet acknowledged it. Voided tickets are
+    // dismissed by hand, so an acknowledged one leaves the board permanently
+    // and reappears only in history.
+    const liveStatuses = statuses.filter((s) => s !== "cancelled");
+    const wantsVoided = statuses.includes("cancelled");
+
     const { rows: idRows } = await client.query(
       `SELECT id FROM orders
-        WHERE location_id = $1 AND status::text = ANY($2::text[])
+        WHERE location_id = $1
+          AND ( ($2::text[] <> '{}' AND status::text = ANY($2::text[]))
+             OR ($3::boolean
+                 AND status = 'cancelled'
+                 AND voided_from_status IN ('preparing', 'ready')
+                 AND void_acknowledged_at IS NULL) )
         ORDER BY created_at ASC`, // FIFO oldest-first
-      [locationId, statuses]
+      [locationId, liveStatuses, wantsVoided]
     );
 
     const orders = await fetchKdsOrders(client, idRows.map((r) => r.id));
@@ -1063,12 +1083,23 @@ app.get("/api/orders/history", requireDevicePairing, async (req, res) => {
     }
     const locationId = locRows[0].id;
 
+    // Completed orders, plus (Slice 5) voided tickets the kitchen has already
+    // acknowledged — a void stays visible here marked as voided rather than
+    // vanishing off the board without trace. Only voids that actually reached
+    // the kitchen appear; one voided while still 'open' was never the
+    // kitchen's business. A voided order may have no completed_at (it was
+    // cancelled mid-prep), so the window and sort fall back to created_at.
     const { rows: idRows } = await client.query(
       `SELECT id FROM orders
         WHERE location_id = $1
-          AND status = 'ready'
-          AND completed_at >= now() - ($2::numeric * interval '1 hour')
-        ORDER BY completed_at DESC`, // most-recent-first
+          AND ( ( status = 'ready'
+                  AND completed_at >= now() - ($2::numeric * interval '1 hour') )
+             OR ( status = 'cancelled'
+                  AND voided_from_status IN ('preparing', 'ready')
+                  AND void_acknowledged_at IS NOT NULL
+                  AND COALESCE(completed_at, created_at)
+                        >= now() - ($2::numeric * interval '1 hour') ) )
+        ORDER BY COALESCE(completed_at, created_at) DESC`, // most-recent-first
       [locationId, sinceHours]
     );
 
@@ -1081,6 +1112,37 @@ app.get("/api/orders/history", requireDevicePairing, async (req, res) => {
     res.status(500).json({ error: "Failed to fetch order history" });
   } finally {
     client.release();
+  }
+});
+
+// POST /api/orders/:id/acknowledge-void   (KDS — device-paired, no staff auth)
+// Kitchen staff dismissing a VOIDED ticket from the board. Voided tickets are
+// NEVER auto-cleared on a timer — someone has to actively confirm they've seen
+// it and stopped cooking — so this is the only way one leaves the board. The
+// acknowledgement is persisted (not client-side) so it survives a reload and
+// clears the ticket on every KDS device at once. Idempotent: acknowledging an
+// already-acknowledged ticket is a no-op, which makes a double-tap harmless.
+app.post("/api/orders/:id/acknowledge-void", requireDevicePairing, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE orders
+          SET void_acknowledged_at = COALESCE(void_acknowledged_at, now())
+        WHERE id = $1 AND status = 'cancelled'
+        RETURNING id, order_number, void_acknowledged_at`,
+      [id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "No voided order with that id" });
+    }
+    res.json({
+      id: rows[0].id,
+      order_number: rows[0].order_number,
+      void_acknowledged_at: rows[0].void_acknowledged_at,
+    });
+  } catch (err) {
+    console.error("Void acknowledge failed:", err.message);
+    res.status(500).json({ error: "Failed to acknowledge voided order" });
   }
 });
 
@@ -1424,10 +1486,16 @@ async function applyRefund(client, {
     [orderId, method, -refundAmount, refundId]
   );
 
-  // 4. A void erases the sale.
+  // 4. A void erases the sale. voided_from_status preserves how far the order
+  //    had got, which 'cancelled' would otherwise destroy — the KDS uses it to
+  //    tell "someone is cooking this right now, interrupt them" (preparing/
+  //    ready) from "it never reached the line" (open, no ticket needed).
   let orderStatus = order.status;
   if (type === "void") {
-    await client.query("UPDATE orders SET status = 'cancelled' WHERE id = $1", [orderId]);
+    await client.query(
+      "UPDATE orders SET status = 'cancelled', voided_from_status = $2 WHERE id = $1",
+      [orderId, order.status]
+    );
     orderStatus = "cancelled";
   }
 
