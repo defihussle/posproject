@@ -4419,18 +4419,24 @@ app.get("/api/backoffice/reports/sales-summary", async (req, res) => {
 // Reconciliation invariant & payment states (as built): Reports count only
 // status='ready' orders. Checkout writes one or more 'captured', positive
 // payments per order that sum exactly to orders.total (see the payments
-// INSERT above; verified: every ready order's payments == its total). No code
-// path today writes 'failed'/'refunded'/'pending' or negative amounts — those
-// payment_status values are unreachable (no refund/void flow exists). Payment
-// rows are filtered through settledPaymentsWhere() (currently 'captured'), so
-// today the filter is a no-op and SUM(payments.amount) == SUM(orders.total) by
-// construction — which is why Sales Summary total == SUM(payments.amount) ==
-// Transaction Log total holds exactly. When a refund/void/failed flow is added,
-// unfiltered SUM(payments.amount) would include money never collected or since
-// returned and the invariant would break; because every rollup already routes
-// through settledPaymentsWhere(), tightening that ONE predicate (net of refunds)
-// fixes all reports together, with reversed orders routed to the Voids report.
-// Flagged as the biggest audit gap in docs/architecture/reports-plan.md.
+// INSERT above). Since the Refunds feature shipped, a reversal also writes a
+// NEGATIVE payments row at status='refunded' linked to its order_refunds audit
+// record, and a void additionally moves the order to 'cancelled' — dropping it
+// out of every 'ready'-filtered rollup while its capture and its reversal net
+// to zero. 'pending'/'failed' remain unreachable until Stripe lands.
+//
+// Every money rollup routes through settledPaymentsWhere() — now
+// status IN ('captured','refunded') — so SUM(payments.amount) over that set is
+// NET collected by construction, and the invariant is:
+//   SUM(orders.total) [ready] − SUM(refunds on those orders)
+//     == SUM(payments.amount) [settled]
+//     == Transaction Log net == Sales Summary "Total collected".
+// Proven against seeded refund/void data (partial, full, and a void) in
+// tests/refund_reconciliation_acceptance.mjs. Voided orders appear here as
+// flagged rows contributing nothing to the totals, which also closes the
+// "cancelled orders are invisible" gap docs/architecture/reports-plan.md
+// raised. A future 'failed'/'pending' Stripe row stays excluded until it
+// settles, so an in-flight refund can never corrupt a total.
 //
 // The per-order row query is the row-grain source a future end-of-day report
 // aggregates; the totals query is the same summary grain as Sales Summary.

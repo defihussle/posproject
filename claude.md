@@ -63,10 +63,17 @@ posproject/
 - `orders` — status enum `open/preparing/ready/completed/cancelled`;
   `discount` (always server-computed, never trust client),
   `discount_percent`, `discount_reason` (required when applied),
-  `discount_applied_by`, `tip` (always `$0` — no tip UI yet)
+  `discount_applied_by`, `tip` (always `$0` — no tip UI yet),
+  `voided_from_status` + `void_acknowledged_at` (KDS voided-ticket handling)
 - `order_items` — status enum `pending/preparing/ready/served`
 - `order_item_modifiers`, `order_item_addons` — support `quantity`
-- `payments` — method enum `card/cash/gift_card/other`
+- `payments` — method enum `card/cash/gift_card/other`; status
+  `captured` (positive) / `refunded` (NEGATIVE reversal row, `refund_id` FK);
+  `processor_txn_id` reserved for Stripe
+- `order_refunds` — reversal audit: `type` (`void`/`refund`), `amount`,
+  `tax_amount`, CHECK-constrained `reason` + `reason_note`, `requested_by`,
+  `approved_by`, `status`, `stripe_refund_id`/`processor_status` (Stripe-ready)
+- `order_refund_items` — per-line refund detail (empty for full/amount-only)
 - `device_pairings` — device_id, device_name, pairing_code_hash
   (SHA-256, not raw), code_expires_at, paired_at, created_by,
   revoked_at/revoked_by, last_seen_at
@@ -161,12 +168,27 @@ Three independent trust layers — full narrative/history:
 - Payroll: weekly (Mon–Sun) hours + gross pay per staff, Mark-as-Paid
   (persisted in `payroll_status`), CSV/PDF export; owners excluded,
   breaks subtracted, past-week open shifts capped at week end
-- Reports: period-oriented range selector + role-aware registry; four
-  Phase-1 reports — Sales Summary, Transaction Log, Discount Report, Labor
-  Report — each with CSV/PDF export. Money reconciles across surfaces via
-  one settled-payments predicate; hours/cost reuse the canonical worked-time
-  helpers (same numbers as `stats/labor`/Payroll). Phase 2 (Category & Item
-  Sales) deferred. See `docs/architecture/reports-plan.md`
+- Reports: period-oriented range selector + role-aware registry; five
+  reports — Sales Summary, Transaction Log, Discount Report, Refunds Report,
+  Labor Report — each with CSV/PDF export. Money reconciles across surfaces
+  via one settled-payments predicate; hours/cost reuse the canonical
+  worked-time helpers (same numbers as `stats/labor`/Payroll). Phase 2
+  (Category & Item Sales) deferred. See `docs/architecture/reports-plan.md`
+- Refunds & Voids (all 5 slices): **Void** erases a sale
+  (`status='cancelled'`, drops out of every report); **Refund** returns money
+  on a standing `ready` order (full, partial-$, or line-item) and leaves it
+  in gross/net/tax. Every reversal writes a NEGATIVE `payments` row plus an
+  `order_refunds` audit record (type, amount, tax portion, CHECK-constrained
+  reason, requested_by/approved_by), so `settledPaymentsWhere()`
+  (`captured`+`refunded`) nets refunds through one predicate. Dual-control at
+  the POS — a cashier initiates, a manager+ approves by PIN inline; reversals
+  ≥ `REFUND_OWNER_APPROVAL_THRESHOLD` ($100) need owner/admin. Line-item
+  detail is validated against the order (ownership, quantity ordered, and
+  cumulative quantity already refunded). Surfaces: POS order-recall modal,
+  Back Office Transaction Log, the Refunds Report, and a KDS VOIDED ticket
+  with its own alert sound that kitchen staff must manually acknowledge
+  (never auto-cleared), after which it stays in KDS history marked voided.
+  See `docs/architecture/refunds-plan.md`
 - Self-service: Change PIN, Clock In/Out (timer shows worked time, breaks
   subtracted), My Hours
 
