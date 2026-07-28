@@ -269,6 +269,15 @@
   margin-top: 1rem;
 }
 
+/* Shown in place of the refund buttons on an order that hasn't completed —
+   explains why only Void is on offer rather than leaving a bare gap. */
+.orm-actions-note {
+  align-self: center;
+  font-size: 0.9rem;
+  color: var(--text-secondary, #6B6B66);
+  line-height: 1.4;
+}
+
 .orm-btn {
   padding: 0.75rem 1.25rem;
   border-radius: 8px;

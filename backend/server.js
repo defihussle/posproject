@@ -1307,7 +1307,7 @@ async function applyRefund(client, {
 
   // Lock the order for the duration of the reversal.
   const { rows: oRows } = await client.query(
-    "SELECT id, status, total, tax FROM orders WHERE id = $1 FOR UPDATE",
+    "SELECT id, status, subtotal, total, tax FROM orders WHERE id = $1 FOR UPDATE",
     [orderId]
   );
   if (oRows.length === 0) throw new HttpError(404, "Order not found");
@@ -1315,6 +1315,7 @@ async function applyRefund(client, {
   if (order.status === "cancelled") {
     throw new HttpError(409, "Order is already voided — nothing to reverse");
   }
+  const orderSubtotal = parseFloat(order.subtotal);
   const orderTotal = parseFloat(order.total);
   const orderTax = parseFloat(order.tax);
 
@@ -1327,6 +1328,88 @@ async function applyRefund(client, {
   const alreadyRefunded = parseFloat(rRows[0].refunded);
   const alreadyRefundedTax = parseFloat(rRows[0].refunded_tax);
   const remaining = round2(orderTotal - alreadyRefunded);
+
+  // ---- Line-item detail: validated, and PRICED, entirely server-side ----
+  // Caller-supplied line detail is validated against the ORDER before anything
+  // is written, and its dollar value is computed here rather than accepted from
+  // the request. The client sends only which lines and how many units; the
+  // money is never its to decide (same never-trust-the-client principle as
+  // checkout pricing and discounts).
+  //   1. the order_item must belong to THIS order
+  //   2. quantity must be a positive integer, ≤ the quantity ordered
+  //   3. quantity must be ≤ (ordered − already refunded on prior non-failed
+  //      refunds), so cumulative line refunds can't exceed what was sold
+  //
+  // Pricing: order_items.unit_price is the fully-priced per-unit figure
+  // (variant + modifier deltas + paid addon extras) and orders.subtotal is
+  // exactly Σ(unit_price × quantity), so a line's share of what was actually
+  // COLLECTED is (qty × unit_price) × total/subtotal. Scaling by total/subtotal
+  // allocates the order's discount, tax and tip across the lines
+  // proportionally — refunding every line therefore returns exactly
+  // orders.total, tax included, and refunding a line of a discounted order
+  // returns what was really paid for it, not its undiscounted list price.
+  let validatedItems = null;
+  let lineItemsTotal = 0;
+  if (Array.isArray(items) && items.length > 0) {
+    const { rows: lineRows } = await client.query(
+      `SELECT oi.id, oi.quantity, oi.unit_price,
+              COALESCE((SELECT SUM(ori.quantity)
+                          FROM order_refund_items ori
+                          JOIN order_refunds r ON r.id = ori.refund_id
+                         WHERE ori.order_item_id = oi.id AND r.status <> 'failed'), 0)
+                AS refunded_qty
+         FROM order_items oi
+        WHERE oi.order_id = $1`,
+      [orderId]
+    );
+    const byId = new Map(
+      lineRows.map((r) => [
+        r.id,
+        {
+          ordered: parseInt(r.quantity, 10),
+          refunded: parseInt(r.refunded_qty, 10),
+          unitPrice: parseFloat(r.unit_price),
+        },
+      ])
+    );
+
+    // Collapse duplicates first — the same line listed twice in one request
+    // must be checked on its combined quantity, not per entry.
+    const requested = new Map();
+    for (const it of items) {
+      const lineId = it.orderItemId;
+      const line = byId.get(lineId);
+      if (!line) {
+        throw new HttpError(400, `Line item ${lineId} does not belong to this order`);
+      }
+      const qty = Number(it.quantity);
+      if (!Number.isInteger(qty) || qty <= 0) {
+        throw new HttpError(400, `Line item ${lineId}: quantity must be a positive integer`);
+      }
+      requested.set(lineId, (requested.get(lineId) || 0) + qty);
+    }
+
+    // Ratio of collected-to-list, i.e. how discount/tax/tip scale each line.
+    const collectedRatio = orderSubtotal > 0 ? orderTotal / orderSubtotal : 0;
+
+    validatedItems = [];
+    for (const [lineId, qty] of requested) {
+      const { ordered, refunded, unitPrice } = byId.get(lineId);
+      if (qty > ordered) {
+        throw new HttpError(400, `Line item ${lineId}: cannot refund ${qty} of ${ordered} ordered`);
+      }
+      const refundableQty = ordered - refunded;
+      if (qty > refundableQty) {
+        throw new HttpError(
+          409,
+          `Line item ${lineId}: ${refunded} of ${ordered} already refunded — only ${refundableQty} remain refundable`
+        );
+      }
+      const lineAmount = round2(qty * unitPrice * collectedRatio);
+      lineItemsTotal = round2(lineItemsTotal + lineAmount);
+      validatedItems.push({ orderItemId: lineId, quantity: qty, amount: lineAmount });
+    }
+  }
 
   let refundAmount, refundTax;
   if (type === "void") {
@@ -1341,7 +1424,13 @@ async function applyRefund(client, {
     if (order.status !== "ready") {
       throw new HttpError(409, "Only completed (ready) orders can be refunded; reverse an in-progress order with a void");
     }
-    if (amount === undefined || amount === null) {
+    if (validatedItems) {
+      // Line-item refund — the amount is the sum of the server-priced lines, so
+      // order_refunds.amount always equals SUM(order_refund_items.amount)
+      // exactly. Any `amount` in the request is deliberately ignored.
+      refundAmount = lineItemsTotal;
+      refundTax = orderTotal > 0 ? round2(refundAmount * (orderTax / orderTotal)) : 0;
+    } else if (amount === undefined || amount === null) {
       refundAmount = remaining; // full remaining
       refundTax = round2(orderTax - alreadyRefundedTax);
     } else {
@@ -1361,83 +1450,6 @@ async function applyRefund(client, {
       400,
       `Refund amount ${refundAmount.toFixed(2)} exceeds remaining refundable ${remaining.toFixed(2)}`
     );
-  }
-
-  // Line-item detail is caller-supplied, so it is validated against the ORDER
-  // before anything is written — never trusted from the request. The dollar
-  // ceiling above already stops money leaking; this stops the *audit* lying:
-  // without it the same line could be refunded twice across two partial
-  // refunds (each individually under the remaining balance) and the per-line
-  // record would claim more units were returned than were ever sold.
-  //   1. the order_item must belong to THIS order
-  //   2. quantity must be a positive integer, ≤ the quantity ordered
-  //   3. quantity must be ≤ (ordered − already refunded on prior non-failed
-  //      refunds), so cumulative line refunds can't exceed what was sold
-  let validatedItems = null;
-  if (Array.isArray(items) && items.length > 0) {
-    const { rows: lineRows } = await client.query(
-      `SELECT oi.id, oi.quantity,
-              COALESCE((SELECT SUM(ori.quantity)
-                          FROM order_refund_items ori
-                          JOIN order_refunds r ON r.id = ori.refund_id
-                         WHERE ori.order_item_id = oi.id AND r.status <> 'failed'), 0)
-                AS refunded_qty
-         FROM order_items oi
-        WHERE oi.order_id = $1`,
-      [orderId]
-    );
-    const byId = new Map(
-      lineRows.map((r) => [
-        r.id,
-        { ordered: parseInt(r.quantity, 10), refunded: parseInt(r.refunded_qty, 10) },
-      ])
-    );
-
-    // Collapse duplicates first — the same line listed twice in one request
-    // must be checked on its combined quantity, not per entry.
-    const requested = new Map();
-    for (const it of items) {
-      const lineId = it.orderItemId;
-      const line = byId.get(lineId);
-      if (!line) {
-        throw new HttpError(400, `Line item ${lineId} does not belong to this order`);
-      }
-      const qty = Number(it.quantity);
-      if (!Number.isInteger(qty) || qty <= 0) {
-        throw new HttpError(400, `Line item ${lineId}: quantity must be a positive integer`);
-      }
-      const amt = Number(it.amount);
-      if (!Number.isFinite(amt) || amt < 0) {
-        throw new HttpError(400, `Line item ${lineId}: amount must be a non-negative number`);
-      }
-      const prev = requested.get(lineId) || { quantity: 0, amount: 0 };
-      requested.set(lineId, {
-        quantity: prev.quantity + qty,
-        amount: round2(prev.amount + amt),
-      });
-    }
-
-    for (const [lineId, req] of requested) {
-      const { ordered, refunded } = byId.get(lineId);
-      if (req.quantity > ordered) {
-        throw new HttpError(
-          400,
-          `Line item ${lineId}: cannot refund ${req.quantity} of ${ordered} ordered`
-        );
-      }
-      const refundableQty = ordered - refunded;
-      if (req.quantity > refundableQty) {
-        throw new HttpError(
-          409,
-          `Line item ${lineId}: ${refunded} of ${ordered} already refunded — only ${refundableQty} remain refundable`
-        );
-      }
-    }
-    validatedItems = [...requested.entries()].map(([orderItemId, r]) => ({
-      orderItemId,
-      quantity: r.quantity,
-      amount: r.amount,
-    }));
   }
 
   // Misuse guard: a manager PIN can't approve a high-value reversal — owner/admin only.

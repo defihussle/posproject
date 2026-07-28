@@ -93,14 +93,21 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
     setSuccessMsg(null);
   }, [selectedOrderId]);
 
-  // Calculate line item refund amount
+  // Preview of what the selected lines are worth. MUST mirror the server's
+  // pricing in applyRefund() — (qty × unit_price) scaled by total/subtotal, so
+  // the order's discount and tax are included. The server is authoritative and
+  // recomputes this itself; matching it here keeps the amount shown to the
+  // cashier honest and keeps the $100 owner-approval gate below in step with
+  // the threshold the server will actually apply.
   const lineItemTotalAmount = useMemo(() => {
     if (!selectedOrder || actionType !== "line_item") return 0;
+    const collectedRatio =
+      selectedOrder.subtotal > 0 ? selectedOrder.total / selectedOrder.subtotal : 0;
     let sum = 0;
     for (const item of selectedOrder.items || []) {
       const qty = lineQuantities[item.order_item_id] || 0;
       if (qty > 0) {
-        sum += qty * item.unit_price;
+        sum += Math.round((qty * item.unit_price * collectedRatio + Number.EPSILON) * 100) / 100;
       }
     }
     return Math.round((sum + Number.EPSILON) * 100) / 100;
@@ -208,11 +215,13 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
     setPinError(null);
 
     const type = actionType === "void" ? "void" : "refund";
+    // For a line-item refund we deliberately send NO dollar amount — the server
+    // prices the selected lines itself (unit_price × qty, scaled to what was
+    // actually collected so discount and tax are included). Sending a figure
+    // from here is what previously short-changed the customer by the tax.
     let amountPayload = undefined;
     if (actionType === "partial") {
       amountPayload = parseFloat(partialAmount);
-    } else if (actionType === "line_item") {
-      amountPayload = lineItemTotalAmount;
     } else if (actionType === "full") {
       amountPayload = selectedOrder.refund_summary.remaining_refundable;
     }
@@ -221,14 +230,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
     if (actionType === "line_item") {
       itemsPayload = Object.entries(lineQuantities)
         .filter(([, qty]) => qty > 0)
-        .map(([orderItemId, qty]) => {
-          const item = selectedOrder.items.find((i) => i.order_item_id === orderItemId);
-          return {
-            orderItemId,
-            quantity: qty,
-            amount: Math.round((qty * item.unit_price + Number.EPSILON) * 100) / 100,
-          };
-        });
+        .map(([orderItemId, qty]) => ({ orderItemId, quantity: qty }));
     }
 
     try {
@@ -431,6 +433,11 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                 )}
 
                 {/* Reversal Action Buttons */}
+                {/* Refunds apply only to a standing COMPLETED sale — the
+                    server rejects one on an open/preparing order (reverse
+                    those with a void instead), so offering the buttons there
+                    would just produce a guaranteed 409. Void stays available
+                    on any live order, subject to its own no-prior-refund rule. */}
                 {selectedOrder.status !== "cancelled" && selectedOrder.refund_summary.remaining_refundable > 0 && (
                   <div className="orm-actions-bar">
                     {selectedOrder.refund_summary.total_refunded === 0 && (
@@ -438,15 +445,23 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                         Void Order
                       </button>
                     )}
-                    <button className="orm-btn orm-btn--warning" onClick={() => startAction("full")}>
-                      Full Refund (${selectedOrder.refund_summary.remaining_refundable.toFixed(2)})
-                    </button>
-                    <button className="orm-btn orm-btn--secondary" onClick={() => startAction("partial")}>
-                      Partial Amount Refund
-                    </button>
-                    <button className="orm-btn orm-btn--secondary" onClick={() => startAction("line_item")}>
-                      Line-Item Refund
-                    </button>
+                    {selectedOrder.status === "ready" ? (
+                      <>
+                        <button className="orm-btn orm-btn--warning" onClick={() => startAction("full")}>
+                          Full Refund (${selectedOrder.refund_summary.remaining_refundable.toFixed(2)})
+                        </button>
+                        <button className="orm-btn orm-btn--secondary" onClick={() => startAction("partial")}>
+                          Partial Amount Refund
+                        </button>
+                        <button className="orm-btn orm-btn--secondary" onClick={() => startAction("line_item")}>
+                          Line-Item Refund
+                        </button>
+                      </>
+                    ) : (
+                      <span className="orm-actions-note">
+                        Not yet completed — reverse this order with a void.
+                      </span>
+                    )}
                   </div>
                 )}
 

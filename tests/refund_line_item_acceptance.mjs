@@ -117,21 +117,44 @@ async function runTests() {
       }
     }
 
-    // 5. Test Line-Item refund for remaining amount ($110)
+    // 5. Line-item refund, priced by the SERVER. Order is $132.74 + $17.26 tax
+    //    = $150.00, so the collected/list ratio is 150/132.74. Refunding the
+    //    second line (1 × $32.74) is worth 32.74 × 1.13003 = $37.00 collected,
+    //    NOT its $32.74 list price. No amount is sent — the client no longer
+    //    supplies one.
     const res2 = await applyRefund(client, {
       orderId,
       type: "refund",
       reason: "kitchen_error",
-      amount: 110.00,
-      items: [
-        { orderItemId: itemRows[0].id, quantity: 2, amount: 100.00 },
-        { orderItemId: itemRows[1].id, quantity: 1, amount: 10.00 },
-      ],
+      items: [{ orderItemId: itemRows[1].id, quantity: 1 }],
       requestedBy: cashier.id,
       approvedBy: owner.id,
       approverRole: owner.role,
     });
-    console.log(`PASS: Line-item refund of remaining $110 processed. Remaining refundable: $${res2.remainingRefundable}`);
+    if (Math.round(res2.refund.amount * 100) !== 3700) {
+      console.error(`FAIL: line priced at $${res2.refund.amount.toFixed(2)}, expected $37.00`);
+      process.exit(1);
+    }
+    console.log(
+      `PASS: server priced the $32.74 line at $${res2.refund.amount.toFixed(2)} tax-inclusive. ` +
+        `Remaining refundable: $${res2.remainingRefundable.toFixed(2)}`
+    );
+
+    // 5b. Exhaust the order with a partial-$ refund so the fully-refunded
+    //     rejection below is exercised on a genuinely exhausted order.
+    const res2b = await applyRefund(client, {
+      orderId,
+      type: "refund",
+      reason: "overcharge",
+      amount: res2.remainingRefundable,
+      requestedBy: cashier.id,
+      approvedBy: owner.id,
+      approverRole: owner.role,
+    });
+    console.log(
+      `PASS: partial-$ refund of $${res2b.refund.amount.toFixed(2)} exhausts the order. ` +
+        `Remaining refundable: $${res2b.remainingRefundable.toFixed(2)}`
+    );
 
     // 6. Test refunding an already fully refunded order
     try {
@@ -304,6 +327,140 @@ async function runTests() {
         process.exit(1);
       }
     }
+
+    // ---------------------------------------------------------------
+    // 8. TAX-INCLUSIVE LINE PRICING. The regression this locks: the client
+    //    used to send Σ(qty × unit_price) — a PRE-TAX figure — as the
+    //    tax-inclusive refund amount, so refunding every line of a
+    //    $10.00 + 13% HST = $11.30 order returned $10.00 and booked $1.15 of
+    //    tax instead of $1.30. The customer was short the tax while the
+    //    ledger still reconciled perfectly, which is why no reconciliation
+    //    test caught it. The server now prices the lines itself.
+    // ---------------------------------------------------------------
+    const { rows: order3Rows } = await client.query(
+      `INSERT INTO orders (location_id, staff_id, subtotal, tax, total, status, completed_at)
+       VALUES ($1, $2, 10.00, 1.30, 11.30, 'ready', now())
+       RETURNING id, order_number`,
+      [locationId, cashier.id]
+    );
+    const order3Id = order3Rows[0].id;
+    await client.query(
+      `INSERT INTO payments (order_id, method, amount, status) VALUES ($1, 'card', 11.30, 'captured')`,
+      [order3Id]
+    );
+    const { rows: item3Rows } = await client.query(
+      `INSERT INTO order_items (order_id, quantity, unit_price)
+       VALUES ($1, 1, 10.00)
+       RETURNING id`,
+      [order3Id]
+    );
+
+    const taxRes = await applyRefund(client, {
+      orderId: order3Id,
+      type: "refund",
+      reason: "quality_issue",
+      // No amount sent — mirrors the client, which no longer supplies one.
+      items: [{ orderItemId: item3Rows[0].id, quantity: 1 }],
+      requestedBy: cashier.id,
+      approvedBy: owner.id,
+      approverRole: owner.role,
+    });
+    const amtOk = Math.round(taxRes.refund.amount * 100) === 1130;
+    console.log(
+      `  ${amtOk ? "PASS" : "FAIL"}: $10.00 + 13% HST line refunds $${taxRes.refund.amount.toFixed(2)} ` +
+        `(expected $11.30, was $10.00 before the fix)`
+    );
+    if (!amtOk) process.exit(1);
+    const taxOk = Math.round(taxRes.refund.taxAmount * 100) === 130;
+    console.log(
+      `  ${taxOk ? "PASS" : "FAIL"}: booked tax $${taxRes.refund.taxAmount.toFixed(2)} ` +
+        `(expected $1.30, was $1.15 before the fix)`
+    );
+    if (!taxOk) process.exit(1);
+    const remOk = Math.round(taxRes.remainingRefundable * 100) === 0;
+    console.log(
+      `  ${remOk ? "PASS" : "FAIL"}: order fully refunded — remaining $${taxRes.remainingRefundable.toFixed(2)}`
+    );
+    if (!remOk) process.exit(1);
+
+    // order_refunds.amount must equal SUM(order_refund_items.amount) exactly,
+    // so the audit detail can never disagree with the headline.
+    const { rows: sumRows } = await client.query(
+      `SELECT COALESCE(SUM(amount), 0) AS s FROM order_refund_items WHERE refund_id = $1`,
+      [taxRes.refund.id]
+    );
+    const lineSumOk =
+      Math.round(parseFloat(sumRows[0].s) * 100) === Math.round(taxRes.refund.amount * 100);
+    console.log(
+      `  ${lineSumOk ? "PASS" : "FAIL"}: line detail sums to the refund total ` +
+        `($${parseFloat(sumRows[0].s).toFixed(2)} == $${taxRes.refund.amount.toFixed(2)})`
+    );
+    if (!lineSumOk) process.exit(1);
+
+    // 8b. A client-supplied dollar figure must be IGNORED, not trusted.
+    const { rows: order4Rows } = await client.query(
+      `INSERT INTO orders (location_id, staff_id, subtotal, tax, total, status, completed_at)
+       VALUES ($1, $2, 10.00, 1.30, 11.30, 'ready', now())
+       RETURNING id`,
+      [locationId, cashier.id]
+    );
+    await client.query(
+      `INSERT INTO payments (order_id, method, amount, status) VALUES ($1, 'card', 11.30, 'captured')`,
+      [order4Rows[0].id]
+    );
+    const { rows: item4Rows } = await client.query(
+      `INSERT INTO order_items (order_id, quantity, unit_price) VALUES ($1, 1, 10.00) RETURNING id`,
+      [order4Rows[0].id]
+    );
+    const forged = await applyRefund(client, {
+      orderId: order4Rows[0].id,
+      type: "refund",
+      reason: "overcharge",
+      amount: 0.01, // forged — must be ignored for a line-item refund
+      items: [{ orderItemId: item4Rows[0].id, quantity: 1, amount: 0.01 }],
+      requestedBy: cashier.id,
+      approvedBy: owner.id,
+      approverRole: owner.role,
+    });
+    const forgedOk = Math.round(forged.refund.amount * 100) === 1130;
+    console.log(
+      `  ${forgedOk ? "PASS" : "FAIL"}: forged $0.01 line amount ignored — server priced it at ` +
+        `$${forged.refund.amount.toFixed(2)}`
+    );
+    if (!forgedOk) process.exit(1);
+
+    // 8c. Discounted order: a line refund returns what was actually PAID for
+    //     that line, not its undiscounted list price.
+    const { rows: order5Rows } = await client.query(
+      `INSERT INTO orders (location_id, staff_id, subtotal, discount, discount_percent,
+                           discount_reason, tax, total, status, completed_at)
+       VALUES ($1, $2, 10.00, 2.00, 20, 'friend', 1.04, 9.04, 'ready', now())
+       RETURNING id`,
+      [locationId, cashier.id]
+    );
+    await client.query(
+      `INSERT INTO payments (order_id, method, amount, status) VALUES ($1, 'card', 9.04, 'captured')`,
+      [order5Rows[0].id]
+    );
+    const { rows: item5Rows } = await client.query(
+      `INSERT INTO order_items (order_id, quantity, unit_price) VALUES ($1, 1, 10.00) RETURNING id`,
+      [order5Rows[0].id]
+    );
+    const disc = await applyRefund(client, {
+      orderId: order5Rows[0].id,
+      type: "refund",
+      reason: "quality_issue",
+      items: [{ orderItemId: item5Rows[0].id, quantity: 1 }],
+      requestedBy: cashier.id,
+      approvedBy: owner.id,
+      approverRole: owner.role,
+    });
+    const discOk = Math.round(disc.refund.amount * 100) === 904;
+    console.log(
+      `  ${discOk ? "PASS" : "FAIL"}: 20%-discounted $10 line refunds ` +
+        `$${disc.refund.amount.toFixed(2)} (expected $9.04 — what was actually paid)`
+    );
+    if (!discOk) process.exit(1);
 
     await client.query("ROLLBACK");
     console.log("All Slice 4 backend acceptance tests PASSED cleanly!");
