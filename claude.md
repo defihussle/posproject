@@ -207,11 +207,18 @@ Full detail: `docs/architecture/features.md`
 - DB changes go through a `.sql` migration in `database/` (repo root,
   not `backend/`), run via `docker exec -i narcos_tacos_db psql -U
   narcos -d narcos_tacos < database/file.sql`
-- **Run migrations before (or with) the code deploy, never after** — code
-  that selects a not-yet-added column 500s every query against that table
-  until the column exists. Deploying code-first once took the whole menu
-  down in prod (`is_upsell`); apply the migration to the prod DB first,
-  then push/deploy the code that depends on it
+- **CRITICAL: Migrations MUST run on production BEFORE (or at the same time as) the code that depends on them is deployed.**  
+  This rule has already failed twice in production (`is_upsell` and the Refunds/KDS void migrations).  
+  Code that references a column or table that does not yet exist will 500 every query against that table and can take the live system down.  
+
+  **Required process for any schema change:**
+  1. Write the migration file in `database/`.
+  2. Apply it to the **production** database first (via Render External Database URL + `psql` or the Render shell).
+  3. Verify the new column/table exists on prod.
+  4. Only then push/deploy the code that uses it.
+  5. Never deploy code that depends on a migration that has not yet been run on prod.
+
+  Local Docker is not production. “It worked on my machine” is not sufficient.
 - `npm run dev` (`--watch`) auto-restarts on backend changes; plain
   `node server.js` does not — manual restart needed
 - Commit after each working milestone; never commit `.env`,
