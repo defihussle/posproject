@@ -1,10 +1,11 @@
 -- ============================================================
 -- device_pairings — device-level trust layer under Order Entry/KDS
 -- ------------------------------------------------------------
--- Orthogonal to staff PIN identity (see device-pairing-plan.md,
--- "Background"): pairing a device only proves "an owner/admin
--- authorized this physical tablet once," nothing about who's currently
--- using it. staffId/PIN login is completely unchanged by this table.
+-- Orthogonal to staff PIN identity (see
+-- docs/architecture/device-pairing.md, "Why"): pairing a device only
+-- proves "an owner/admin authorized this physical tablet once," nothing
+-- about who's currently using it. staffId/PIN login is completely
+-- unchanged by this table.
 --
 -- One row per pairing LIFECYCLE, covering both the pending-code stage
 -- and the paired-device stage:

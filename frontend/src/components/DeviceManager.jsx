@@ -29,7 +29,7 @@ function fmtRelative(iso) {
 }
 
 /**
- * Back Office → Devices tab (device-pairing-plan.md). Same Shopify-
+ * Back Office → Devices tab (docs/architecture/device-pairing.md). Same Shopify-
  * inspired pattern as StaffManager/MenuManager: a browsable list, tap a
  * row to open a focused detail modal (rename + revoke), plus a floating
  * "Generate Pairing Code" action for the one thing that isn't about an

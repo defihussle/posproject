@@ -206,8 +206,10 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
     setApproverPin((prev) => prev.slice(0, -1));
   };
 
-  // Submit Reversal
-  const submitReversal = async (e) => {
+  // Submit Reversal. Memoized because the auto-submit effect below depends on
+  // it: an unmemoized function would be a new identity every render, so the
+  // effect would re-run (and could re-fire the submit) on any unrelated render.
+  const submitReversal = useCallback(async (e) => {
     if (e) e.preventDefault();
     if (!selectedApprover || approverPin.length !== 4) return;
 
@@ -266,14 +268,21 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
     } finally {
       setSubmitting(false);
     }
-  };
+  }, [
+    selectedApprover, approverPin, actionType, partialAmount, selectedOrder,
+    lineQuantities, reason, reasonNote, staff.id, search, fetchOrders, onOrderUpdated,
+  ]);
 
-  // Auto-submit when 4 digits entered
+  // Auto-submit when 4 digits entered. submitReversal is a dependency because
+  // the effect calls it — without it the effect would keep an older closure and
+  // could post a stale reason/note/line selection. It can't loop: every path out
+  // of a submit breaks the guard below (success clears pinModalOpen and
+  // selectedApprover, failure clears approverPin).
   useEffect(() => {
     if (approverPin.length === 4 && pinModalOpen && selectedApprover && !submitting) {
       submitReversal();
     }
-  }, [approverPin, pinModalOpen, selectedApprover, submitting]);
+  }, [approverPin, pinModalOpen, selectedApprover, submitting, submitReversal]);
 
   return (
     <div className="orm-backdrop">

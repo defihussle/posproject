@@ -35,11 +35,15 @@ the paired-device stage:
   Back Office's device list can show what a device is actually being used
   for. `requireDevicePairing` stamps `last_seen_at` plus exactly one of
   these on every pass, chosen by `surfaceColumnForRequest()`. That
-  classifier is a **denylist, not an allowlist**: `POST /api/auth/login`
-  and `POST /api/orders` are Order Entry, and *everything else gated*
-  falls through to `last_kds_at`. For the dedicated tablets this POS runs
-  on, a non-NULL value maps to the device's real role — but the fallback
-  is worth knowing about before adding a gated route (see the list below)
+  classifier names the Order Entry routes explicitly — PIN login,
+  checkout, and the order-recall/reversal trio (`pos-recall`,
+  `:id/refund`, `staff/approvers`) — and *everything else gated* falls
+  through to `last_kds_at`. Method matters on `/api/orders`: `POST` is
+  checkout but `GET` is the KDS board poll. The fallback is the part
+  worth knowing about before adding a gated route (see the list below):
+  a new POS route is silently counted as KDS activity until it's added
+  here — which is exactly how the recall/refund routes were mislabelled
+  when they first shipped
 - Rows are never deleted, including revoked ones — this table IS the
   audit trail (who generated a code, when/whether it was redeemed, who
   revoked it and when), same "never hard-delete history" spirit as

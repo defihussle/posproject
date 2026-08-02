@@ -1,8 +1,8 @@
 # Reports — Implementation Plan
 
 Companion plan for a new **Back Office → Reports** section. Written for review
-before implementation, in the same spirit as `payroll-plan.md` and the other
-architecture docs. No code yet.
+before implementation, in the same spirit as `payroll-plan.md` (repo root) and
+the other architecture docs. No code yet.
 
 ## Why Reports exists (and how it differs from the Dashboard)
 The Dashboard already answers *"how's the business doing right now?"* —

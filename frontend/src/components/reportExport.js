@@ -1,7 +1,7 @@
 // ============================================================
 // Back Office → Reports — shared export scaffolding.
 // One CSV builder and one PDF builder used by every report body, so all
-// four reports export with an identical look, header, and filename
+// five reports export with an identical look, header, and filename
 // convention (report-<name>-<start>-to-<end>.{csv,pdf}). jsPDF is heavy and
 // only needed on the (infrequent) PDF export, so it's dynamically imported
 // here — same lazy pattern as Payroll, keeping it out of the main bundle.

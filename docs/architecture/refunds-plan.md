@@ -1,8 +1,8 @@
 # Refunds & Voids — Implementation Plan
 
 Companion plan for a new **Refund/Void** capability, written for review before
-implementation, in the same spirit as `reports-plan.md` and `payroll-plan.md`.
-No code yet.
+implementation, in the same spirit as `reports-plan.md` and
+`payroll-plan.md` (repo root). No code yet.
 
 ## Why this exists (and why now)
 Payments are still mocked, but Stripe (Stripe Terminal / BBPOS WisePOS E) is

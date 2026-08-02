@@ -2,11 +2,10 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { API_URL } from "../config";
 import "./HomeDashboard.css";
 
-// Preset ranges map 1:1 to the backend's resolveStatsRange. "custom" is a
-// UI-only option for now — the stats endpoints don't accept start/end yet,
-// so selecting it shows the date pickers + a "coming next" note rather than
-// firing a request the backend would 400. (Backend custom-range support is
-// the next phase — see the endpoint plan.)
+// Preset ranges map 1:1 to the backend's resolveStatsRange. "custom" resolves
+// through the same getStatsBounds window logic Reports uses; it shows date
+// pickers and holds off querying until BOTH dates are set, rather than firing
+// an incomplete request the backend would 400.
 const RANGES = [
   { key: "today", label: "Today" },
   { key: "week", label: "This Week" },
@@ -36,12 +35,11 @@ function fmtSince(iso, nowMs) {
  * only. Layout: top bar (range + comparison) → horizontally-scrolling KPI
  * strip → a responsive grid of section cards (charts, breakdowns, lists).
  *
- * This pass establishes the full UI structure. KPIs, the discount total,
- * top items, staff performance, and live status are wired to real data;
- * the four trend/breakdown charts and the per-reason discount / labor /
- * hours columns are scaffolded, awaiting their backend routes (see the
- * endpoint plan). Each scaffolded card shows a labelled "pending" state,
- * never fake data.
+ * Every card is wired to a real endpoint — KPIs (with vs-previous-period
+ * deltas), the four trend/breakdown charts, the per-reason discount rollup,
+ * top items, staff performance with hours, and live status. The only
+ * "pending" state left is the one a user causes: a custom range with its
+ * dates not yet both filled in.
  */
 export default function HomeDashboard({ staff }) {
   const [range, setRange] = useState("today");
@@ -163,9 +161,9 @@ export default function HomeDashboard({ staff }) {
     };
   }, [staff.id, range, trendMode, isCustom, customStart, customEnd]);
 
-  // KPI definitions — real values from the (extended) summary endpoint;
-  // Labor % awaits the labor endpoint. `delta` stays null until the
-  // comparison endpoint lands, so the arrow simply doesn't render yet.
+  // KPI definitions — money/orders from the summary endpoint, Labor % from
+  // the labor endpoint, each with a vs-previous-period delta from that same
+  // response's `previous` block.
   const kpis = useMemo(() => {
     const prev = summary?.previous;
     // % change vs the previous period-to-date; null when there's no prior
@@ -372,8 +370,9 @@ function SectionCard({ title, actions, wide, children }) {
   );
 }
 
-// Skeleton bars used while a chart's backend route is still pending, so the
-// card reads as "chart here, data coming" rather than broken/empty.
+// Skeleton bars shown when a chart can't query yet — today that's only a
+// custom range missing one of its dates — so the card reads as "chart here,
+// waiting on you" rather than broken/empty.
 function ChartPending({ shape = "bars", note }) {
   return (
     <div className="homedash-pending">
@@ -722,7 +721,7 @@ function TopItemsCard({ items, loading, pending }) {
   );
 }
 
-/* ---------------- Staff performance (orders/sales real; hours pending) ---------------- */
+/* ---------------- Staff performance (orders/sales + hours) ---------------- */
 function StaffPerformanceCard({ rows, hoursByStaff, loading, pending }) {
   return (
     <SectionCard title="Staff Performance" wide>
@@ -754,7 +753,7 @@ function StaffPerformanceCard({ rows, hoursByStaff, loading, pending }) {
   );
 }
 
-/* ---------------- Live status (real, keep) ---------------- */
+/* ---------------- Live status ---------------- */
 function LiveStatusCard() {
   const [staffList, setStaffList] = useState([]);
   const [loading, setLoading] = useState(true);

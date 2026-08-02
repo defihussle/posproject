@@ -1281,16 +1281,17 @@ app.patch("/api/orders/:id/status/revert", requireDevicePairing, async (req, res
 //   - VOID   — erase a sale that should never have counted; full-order only;
 //              sets orders.status='cancelled' so it drops out of every report
 //              (all report queries already filter status='ready').
-//   - REFUND — return money on a standing (ready) sale; full or partial-by-
-//              amount; the order stays 'ready' and remains in gross/net/tax,
-//              the refund is a deduction from money collected.
+//   - REFUND — return money on a standing (ready) sale; full, partial-by-
+//              amount, or line-item; the order stays 'ready' and remains in
+//              gross/net/tax, the refund is a deduction from money collected.
 // The MONEY lives in the existing payments ledger: every reversal writes a
 // negative payments row (status='refunded', amount=−refunded, refund_id → the
 // audit record), so SUM(payments.amount) over settled rows (settledPaymentsWhere:
 // captured + refunded) is net collected by construction and every report
 // reconciles through one predicate. order_refunds holds the audit + forward-
-// looking Stripe fields. (Line-item refunds arrive with the POS UI slice; the
-// `items`/order_refund_items plumbing is already here.)
+// looking Stripe fields, and order_refund_items the optional per-line detail
+// for a line-item refund — whose amount is priced here from the order's own
+// unit_price rows, never taken from the request.
 async function applyRefund(client, {
   orderId, type, reason, reasonNote, amount, items, requestedBy, approvedBy, approverRole,
 }) {
@@ -4297,11 +4298,15 @@ function settledPaymentsWhere(alias = "p") {
 // GET /api/backoffice/reports/sales-summary?start=YYYY-MM-DD&end=YYYY-MM-DD
 //   (also accepts range=today|week|month, but Reports drives it with custom
 //   start/end). A P&L-style single-period snapshot:
-//     Gross → Discounts → Net → Tax → Tips → Total collected
-//   plus order count, AOV, and a payment-method mix. Reuses the stats/summary
-//   money math (gross = SUM(subtotal), net = gross − discounts, total =
-//   SUM(total)); NET-NEW here are the explicit Tax line (SUM(orders.tax)) and
-//   the payment-method rollup (SUM(payments.amount) GROUP BY method).
+//     Gross → Discounts → Refunds → Net → Tax → Tips → Total collected
+//   plus order count, AOV, a payment-method mix, and a voids memo (a footnote,
+//   not a P&L line — voided orders are 'cancelled' and already excluded).
+//   Builds on the stats/summary money math (gross = SUM(subtotal), total =
+//   SUM(total)), with the explicit Tax line (SUM(orders.tax)) and the
+//   payment-method rollup (SUM(payments.amount) GROUP BY method) added here.
+//   Since Refunds shipped, net = gross − discounts − refunds(pre-tax) and the
+//   tax line is net of refunded tax, so Total collected == SUM(settled
+//   payments) still holds.
 app.get("/api/backoffice/reports/sales-summary", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -5012,10 +5017,10 @@ app.put("/api/backoffice/payroll/status", async (req, res) => {
 });
 
 // --------------- Device pairing (Order Entry / KDS access) ---------------
-// Adds a device-trust layer UNDERNEATH staffId/PIN identity (device-
-// pairing-plan.md, "Background") — orthogonal to who's logged in, this is
-// about whether the physical tablet itself was ever authorized by an
-// owner/admin. See database/device_pairing.sql for the full schema
+// Adds a device-trust layer UNDERNEATH staffId/PIN identity
+// (docs/architecture/device-pairing.md, "Why") — orthogonal to who's logged
+// in, this is about whether the physical tablet itself was ever authorized
+// by an owner/admin. See database/device_pairing.sql for the full schema
 // rationale (single-use hashed codes, DB-driven revocation, etc.).
 //
 // This section defines generate/pair/list/revoke plus the
@@ -5094,13 +5099,27 @@ async function resolveDeviceId(req) {
 }
 
 // Which POS surface a gated request belongs to, so Back Office can show
-// what a device is connected to. Order Entry = PIN login + checkout;
-// everything else gated (board poll, history, status advance/revert) is
-// KDS. Returns the device_pairings column to stamp — a fixed internal set,
-// never user input, so it's safe to interpolate into the UPDATE below.
+// what a device is connected to. Order Entry = PIN login, checkout, and the
+// order-recall/reversal flow; everything else gated (board poll, history,
+// status advance/revert, void acknowledgement) is KDS. Returns the
+// device_pairings column to stamp — a fixed internal set, never user input,
+// so it's safe to interpolate into the UPDATE below.
+//
+// Method matters on /api/orders: POST is checkout (Order Entry) but GET is
+// the KDS board poll, so that one can't be matched on path alone.
 function surfaceColumnForRequest(req) {
-  if (req.path === "/api/auth/login") return "last_order_entry_at";
-  if (req.method === "POST" && req.path === "/api/orders") return "last_order_entry_at";
+  const { method, path } = req;
+  if (path === "/api/auth/login") return "last_order_entry_at";
+  if (method === "POST" && path === "/api/orders") return "last_order_entry_at";
+  // Order recall + reversal — all three are driven from the Order Entry
+  // screen, not the KDS. The refund route carries an :id, so it needs a
+  // pattern; it deliberately does NOT match /acknowledge-void, which is the
+  // KDS dismissing a voided ticket.
+  if (path === "/api/orders/pos-recall") return "last_order_entry_at";
+  if (path === "/api/staff/approvers") return "last_order_entry_at";
+  if (method === "POST" && /^\/api\/orders\/[^/]+\/refund$/.test(path)) {
+    return "last_order_entry_at";
+  }
   return "last_kds_at";
 }
 

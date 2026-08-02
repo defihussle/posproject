@@ -14,7 +14,7 @@ const RETRY_MS = 5000;
 /**
  * Route guard wrapping /order-entry and the KDS route in App.jsx — the
  * device-level trust layer that sits UNDERNEATH staffId/PIN identity
- * (device-pairing-plan.md, "Background"). Renders DevicePairingScreen
+ * (docs/architecture/device-pairing.md, "Why"). Renders DevicePairingScreen
  * instead of `children` whenever the current device has no valid,
  * unrevoked pairing; once paired, renders `children` with a `deviceName`
  * prop injected (used by KDS's device-paired indicator — Order Entry
