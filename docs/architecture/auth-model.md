@@ -19,10 +19,22 @@ email+password+TOTP there.
   admin/manager roles, can toggle app-wide light/dark theme
 - **Admin**: can edit menu/prices, apply discounts, view full reports —
   cannot create staff or appoint roles
-- **Manager**: can apply discounts/comps, void orders, shift-level
-  reports — cannot touch menu/pricing
-- **Cashier**: takes orders, can apply discounts (per business decision)
-- **Kitchen**: KDS only
+- **Manager**: can apply discounts/comps, **approve a POS void/refund**
+  (dual-control, below the owner-approval threshold) — cannot touch
+  menu/pricing, and has no Back Office access, so no reports
+- **Cashier**: takes orders, can apply discounts (per business decision),
+  and can **initiate** a void/refund but never approve one
+- **Kitchen**: KDS only — including acknowledging a VOIDED ticket, which
+  needs no staff identity at all (the KDS is device-gated, not
+  staff-authenticated)
+
+**Reversal approval** is its own small trust rule layered on the roles
+above, and is the one place a *manager* PIN carries real financial
+authority: `POST /api/orders/:id/refund` takes a separate
+`approverStaffId` + `approverPin`, requires that approver to be
+owner/admin/manager, bcrypt-verifies the PIN server-side, and rejects a
+manager approver at or above `REFUND_OWNER_APPROVAL_THRESHOLD` ($100).
+Owner/admin self-approve. Full detail: `features.md` → Refunds & Voids.
 
 **Routing after login**: owner/admin/manager/cashier → `/order-entry`.
 **Kitchen does NOT log in at all** — KDS is a no-auth "open book" screen
@@ -43,9 +55,14 @@ Office route now re-derives identity from the cookie alone.
 **Manager has NO Back Office access at all** (revoked — previously had
 Staff Management only) and has no email/password/TOTP of any kind —
 Manager's only staff-related capability is the POS quick-add (see
-below). Owner/admin see Home, Staff Management, Menu Management, Devices
-and land on Home. Cashier/kitchen are blocked with a message (they have
-no email either, so there's no login path for them to even attempt).
+below). Owner/admin see Home, Staff Management, Menu Management, Payroll,
+Reports and Devices, and land on Home. Reports is the one nav entry that
+is a *group* rather than a route (`group: true`), expanding into a
+per-report sub-item; its children are enumerated from the reports
+registry, each carrying its own allowed-roles list on top of the section's
+(see `features.md` → Reports). Cashier/kitchen are blocked with a message
+(they have no email either, so there's no login path for them to even
+attempt).
 
 - **First-time setup**: an owner/admin with no email/password yet enters
   their existing PIN once to prove identity (same trust model as PIN
@@ -172,6 +189,14 @@ cashier/kitchen too, who have no Back Office access at all.
 - No manager editing/correction of punches, and clock status is NOT a
   gate on order-taking — pure time-tracking layered on top of
   PIN-based access.
+- The dropdown's **first** entry, "Recall / Refund Orders" (mirrored by a
+  "Recall Orders" button in the top bar), is NOT self-service and is
+  called out here only because it shares the menu: it opens the order
+  recall/reversal modal, which is ungated in the UI for every role that
+  can reach Order Entry. That is deliberate — the gate is the separate
+  approver PIN inside the flow, not who opened the modal, so a cashier
+  can start a reversal but cannot complete one alone. See `features.md`
+  → Refunds & Voids.
 
 ## Theme
 Defaults to **Light**, only owners can toggle dark mode (app-wide

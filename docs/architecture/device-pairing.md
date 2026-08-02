@@ -29,6 +29,17 @@ the paired-device stage:
   clause requires `paired_at IS NULL`, so a used code can never validate
   again regardless of `code_expires_at`)
 - `created_by`, `revoked_at`, `revoked_by`, `last_seen_at`
+- `last_order_entry_at`, `last_kds_at` (migration:
+  `database/device_connection_tracking.sql`) — `last_seen_at` only says
+  "this device made *some* gated request"; these split it by surface so
+  Back Office's device list can show what a device is actually being used
+  for. `requireDevicePairing` stamps `last_seen_at` plus exactly one of
+  these on every pass, chosen by `surfaceColumnForRequest()`. That
+  classifier is a **denylist, not an allowlist**: `POST /api/auth/login`
+  and `POST /api/orders` are Order Entry, and *everything else gated*
+  falls through to `last_kds_at`. For the dedicated tablets this POS runs
+  on, a non-NULL value maps to the device's real role — but the fallback
+  is worth knowing about before adding a gated route (see the list below)
 - Rows are never deleted, including revoked ones — this table IS the
   audit trail (who generated a code, when/whether it was redeemed, who
   revoked it and when), same "never hard-delete history" spirit as
@@ -67,6 +78,18 @@ direct API call can't bypass an unpaired browser:
 - `GET /api/orders`, `GET /api/orders/history` — KDS board + history
 - `PATCH /api/orders/:id/status`, `.../status/revert` — KDS advance /
   recall
+- `GET /api/orders/pos-recall` — Order Entry's order-recall list (order
+  totals, line items and prior refund history; the same "don't hand the
+  day's sales to an unpaired browser" reasoning as the routes above)
+- `POST /api/orders/:id/refund` — POS void/refund. Device pairing is the
+  outer gate here; the real authorization is the dual-control approver
+  PIN inside the request (`features.md` → Refunds & Voids)
+- `GET /api/staff/approvers` — the eligible-approver name list the POS
+  reversal flow picks from (a staff roster, so it stays behind the gate)
+- `POST /api/orders/:id/acknowledge-void` — KDS dismissing a VOIDED
+  ticket. Like the rest of KDS it has **no staff auth at all**; device
+  pairing is its only gate, which is exactly why the acknowledgement is
+  idempotent and carries no identity
 
 Back Office's own routes are deliberately NOT device-gated — an owner
 manages devices/staff/menu from any browser (guarded by the Back Office
