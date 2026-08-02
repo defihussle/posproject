@@ -1,0 +1,189 @@
+{
+  "generatedFrom": "database/*.sql",
+  "tables": [
+    {
+      "table": "device_pairings",
+      "migration": "device_pairing.sql"
+    },
+    {
+      "table": "ingredients",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "item_addons",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "item_ingredients",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "item_modifier_groups",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "item_variants",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "locations",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "menu_categories",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "menu_items",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "modifier_groups",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "modifier_ingredients",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "modifier_options",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "order_item_addons",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "order_item_modifiers",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "order_items",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "order_refund_items",
+      "migration": "refunds.sql"
+    },
+    {
+      "table": "order_refunds",
+      "migration": "refunds.sql"
+    },
+    {
+      "table": "orders",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "payments",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "payroll_status",
+      "migration": "payroll_status.sql"
+    },
+    {
+      "table": "shift_breaks",
+      "migration": "shift_breaks.sql"
+    },
+    {
+      "table": "shifts",
+      "migration": "schema.sql"
+    },
+    {
+      "table": "staff",
+      "migration": "schema.sql"
+    }
+  ],
+  "columns": [
+    {
+      "table": "device_pairings",
+      "column": "last_kds_at",
+      "migration": "device_connection_tracking.sql"
+    },
+    {
+      "table": "device_pairings",
+      "column": "last_order_entry_at",
+      "migration": "device_connection_tracking.sql"
+    },
+    {
+      "table": "menu_items",
+      "column": "is_upsell",
+      "migration": "upsell_items.sql"
+    },
+    {
+      "table": "modifier_groups",
+      "column": "active",
+      "migration": "modifier_management_and_discounts.sql"
+    },
+    {
+      "table": "modifier_options",
+      "column": "default_selected",
+      "migration": "menu_ux_enhancements.sql"
+    },
+    {
+      "table": "modifier_options",
+      "column": "max_quantity",
+      "migration": "menu_ux_enhancements.sql"
+    },
+    {
+      "table": "order_item_modifiers",
+      "column": "quantity",
+      "migration": "menu_ux_enhancements.sql"
+    },
+    {
+      "table": "orders",
+      "column": "discount_applied_by",
+      "migration": "modifier_management_and_discounts.sql"
+    },
+    {
+      "table": "orders",
+      "column": "discount_percent",
+      "migration": "modifier_management_and_discounts.sql"
+    },
+    {
+      "table": "orders",
+      "column": "discount_reason",
+      "migration": "modifier_management_and_discounts.sql"
+    },
+    {
+      "table": "orders",
+      "column": "void_acknowledged_at",
+      "migration": "kds_void_acknowledgement.sql"
+    },
+    {
+      "table": "orders",
+      "column": "voided_from_status",
+      "migration": "kds_void_acknowledgement.sql"
+    },
+    {
+      "table": "payments",
+      "column": "refund_id",
+      "migration": "refunds.sql"
+    },
+    {
+      "table": "staff",
+      "column": "password_hash",
+      "migration": "backoffice_email_password_2fa.sql"
+    },
+    {
+      "table": "staff",
+      "column": "reset_token",
+      "migration": "backoffice_email_password_2fa.sql"
+    },
+    {
+      "table": "staff",
+      "column": "reset_token_expiry",
+      "migration": "backoffice_email_password_2fa.sql"
+    },
+    {
+      "table": "staff",
+      "column": "totp_enabled",
+      "migration": "backoffice_email_password_2fa.sql"
+    },
+    {
+      "table": "staff",
+      "column": "totp_secret",
+      "migration": "backoffice_email_password_2fa.sql"
+    }
+  ]
+}

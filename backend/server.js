@@ -5351,9 +5351,36 @@ app.post("/api/backoffice/devices/:id/revoke", async (req, res) => {
 // Guarded so tests can `require('./server.js')` to exercise helpers/handlers
 // directly without opening the port. `node server.js` / `npm run dev` still
 // start listening exactly as before.
+// Boot-time schema guard. Deploying code that references a not-yet-created
+// column 500s every query against that table — it has taken prod down twice
+// (is_upsell, then the Refunds/KDS void migrations). Refusing to start makes
+// Render's health check fail, so the deploy rolls back and the previous
+// working version keeps serving instead of a half-broken new one.
+//
+// Fail CLOSED on confirmed drift, OPEN on connectivity: if we can't reach the
+// database we log loudly and start anyway, because turning a transient
+// connection blip into a crash-loop would be an outage we caused ourselves.
+async function assertSchemaCurrent() {
+  const { findMissingSchema, formatFailure } = require("./scripts/check-schema");
+  try {
+    const result = await findMissingSchema(pool);
+    if (result.missingTables.length || result.missingColumns.length) {
+      console.error(formatFailure(result));
+      process.exit(1);
+    }
+  } catch (err) {
+    console.error(
+      `WARNING: could not verify database schema at boot (${err.message}). ` +
+        `Starting anyway — run \`npm run check:schema\` once the database is reachable.`
+    );
+  }
+}
+
 if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`Narcos Tacos POS API running on http://localhost:${PORT}`);
+  assertSchemaCurrent().then(() => {
+    app.listen(PORT, () => {
+      console.log(`Narcos Tacos POS API running on http://localhost:${PORT}`);
+    });
   });
 }
 

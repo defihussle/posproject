@@ -219,6 +219,15 @@ Full detail: `docs/architecture/features.md`
   5. Never deploy code that depends on a migration that has not yet been run on prod.
 
   Local Docker is not production. “It worked on my machine” is not sufficient.
+
+  **This is now enforced automatically** — see
+  `docs/architecture/schema-guard.md`. `backend/schema-requirements.json`
+  lists every table/column `database/*.sql` declares; the server refuses to
+  boot, and Render's Pre-Deploy Command fails, if the database is missing any
+  of them. **After adding a migration, run `npm run schema:sync` from
+  `backend/` and commit the regenerated JSON** — `npm run check:schema` fails
+  if you forget. The guard is a backstop, not a replacement for step 2: it
+  turns a silent outage into a blocked deploy.
 - `npm run dev` (`--watch`) auto-restarts on backend changes; plain
   `node server.js` does not — manual restart needed
 - Commit after each working milestone; never commit `.env`,
