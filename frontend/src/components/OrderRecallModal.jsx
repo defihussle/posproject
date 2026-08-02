@@ -14,6 +14,26 @@ const REFUND_REASONS = [
 
 const REFUND_OWNER_APPROVAL_THRESHOLD = 100; // $ — reversals at/above $100 require Owner/Admin approval
 
+// The single place that decides how an order's state reads, so the left-hand
+// list pills and the right-hand detail badge can never disagree. Reversal
+// state OUTRANKS the raw order status: once money has gone back, showing
+// "READY" is actively misleading to whoever is deciding what to reverse next.
+function orderStateBadge(order) {
+  if (order.status === "cancelled") {
+    return { text: "Voided", cls: "orm-badge--cancelled" };
+  }
+  if (order.refund_summary.is_fully_refunded) {
+    return { text: "Fully Refunded", cls: "orm-badge--refunded" };
+  }
+  if (order.refund_summary.total_refunded > 0) {
+    return { text: "Partially Refunded", cls: "orm-badge--refunded" };
+  }
+  return { text: order.status, cls: `orm-badge--${order.status}` };
+}
+
+const fmtLogTime = (iso) =>
+  new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
 export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -318,19 +338,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
               ) : (
                 orders.map((o) => {
                   const isSel = selectedOrder?.id === o.id;
-                  let badgeClass = "orm-badge--ready";
-                  let statusText = o.status;
-
-                  if (o.status === "cancelled") {
-                    badgeClass = "orm-badge--cancelled";
-                    statusText = "Voided";
-                  } else if (o.refund_summary.is_fully_refunded) {
-                    badgeClass = "orm-badge--refunded";
-                    statusText = "Fully Refunded";
-                  } else if (o.refund_summary.total_refunded > 0) {
-                    badgeClass = "orm-badge--refunded";
-                    statusText = "Partially Refunded";
-                  }
+                  const badge = orderStateBadge(o);
 
                   return (
                     <div
@@ -344,7 +352,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                       </div>
                       <div className="orm-order-card-meta">
                         <span>{new Date(o.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                        <span className={`orm-badge ${badgeClass}`}>{statusText}</span>
+                        <span className={`orm-badge ${badge.cls}`}>{badge.text}</span>
                       </div>
                     </div>
                   );
@@ -369,19 +377,13 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                     </div>
                   </div>
                   <div>
-                    <span className={`orm-badge ${
-                      selectedOrder.status === "cancelled" ? "orm-badge--cancelled" : "orm-badge--ready"
-                    }`}>
-                      {selectedOrder.status.toUpperCase()}
+                    <span className={`orm-badge ${orderStateBadge(selectedOrder).cls}`}>
+                      {orderStateBadge(selectedOrder).text}
                     </span>
                   </div>
                 </div>
 
-                {successMsg && (
-                  <div style={{ padding: "0.75rem", background: "#e6f4ea", color: "#137333", borderRadius: "8px", fontWeight: "600", marginBottom: "1rem" }}>
-                    ✓ {successMsg}
-                  </div>
-                )}
+                {successMsg && <div className="orm-success">✓ {successMsg}</div>}
 
                 {/* Items Table */}
                 <table className="orm-items-table">
@@ -431,13 +433,27 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
 
                 {/* Prior Refunds Log */}
                 {selectedOrder.refunds?.length > 0 && (
-                  <div style={{ marginBottom: "1.25rem" }}>
-                    <h4 style={{ fontSize: "0.9rem", textTransform: "uppercase", color: "#666", marginBottom: "0.5rem" }}>Prior Reversal Log</h4>
-                    {selectedOrder.refunds.map((r) => (
-                      <div key={r.id} style={{ fontSize: "0.85rem", padding: "0.4rem 0.6rem", background: "#fff8e1", borderRadius: "6px", marginBottom: "0.4rem" }}>
-                        <strong>{r.type.toUpperCase()}</strong> ${r.amount.toFixed(2)} — {r.reason} ({r.approved_by_name}) on {new Date(r.created_at).toLocaleTimeString()}
-                      </div>
-                    ))}
+                  <div className="orm-log">
+                    <h4 className="orm-log-title">Prior Reversal Log</h4>
+                    {selectedOrder.refunds.map((r) => {
+                      // A line-item refund names what went back, which is the
+                      // detail a cashier actually needs when deciding what's
+                      // left to reverse. Full refunds and voids cover the whole
+                      // order, so naming lines would just be noise — they keep
+                      // the original reason/approver format.
+                      const lines = (r.items || [])
+                        .map((i) => (i.quantity > 1 ? `${i.name} ×${i.quantity}` : i.name))
+                        .join(", ");
+                      return (
+                        <div key={r.id} className="orm-log-row">
+                          <strong>{r.type.toUpperCase()}</strong> ${r.amount.toFixed(2)} —{" "}
+                          {lines
+                            ? `${lines} (${r.reason})`
+                            : `${r.reason} (${r.approved_by_name})`}{" "}
+                          on {fmtLogTime(r.created_at)}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -448,10 +464,11 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                     would just produce a guaranteed 409. Void stays available
                     on any live order, subject to its own no-prior-refund rule. */}
                 {selectedOrder.status !== "cancelled" && selectedOrder.refund_summary.remaining_refundable > 0 && (
+                  <>
                   <div className="orm-actions-bar">
                     {selectedOrder.refund_summary.total_refunded === 0 && (
                       <button className="orm-btn orm-btn--danger" onClick={() => startAction("void")}>
-                        Void Order
+                        Void &amp; Refund Full Amount
                       </button>
                     )}
                     {selectedOrder.status === "ready" ? (
@@ -472,101 +489,110 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                       </span>
                     )}
                   </div>
-                )}
-
-                {/* Reversal Form */}
-                {actionType && (
-                  <div className="orm-form">
-                    <h4 className="orm-form-title">
-                      Confirm {actionType.toUpperCase().replace("_", " ")} — ${calculatedReversalAmount.toFixed(2)}
-                    </h4>
-
-                    <div className="orm-field">
-                      <label className="orm-label">Reason</label>
-                      <select className="orm-select" value={reason} onChange={(e) => setReason(e.target.value)}>
-                        {REFUND_REASONS.map((r) => (
-                          <option key={r.key} value={r.key}>{r.label}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {reason === "other" && (
-                      <div className="orm-field">
-                        <label className="orm-label">Reason Note (Required)</label>
-                        <input
-                          type="text"
-                          className="orm-input"
-                          placeholder="State the reason for this reversal..."
-                          value={reasonNote}
-                          onChange={(e) => setReasonNote(e.target.value)}
-                        />
-                      </div>
-                    )}
-
-                    {actionType === "partial" && (
-                      <div className="orm-field">
-                        <label className="orm-label">Partial Refund Amount ($)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          max={selectedOrder.refund_summary.remaining_refundable}
-                          className="orm-input"
-                          value={partialAmount}
-                          onChange={(e) => setPartialAmount(e.target.value)}
-                        />
-                      </div>
-                    )}
-
-                    {actionType === "line_item" && (
-                      <div className="orm-field">
-                        <label className="orm-label">Select Items to Refund</label>
-                        {selectedOrder.items.map((item) => {
-                          const currentQty = lineQuantities[item.order_item_id] || 0;
-                          return (
-                            <div key={item.order_item_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.5rem 0", borderBottom: "1px solid #eee" }}>
-                              <div>
-                                <span>{item.name}</span> (${item.unit_price.toFixed(2)})
-                              </div>
-                              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                                <button
-                                  type="button"
-                                  className="orm-btn orm-btn--secondary"
-                                  style={{ padding: "0.2rem 0.6rem" }}
-                                  onClick={() => handleLineQtyChange(item.order_item_id, item.quantity, -1)}
-                                >
-                                  −
-                                </button>
-                                <span style={{ fontWeight: "700", minWidth: "20px", textAlign: "center" }}>{currentQty} / {item.quantity}</span>
-                                <button
-                                  type="button"
-                                  className="orm-btn orm-btn--secondary"
-                                  style={{ padding: "0.2rem 0.6rem" }}
-                                  onClick={() => handleLineQtyChange(item.order_item_id, item.quantity, 1)}
-                                >
-                                  +
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    <div style={{ display: "flex", gap: "0.75rem", marginTop: "1rem" }}>
-                      <button className="orm-btn orm-btn--primary" onClick={openPinApproval}>
-                        Approve & Submit (${calculatedReversalAmount.toFixed(2)})
-                      </button>
-                      <button className="orm-btn orm-btn--secondary" onClick={() => setActionType(null)}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
+                  <p className="orm-actions-help">
+                    Void cancels the entire order and returns the full payment.
+                    Refund keeps the order and returns money.
+                  </p>
+                  </>
                 )}
               </>
             )}
           </div>
         </div>
       </div>
+
+      {/* Reversal options popup — the fields live here rather than expanding
+          under the action buttons, so the detail panel stays a clean read-only
+          record of the order. Hidden once the PIN overlay opens, making the
+          flow one linear journey: pick action → fill in → approve. */}
+      {actionType && selectedOrder && !pinModalOpen && (
+        <div className="orm-pin-overlay">
+          <div className="orm-options-modal">
+            <h4 className="orm-form-title">
+              Confirm {actionType.toUpperCase().replace("_", " ")} — ${calculatedReversalAmount.toFixed(2)}
+            </h4>
+            <p className="orm-options-order">Order #{selectedOrder.order_number}</p>
+
+            <div className="orm-field">
+              <label className="orm-label">Reason</label>
+              <select className="orm-select" value={reason} onChange={(e) => setReason(e.target.value)}>
+                {REFUND_REASONS.map((r) => (
+                  <option key={r.key} value={r.key}>{r.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {reason === "other" && (
+              <div className="orm-field">
+                <label className="orm-label">Reason Note (Required)</label>
+                <input
+                  type="text"
+                  className="orm-input"
+                  placeholder="State the reason for this reversal..."
+                  value={reasonNote}
+                  onChange={(e) => setReasonNote(e.target.value)}
+                />
+              </div>
+            )}
+
+            {actionType === "partial" && (
+              <div className="orm-field">
+                <label className="orm-label">Partial Refund Amount ($)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  max={selectedOrder.refund_summary.remaining_refundable}
+                  className="orm-input"
+                  value={partialAmount}
+                  onChange={(e) => setPartialAmount(e.target.value)}
+                />
+              </div>
+            )}
+
+            {actionType === "line_item" && (
+              <div className="orm-field">
+                <label className="orm-label">Select Items to Refund</label>
+                {selectedOrder.items.map((item) => {
+                  const currentQty = lineQuantities[item.order_item_id] || 0;
+                  return (
+                    <div key={item.order_item_id} className="orm-line-row">
+                      <div>
+                        <span>{item.name}</span> (${item.unit_price.toFixed(2)})
+                      </div>
+                      <div className="orm-line-stepper">
+                        <button
+                          type="button"
+                          className="orm-btn orm-btn--secondary orm-step-btn"
+                          onClick={() => handleLineQtyChange(item.order_item_id, item.quantity, -1)}
+                        >
+                          −
+                        </button>
+                        <span className="orm-line-qty">{currentQty} / {item.quantity}</span>
+                        <button
+                          type="button"
+                          className="orm-btn orm-btn--secondary orm-step-btn"
+                          onClick={() => handleLineQtyChange(item.order_item_id, item.quantity, 1)}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="orm-options-actions">
+              <button className="orm-btn orm-btn--primary" onClick={openPinApproval}>
+                Approve &amp; Submit (${calculatedReversalAmount.toFixed(2)})
+              </button>
+              <button className="orm-btn orm-btn--secondary" onClick={() => setActionType(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Dual-Control Inline PIN Approval Modal */}
       {pinModalOpen && (

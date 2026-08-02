@@ -1641,6 +1641,27 @@ app.get("/api/orders/pos-recall", requireDevicePairing, async (req, res) => {
       [orderIds]
     );
 
+    // Which lines a line-item refund covered, for the POS reversal log ("REFUND
+    // $18.07 — Quesadilla"). Display-only: the money still comes from
+    // order_refunds.amount, which the server priced at reversal time.
+    const { rows: refundItemRows } = await client.query(
+      `SELECT ori.refund_id, ori.quantity,
+              COALESCE(mi.name, 'Unknown Item') AS item_name
+         FROM order_refund_items ori
+         JOIN order_items oi ON oi.id = ori.order_item_id
+         LEFT JOIN menu_items mi ON mi.id = oi.item_id
+        WHERE ori.refund_id = ANY($1::uuid[])
+        ORDER BY ori.id`,
+      [refundsRows.map((r) => r.id)]
+    );
+    const itemsByRefund = {};
+    for (const ri of refundItemRows) {
+      (itemsByRefund[ri.refund_id] ||= []).push({
+        name: ri.item_name,
+        quantity: parseInt(ri.quantity, 10),
+      });
+    }
+
     const itemsByOrder = {};
     for (const item of itemsRows) {
       (itemsByOrder[item.order_id] ||= []).push({
@@ -1668,6 +1689,7 @@ app.get("/api/orders/pos-recall", requireDevicePairing, async (req, res) => {
         created_at: ref.created_at,
         requested_by_name: ref.requested_by_name,
         approved_by_name: ref.approved_by_name,
+        items: itemsByRefund[ref.id] || [],
       });
     }
 

@@ -297,13 +297,94 @@
 .orm-btn--secondary { background: var(--bg-hover, #eeeeee); color: #333333; }
 .orm-btn--primary { background: #34a853; color: #ffffff; }
 
-/* Form fields for reversal */
-.orm-form {
-  background: var(--bg-sidebar, #f7f7f9);
-  border: 1.5px solid var(--brand-red, #e8442e);
-  border-radius: 12px;
-  padding: 1.25rem;
+/* Plain-language note under the action buttons explaining void vs refund —
+   the distinction a new cashier gets wrong, and the one that can't be undone. */
+.orm-actions-help {
+  margin: 0.6rem 0 0 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--text-secondary, #6B6B66);
+  max-width: 46rem;
+}
+
+/* Reversal options popup — shares the PIN overlay's backdrop, so picking an
+   action and approving it read as one flow. Wider than the PIN card because
+   it holds the line-item picker. */
+.orm-options-modal {
+  background: #ffffff;
+  border-radius: 16px;
+  width: 100%;
+  max-width: 440px;
+  padding: 1.5rem;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.3);
+}
+
+.orm-options-order {
+  margin: -0.5rem 0 1rem 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary, #6B6B66);
+}
+
+.orm-options-actions {
+  display: flex;
+  gap: 0.75rem;
   margin-top: 1.25rem;
+}
+
+.orm-line-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border-subtle, #eeeeee);
+}
+
+.orm-line-stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.orm-step-btn {
+  padding: 0.2rem 0.6rem;
+}
+
+.orm-line-qty {
+  font-weight: 700;
+  min-width: 44px;
+  text-align: center;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+/* Prior reversal log — an audit trail, so it's present but visually quiet. */
+.orm-log {
+  margin-bottom: 1.25rem;
+}
+
+.orm-log-title {
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  color: var(--text-secondary, #666666);
+  margin-bottom: 0.5rem;
+}
+
+.orm-log-row {
+  font-size: 0.85rem;
+  padding: 0.4rem 0.6rem;
+  background: #fff8e1;
+  border-radius: 6px;
+  margin-bottom: 0.4rem;
+}
+
+.orm-success {
+  padding: 0.75rem;
+  background: #e6f4ea;
+  color: #137333;
+  border-radius: 8px;
+  font-weight: 600;
+  margin-bottom: 1rem;
 }
 
 .orm-form-title {
