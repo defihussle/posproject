@@ -214,21 +214,6 @@
   color: var(--red);
 }
 
-.homedash-kpi__badge {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  font-family: var(--font-mono);
-  font-size: 0.56rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  background: var(--bg-surface-hover);
-  border-radius: var(--radius-full);
-  padding: 2px 7px;
-}
-
 /* ---------- Section grid ---------- */
 .homedash__sections {
   display: grid;

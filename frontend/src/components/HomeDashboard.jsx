@@ -316,7 +316,7 @@ function KpiStrip({ kpis, compare, loading, pending }) {
 }
 
 function KpiCard({ kpi, compare, loading, pending }) {
-  const showValue = !loading && !pending && !kpi.pending && kpi.value != null;
+  const showValue = !loading && !pending && kpi.value != null;
   return (
     <div className="homedash-kpi">
       <div className="homedash-kpi__label">{kpi.label}</div>
@@ -324,7 +324,7 @@ function KpiCard({ kpi, compare, loading, pending }) {
         <div className="homedash-kpi__value">{kpi.value}</div>
       ) : (
         <div className={`homedash-kpi__value homedash-kpi__value--muted`}>
-          {kpi.pending ? "—" : pending ? "—" : loading ? "" : "—"}
+          {pending ? "—" : loading ? "" : "—"}
         </div>
       )}
       {kpi.hint && <div className="homedash-kpi__hint">{kpi.hint}</div>}
@@ -339,7 +339,6 @@ function KpiCard({ kpi, compare, loading, pending }) {
             <Delta value={kpi.delta} goodUp={kpi.goodUp} />
           </div>
         ))}
-      {kpi.pending && <div className="homedash-kpi__badge">Soon</div>}
     </div>
   );
 }
