@@ -2804,13 +2804,20 @@ app.post("/api/backoffice/modifier-options", async (req, res) => {
 
     const { rows: groupRows } = await pool.query("SELECT id, name FROM modifier_groups WHERE id = $1", [group_id]);
     if (groupRows.length === 0) throw new HttpError(400, "Unknown modifier group");
-    const finalDelta = isPricelessGroupName(groupRows[0].name) ? 0 : delta;
+    const isPlainIngredient = isPricelessGroupName(groupRows[0].name);
+    const finalDelta = isPlainIngredient ? 0 : delta;
+    // A plain-ingredient group is a checkbox list ("Included"/"Removed"), not a
+    // quantity choice — nobody orders three lettuces. Giving these the stepper
+    // default is what made owner-added toppings render as "− 1 +" while the
+    // seeded ones stayed checkboxes. Same classifier that forces price to 0
+    // above: a group that is always free is never a paid quantity choice.
+    const finalMaxQty = isPlainIngredient ? 1 : DEFAULT_OPTION_MAX_QUANTITY;
 
     const { rows } = await pool.query(
       `INSERT INTO modifier_options (group_id, name, price_delta, max_quantity, default_selected, active)
        VALUES ($1, $2, $3, $4, $5, true)
        RETURNING id, group_id, name, price_delta, sort_order, max_quantity, default_selected, active`,
-      [group_id, name, finalDelta, DEFAULT_OPTION_MAX_QUANTITY, req.body.default_selected]
+      [group_id, name, finalDelta, finalMaxQty, req.body.default_selected]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
