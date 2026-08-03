@@ -153,7 +153,9 @@ Three independent trust layers — full narrative/history:
   row for a detail modal; destructive actions confirm via `ConfirmDialog`
 
 ## What's built
-- Full schema + real 24-item menu (variants/modifiers/addons/checklists)
+- Full schema + real 41-item menu (variants/modifiers/addons/checklists).
+  Quesadillas/Burritos/Bowls carry one item per protein rather than one
+  parent item with protein variants — see `menu_restructure.sql`
 - Auth: PIN login (all roles), Back Office email/TOTP (owner/admin),
   device pairing gating Order Entry/KDS
 - Order Entry: item customization, cart, discounts, checkout with

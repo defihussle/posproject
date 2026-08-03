@@ -10,8 +10,26 @@ alternatives, build order) lives in `reports-plan.md` and
 `refunds-plan.md`; this file records what actually shipped.
 
 ## Core data
-Full schema, migrated, real 24-item menu seeded with variants/modifiers/
+Full schema, migrated, real 41-item menu seeded with variants/modifiers/
 addons/ingredient checklists.
+
+**Protein = item, not variant** (`database/menu_restructure.sql`). Burritos,
+Bowls and Quesadillas each carry one item per protein — "Chicken (Pollo)
+Burrito", "Shrimp (Camaron) Quesadilla" — the same shape Birria Tacos always
+used, so an owner edits one price without digging into a variant list and a
+cashier sees the cards the menu board shows. The combined "Burritos & Bowls"
+and "Nachos & Fries" categories are likewise split in two, which retires the
+`Format` and `Base` modifier groups: the category now answers what they asked.
+Nachos/Fries keep proteins as variants — only one item each ("Nachos Supreme",
+"Fries Supreme"), so there was nothing to flatten.
+
+Modifier groups are **shared, not copied**: `item_modifier_groups` is
+many-to-many, so all six quesadillas point at one Ingredients group and all
+twelve burritos/bowls share Toppings + Add-ons. Editing a topping edits it
+everywhere. The old parent items, categories and groups are deactivated rather
+than deleted — `order_items.item_id`/`variant_id` still reference them, so
+every past order and report resolves its name, while `active = true` filtering
+keeps them off the POS.
 
 ## Order Entry
 Real menu browsing, full item customization modal (variants, modifier
