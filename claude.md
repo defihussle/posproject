@@ -211,28 +211,53 @@ Full detail: `docs/architecture/features.md`
   This rule has already failed twice in production (`is_upsell` and the Refunds/KDS void migrations).  
   Code that references a column or table that does not yet exist will 500 every query against that table and can take the live system down.  
 
-  **Required process for any schema change:**
-  1. Write the migration file in `database/`.
-  2. Apply it to the **production** database first (via Render External Database URL + `psql` or the Render shell).
-  3. Verify the new column/table exists on prod.
-  4. Only then push/deploy the code that uses it.
-  5. Never deploy code that depends on a migration that has not yet been run on prod.
+  Local Docker is **never** production. “It worked on my machine” is not
+  evidence that anything reached prod.
 
-  Local Docker is not production. “It worked on my machine” is not sufficient.
-
-  **This is now enforced automatically** — see
-  `docs/architecture/schema-guard.md`. `backend/schema-requirements.json`
-  lists every table/column `database/*.sql` declares; the server refuses to
-  boot, and Render's Pre-Deploy Command fails, if the database is missing any
-  of them. **After adding a migration, run `npm run schema:sync` from
-  `backend/` and commit the regenerated JSON** — `npm run check:schema` fails
-  if you forget. The guard is a backstop, not a replacement for step 2: it
-  turns a silent outage into a blocked deploy.
+  **Every schema change MUST follow the “Schema Change Checklist (Mandatory)”
+  below — in order, with no steps skipped.** There is no exemption for a
+  “small”, “additive” or “obviously safe” migration: `is_upsell` was one
+  nullable column, and it took the whole menu down.
 - `npm run dev` (`--watch`) auto-restarts on backend changes; plain
   `node server.js` does not — manual restart needed
 - Commit after each working milestone; never commit `.env`,
   `node_modules`, exported reports/CSVs, or SQL dumps
 - Verify `npx vite build` clean before considering a frontend change done
+
+## Schema Change Checklist (Mandatory)
+Applies **every time** you create or modify a file in `database/`. Follow it in
+order. Do not reorder, do not skip, do not batch steps 3–4 “for later”.
+
+1. **Write the migration** — a new `.sql` file in `database/` (repo root, not
+   `backend/`). **Never** add new objects by editing a migration that has
+   already been applied anywhere; write a new file instead.
+2. **Sync the schema-guard manifest** — `cd backend && npm run schema:sync`,
+   then commit the regenerated `backend/schema-requirements.json` **in the same
+   commit as the `.sql`**. `npm run check:schema` fails if you forget.
+3. **Apply it to PRODUCTION** — using the Render External Database URL:  
+   `psql "<Render External Database URL>" -f database/<file>.sql`
+4. **Verify against PRODUCTION** — must print `Schema OK`:  
+   `cd backend && DATABASE_URL="<Render External Database URL>" npm run check:schema`  
+   Anything other than `Schema OK` means step 3 did not fully succeed. Fix it
+   before going further. (Exit 2 = could not connect — that is *not* a pass.)
+5. **Only then** push/deploy the code that depends on the new columns/tables.
+
+**Completion rule — steps 3 and 4 are part of the work, not an afterthought.**
+A schema-related task is **not complete** until step 4 has actually reported
+`Schema OK` against production, or the user has explicitly confirmed they ran
+steps 3–4 themselves. Never describe such a task as done, and never push the
+dependent code, on the strength of local Docker testing alone.
+
+If you cannot reach production (no URL, no access, credentials unavailable):
+**stop and say so plainly.** State that steps 3–4 are outstanding, give the
+exact commands the user must run, and leave the dependent code unpushed. Do
+not quietly defer them, and do not assume someone else will remember.
+
+**The schema guard is a backstop, not a substitute for this checklist** (see
+`docs/architecture/schema-guard.md`). It turns a forgotten migration into a
+blocked deploy or a refused boot rather than a silent outage — but a blocked
+deploy is still a failure of process, and the guard only covers tables and
+added columns.
 
 ## Known Gotchas
 - **UTF-8 on Windows**: piping SQL with accented chars (é, à) through
