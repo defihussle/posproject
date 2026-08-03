@@ -32,14 +32,21 @@ const fmtDateTime = (iso) => {
 };
 
 // Per-row reversal state. Voided orders are 'cancelled'; otherwise a row is
-// fully/partially refunded when it carries refunds, else a clean sale.
+// fully/partially refunded when it carries refunds, else a completed sale with
+// nothing reversed — labelled "Settled" rather than left blank, so an untouched
+// sale reads as a positive state instead of missing data.
 const rowState = (r) => {
   if (r.status === "cancelled") return "voided";
   if (r.refunded >= r.total - 0.005) return "refunded"; // fully
   if (r.refunded > 0.005) return "partial";
   return "clean";
 };
-const STATE_LABELS = { voided: "Voided", refunded: "Refunded", partial: "Partially refunded", clean: "" };
+const STATE_LABELS = {
+  voided: "Voided",
+  refunded: "Refunded",
+  partial: "Partially refunded",
+  clean: "Settled",
+};
 
 // PDF is offered only up to this row count — beyond it a PDF is neither
 // printable nor fast to render, so CSV is the real format (see reports-plan).
@@ -99,7 +106,7 @@ export default function TransactionLogReport({ range }) {
 
   const exportHeaders = [
     "Order #", "Date/Time", "Staff", "Subtotal", "Discount", "Reason",
-    "Tax", "Tip", "Total", "Refunded", "Payment", "State",
+    "Tax", "Tip", "Total", "Refunded", "Payment", "Status",
   ];
   const exportRows = () =>
     rows.map((r) => [
@@ -248,7 +255,7 @@ export default function TransactionLogReport({ range }) {
                   <th className="reports__num">Total</th>
                   <th className="reports__num">Refunded</th>
                   <th>Payment</th>
-                  <th>State</th>
+                  <th>Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -278,13 +285,11 @@ export default function TransactionLogReport({ range }) {
                       </td>
                       <td>{fmtMethods(r.methods)}</td>
                       <td>
-                        {state !== "clean" && (
-                          <span
-                            className={`reports__statepill reports__statepill--${state}`}
-                          >
-                            {STATE_LABELS[state]}
-                          </span>
-                        )}
+                        <span
+                          className={`reports__statepill reports__statepill--${state}`}
+                        >
+                          {STATE_LABELS[state]}
+                        </span>
                       </td>
                     </tr>
                   );

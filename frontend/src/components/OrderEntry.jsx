@@ -401,13 +401,6 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
           <img src={logoImg} alt="NARCOS TACOS" className="oe-topbar__logo" />
         </div>
         <div className="oe-topbar__right">
-          <button
-            className="oe-topbar__btn"
-            onClick={() => setOrderRecallOpen(true)}
-            title="Recall recent orders or issue refunds"
-          >
-            Recall Orders
-          </button>
           <span className="oe-topbar__staff">{staff.name}</span>
           <div className="oe-account-menu-container">
             <button 

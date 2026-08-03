@@ -487,6 +487,13 @@
   color: var(--text-secondary);
   background: var(--bg-surface-hover);
 }
+/* Settled is the unremarkable case — the quietest pill on the page, present
+   so an untouched sale reads as a state rather than a blank cell. */
+.reports__statepill--clean {
+  color: var(--text-muted);
+  background: transparent;
+  padding-left: 0;
+}
 
 /* Voided rows: struck + muted so a reversal reads as reversed at a glance,
    while staying visible for audit (not just missing). */

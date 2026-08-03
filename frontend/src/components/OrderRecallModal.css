@@ -327,6 +327,15 @@
   color: var(--text-secondary, #6B6B66);
 }
 
+/* Reassurance on the no-approval path, so a blank space where the PIN step
+   used to be doesn't read as "something is missing". */
+.orm-options-note {
+  margin: 0.75rem 0 0 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--text-secondary, #6B6B66);
+}
+
 .orm-options-actions {
   display: flex;
   gap: 0.75rem;

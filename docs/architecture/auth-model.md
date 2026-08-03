@@ -23,7 +23,9 @@ email+password+TOTP there.
   (dual-control, below the owner-approval threshold) — cannot touch
   menu/pricing, and has no Back Office access, so no reports
 - **Cashier**: takes orders, can apply discounts (per business decision),
-  and can **initiate** a void/refund but never approve one
+  and can **initiate** a void/refund but never approve one — except for
+  voiding an order the kitchen hasn't finished (`open`/`preparing`),
+  which needs no approver at all (see **Reversal approval** below)
 - **Kitchen**: KDS only — including acknowledging a VOIDED ticket, which
   needs no staff identity at all (the KDS is device-gated, not
   staff-authenticated)
@@ -34,7 +36,11 @@ authority: `POST /api/orders/:id/refund` takes a separate
 `approverStaffId` + `approverPin`, requires that approver to be
 owner/admin/manager, bcrypt-verifies the PIN server-side, and rejects a
 manager approver at or above `REFUND_OWNER_APPROVAL_THRESHOLD` ($100).
-Owner/admin self-approve. Full detail: `features.md` → Refunds & Voids.
+Owner/admin self-approve. **One exception:** voiding an order still
+`open` or `preparing` needs no approver from any role — nothing has
+reached a customer, so it's a correction rather than money moving.
+Refunds always need an approver, at any status. Full detail:
+`features.md` → Refunds & Voids.
 
 **Routing after login**: owner/admin/manager/cashier → `/order-entry`.
 **Kitchen does NOT log in at all** — KDS is a no-auth "open book" screen
@@ -189,13 +195,15 @@ cashier/kitchen too, who have no Back Office access at all.
 - No manager editing/correction of punches, and clock status is NOT a
   gate on order-taking — pure time-tracking layered on top of
   PIN-based access.
-- The dropdown's **first** entry, "Recall / Refund Orders" (mirrored by a
-  "Recall Orders" button in the top bar), is NOT self-service and is
-  called out here only because it shares the menu: it opens the order
+- The dropdown's **first** entry, "Recall / Refund Orders" (the only entry
+  point since the duplicate top-bar button was removed), is NOT
+  self-service and is called out here only because it shares the menu: it
+  opens the order
   recall/reversal modal, which is ungated in the UI for every role that
   can reach Order Entry. That is deliberate — the gate is the separate
   approver PIN inside the flow, not who opened the modal, so a cashier
-  can start a reversal but cannot complete one alone. See `features.md`
+  can start a refund but cannot complete one alone (a void of an
+  unfinished order is the exception — no approver needed). See `features.md`
   → Refunds & Voids.
 
 ## Theme

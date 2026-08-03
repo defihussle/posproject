@@ -1294,6 +1294,7 @@ app.patch("/api/orders/:id/status/revert", requireDevicePairing, async (req, res
 // unit_price rows, never taken from the request.
 async function applyRefund(client, {
   orderId, type, reason, reasonNote, amount, items, requestedBy, approvedBy, approverRole,
+  selfApproved = false,
 }) {
   if (!REFUND_TYPES.includes(type)) {
     throw new HttpError(400, "type must be 'void' or 'refund'");
@@ -1315,6 +1316,29 @@ async function applyRefund(client, {
   const order = oRows[0];
   if (order.status === "cancelled") {
     throw new HttpError(409, "Order is already voided — nothing to reverse");
+  }
+
+  // Self-approval (no second PIN) is allowed ONLY to void an order the kitchen
+  // hasn't finished. Nothing has been handed to a customer yet, so killing a
+  // mis-rung ticket is a correction, not a cash-handling risk — and making a
+  // cashier hunt for a manager mid-rush is how bad tickets reach the line.
+  // Once the order is 'ready' the food exists and money is genuinely moving,
+  // so dual control applies again.
+  //
+  // This check MUST live here, under the FOR UPDATE lock above, not in the
+  // route: the order's status is exactly what a concurrent KDS advance
+  // changes, so deciding it before the lock would let a cashier start a void
+  // on a 'preparing' order and have it land on a 'ready' one unapproved.
+  if (selfApproved) {
+    if (type !== "void") {
+      throw new HttpError(403, "Refunds always require manager or owner approval");
+    }
+    if (order.status !== "open" && order.status !== "preparing") {
+      throw new HttpError(
+        403,
+        "This order is already complete — voiding it requires manager or owner approval"
+      );
+    }
   }
   const orderSubtotal = parseFloat(order.subtotal);
   const orderTotal = parseFloat(order.total);
@@ -1453,11 +1477,17 @@ async function applyRefund(client, {
     );
   }
 
-  // Misuse guard: a manager PIN can't approve a high-value reversal — owner/admin only.
-  if (approverRole === "manager" && refundAmount >= REFUND_OWNER_APPROVAL_THRESHOLD) {
+  // Misuse guard: a manager PIN can't approve a high-value reversal — owner/admin
+  // only. Scoped to the dual-control path: it governs who may APPROVE, and a
+  // self-approved in-progress void has no approver by design. Applying it here
+  // too would be incoherent — a cashier could self-void a $150 preparing order
+  // while a manager doing the identical thing was refused.
+  if (!selfApproved && approverRole === "manager" && refundAmount >= REFUND_OWNER_APPROVAL_THRESHOLD) {
     throw new HttpError(403, `Reversals of $${REFUND_OWNER_APPROVAL_THRESHOLD}+ require owner/admin approval`);
   }
   // High-value reversals are logged (not blocked) — never silently invisible.
+  // Self-approved voids are logged on the same rule: no second person saw it,
+  // so the log line is the only record that it happened.
   if (refundAmount >= REFUND_FLAG_THRESHOLD) {
     console.warn(
       `High-value ${type}: $${refundAmount.toFixed(2)} (reason: ${reason}) order=${orderId} requested_by=${requestedBy} approved_by=${approvedBy}`
@@ -1544,12 +1574,18 @@ app.post("/api/orders/:id/refund", requireDevicePairing, async (req, res) => {
   try {
     // Initiator: any working role except kitchen.
     const initiator = await requireStaffIdParam(staffId, ["owner", "admin", "manager", "cashier"]);
-    // Approver: explicit manager+ AND must prove their PIN (dual-control).
-    if (!approverStaffId) {
-      throw new HttpError(400, "approverStaffId is required");
+
+    // Omitting the approver is a request to self-approve. That is only legal
+    // for voiding an order the kitchen hasn't finished — applyRefund decides,
+    // under the row lock, and rejects anything else. Everything with an
+    // approver keeps the original dual-control path unchanged.
+    const selfApproved = !approverStaffId;
+    let approver = initiator;
+    if (!selfApproved) {
+      // Approver: explicit manager+ AND must prove their PIN (dual-control).
+      approver = await requireStaffIdParam(approverStaffId, ["owner", "admin", "manager"]);
+      await verifyStaffPin(approver.id, approverPin);
     }
-    const approver = await requireStaffIdParam(approverStaffId, ["owner", "admin", "manager"]);
-    await verifyStaffPin(approver.id, approverPin);
 
     await client.query("BEGIN");
     const result = await applyRefund(client, {
@@ -1562,6 +1598,7 @@ app.post("/api/orders/:id/refund", requireDevicePairing, async (req, res) => {
       requestedBy: initiator.id,
       approvedBy: approver.id,
       approverRole: approver.role,
+      selfApproved,
     });
     await client.query("COMMIT");
     res.status(201).json(result);

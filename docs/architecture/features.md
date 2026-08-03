@@ -21,12 +21,13 @@ custom %, required reason, server-recomputed), checkout
 (`POST /api/orders`) with full server-side price + discount
 recomputation and mocked Cash/Card payment.
 
-Two entry points into the reversal flow live here — a **Recall Orders**
-button in the top bar and a **Recall / Refund Orders** item at the top of
-the account dropdown — both opening the same `OrderRecallModal` (see
-**Refunds & Voids** below). Neither is role-gated in the UI: every role
-that can reach Order Entry may *initiate* a reversal, and the approval
-step is what actually gates it.
+The reversal flow is entered from one place — the **Recall / Refund
+Orders** item at the top of the account dropdown, opening
+`OrderRecallModal` (see **Refunds & Voids** below). It sat in the top bar
+as well until that duplicate was removed to keep the ordering screen
+uncluttered; reversals are an exception path, not a per-order step. It is
+not role-gated in the UI: every role that can reach Order Entry may
+*initiate* a reversal, and the approval step is what actually gates it.
 
 ## KDS (`/kds/lawrence-east-4471`)
 No staff auth (gated by device pairing only — see `device-pairing.md`),
@@ -149,9 +150,27 @@ line-item set gets a proportional share (`amount × tax / total`).
 takes both a `staffId` (initiator — any of owner/admin/manager/cashier)
 and an `approverStaffId` + `approverPin`. The approver must be
 owner/admin/manager *and* prove their PIN, bcrypt-verified server-side;
-a cashier can never be the approver, so a cashier can never reverse a
+a cashier can never be the approver, so a cashier can never refund a
 sale alone. The approver may equal the initiator when the initiator is
-manager or above. Two thresholds sit on top:
+manager or above.
+
+**The one exception — voiding an order the kitchen hasn't finished.**
+Omitting `approverStaffId` is a request to self-approve, and the server
+grants it *only* for `type='void'` on an order still `open` or
+`preparing`. Nothing has reached a customer yet, so killing a mis-rung
+ticket is a correction rather than money moving, and making a cashier
+find a manager mid-rush is how bad tickets reach the line. Once the order
+is `ready` the food exists and dual control applies again; **refunds
+always require an approver, at any status.** The check lives inside
+`applyRefund()` under the `FOR UPDATE` lock rather than in the route,
+because the order's status is exactly what a concurrent KDS advance
+changes — deciding it before the lock would let a void started on a
+`preparing` order land on a `ready` one unapproved. The
+owner-approval threshold below is scoped to the dual-control path for the
+same reason it exists (it governs who may *approve*), so a self-approved
+void isn't refused for being large; it is still logged.
+
+Two thresholds sit on top:
 `REFUND_OWNER_APPROVAL_THRESHOLD` ($100) — a manager PIN is rejected at
 or above it, owner/admin only; and `REFUND_FLAG_THRESHOLD` ($50) —
 logged, never blocked, so a high-value reversal is never silently

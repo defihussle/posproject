@@ -34,6 +34,15 @@ function orderStateBadge(order) {
 const fmtLogTime = (iso) =>
   new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
+// Voiding an order the kitchen hasn't finished needs no second person: nothing
+// has reached a customer, so it's a correction rather than money moving. Any
+// role that can reach Order Entry may do it alone — a cashier shouldn't have to
+// find a manager to kill a mis-rung ticket mid-rush. Mirrors the server rule in
+// applyRefund(), which re-checks it under the row lock and is authoritative;
+// this only decides whether to show the PIN step.
+const selfVoidAllowed = (order, actionType) =>
+  actionType === "void" && (order?.status === "open" || order?.status === "preparing");
+
 export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -159,6 +168,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
     setReason("wrong_order");
     setReasonNote("");
     setSuccessMsg(null);
+    setPinError(null); // errors now show in the options popup — don't carry one in
 
     if (type === "partial") {
       setPartialAmount(selectedOrder.refund_summary.remaining_refundable.toFixed(2));
@@ -207,6 +217,13 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
       }
     }
 
+    // Voiding an order still being made needs no approver — submit straight
+    // through rather than showing a PIN step the server won't ask for.
+    if (selfVoidAllowed(selectedOrder, actionType)) {
+      submitReversal();
+      return;
+    }
+
     // Default to currently logged-in staff if they are eligible for this threshold
     const isCallerEligible = eligibleApprovers.some((a) => a.id === staff.id);
     setSelectedApprover(isCallerEligible ? staff : null);
@@ -231,7 +248,10 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
   // effect would re-run (and could re-fire the submit) on any unrelated render.
   const submitReversal = useCallback(async (e) => {
     if (e) e.preventDefault();
-    if (!selectedApprover || approverPin.length !== 4) return;
+    // Self-approved voids carry no approver; everything else needs a picked
+    // approver and a complete PIN before there is anything to send.
+    const selfApproved = selfVoidAllowed(selectedOrder, actionType);
+    if (!selfApproved && (!selectedApprover || approverPin.length !== 4)) return;
 
     setSubmitting(true);
     setPinError(null);
@@ -262,8 +282,11 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           staffId: staff.id,
-          approverStaffId: selectedApprover.id,
-          approverPin,
+          // Omitting the approver IS the request to self-approve; the server
+          // grants it only for voiding an order the kitchen hasn't finished.
+          ...(selfApproved
+            ? {}
+            : { approverStaffId: selectedApprover.id, approverPin }),
           type,
           reason,
           reasonNote: reasonNote.trim() || undefined,
@@ -582,11 +605,32 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
               </div>
             )}
 
+            {selfVoidAllowed(selectedOrder, actionType) && (
+              <p className="orm-options-note">
+                The kitchen hasn't finished this order, so no manager approval
+                is needed.
+              </p>
+            )}
+
+            {/* A self-approved void never opens the PIN overlay, so its errors
+                have to surface here or they'd be invisible. */}
+            {pinError && !pinModalOpen && <div className="orm-error">{pinError}</div>}
+
             <div className="orm-options-actions">
-              <button className="orm-btn orm-btn--primary" onClick={openPinApproval}>
-                Approve &amp; Submit (${calculatedReversalAmount.toFixed(2)})
+              <button
+                className="orm-btn orm-btn--primary"
+                onClick={openPinApproval}
+                disabled={submitting}
+              >
+                {selfVoidAllowed(selectedOrder, actionType)
+                  ? `Void Order ($${calculatedReversalAmount.toFixed(2)})`
+                  : `Approve & Submit ($${calculatedReversalAmount.toFixed(2)})`}
               </button>
-              <button className="orm-btn orm-btn--secondary" onClick={() => setActionType(null)}>
+              <button
+                className="orm-btn orm-btn--secondary"
+                onClick={() => setActionType(null)}
+                disabled={submitting}
+              >
                 Cancel
               </button>
             </div>

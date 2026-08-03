@@ -45,22 +45,6 @@
   color: var(--text-secondary);
 }
 
-.oe-topbar__btn {
-  font-family: var(--font-body);
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 6px 14px;
-  border-radius: var(--radius-sm);
-  background: var(--red-light);
-  color: var(--red);
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.oe-topbar__btn:hover {
-  background: var(--red);
-  color: #fff;
-}
-
 /* ---------- Body (categories + grid + cart) ---------- */
 .oe-body {
   display: flex;
