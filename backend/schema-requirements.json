@@ -82,6 +82,10 @@
       "migration": "payroll_status.sql"
     },
     {
+      "table": "pending_checkouts",
+      "migration": "stripe_terminal.sql"
+    },
+    {
       "table": "shift_breaks",
       "migration": "shift_breaks.sql"
     },
@@ -92,6 +96,10 @@
     {
       "table": "staff",
       "migration": "schema.sql"
+    },
+    {
+      "table": "stripe_events",
+      "migration": "stripe_terminal.sql"
     }
   ],
   "columns": [
@@ -104,6 +112,16 @@
       "table": "device_pairings",
       "column": "last_order_entry_at",
       "migration": "device_connection_tracking.sql"
+    },
+    {
+      "table": "device_pairings",
+      "column": "stripe_reader_id",
+      "migration": "stripe_terminal.sql"
+    },
+    {
+      "table": "locations",
+      "column": "stripe_location_id",
+      "migration": "stripe_terminal.sql"
     },
     {
       "table": "menu_items",
@@ -154,6 +172,21 @@
       "table": "orders",
       "column": "voided_from_status",
       "migration": "kds_void_acknowledgement.sql"
+    },
+    {
+      "table": "payments",
+      "column": "card_brand",
+      "migration": "stripe_terminal.sql"
+    },
+    {
+      "table": "payments",
+      "column": "card_last4",
+      "migration": "stripe_terminal.sql"
+    },
+    {
+      "table": "payments",
+      "column": "processor_payment_type",
+      "migration": "stripe_terminal.sql"
     },
     {
       "table": "payments",
