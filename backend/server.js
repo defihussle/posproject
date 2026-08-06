@@ -1306,9 +1306,34 @@ app.post("/api/stripe/webhook", async (req, res) => {
       case "terminal.reader.action_succeeded":
         // Informational only. The reader finishing its action is not the same
         // as money being captured — payment_intent.succeeded is the event that
-        // creates the order, and it is the only one that may.
+        // creates the order, and it is the only one that may. (A reader-driven
+        // Interac refund settles through the refund.* events below.)
         outcome = { handled: true, informational: true };
         break;
+
+      // ---- Refund settlement (Slice 7) ----
+      // These are what actually promote a reversal from 'pending' to money
+      // returned. Until one arrives, settledPaymentsWhere() ignores the
+      // negative row entirely, so an in-flight or rejected refund never
+      // becomes a deduction in any report.
+      case "refund.created":
+      case "refund.updated":
+      case "refund.failed":
+        outcome = await applyStripeRefundOutcome(event.data.object);
+        break;
+
+      case "charge.refunded": {
+        // Fallback path: a charge-level event carrying the refunds inline.
+        // Same resolver, so a refund settled here behaves identically.
+        const charge = event.data.object;
+        const refunds = charge.refunds?.data || [];
+        const applied = [];
+        for (const r of refunds) {
+          applied.push(await applyStripeRefundOutcome({ ...r, payment_intent: r.payment_intent || charge.payment_intent }));
+        }
+        outcome = { handled: true, refunds: applied };
+        break;
+      }
 
       default:
         // Refund events land here for now and are handled in Slice 7. Recorded
@@ -2281,9 +2306,75 @@ app.patch("/api/orders/:id/status/revert", requireDevicePairing, async (req, res
 // looking Stripe fields, and order_refund_items the optional per-line detail
 // for a line-item refund — whose amount is priced here from the order's own
 // unit_price rows, never taken from the request.
+// The original capture behind an order — what was paid, and how. Drives the
+// whole Slice 7 settlement decision: whether money has to go back through
+// Stripe at all, and if so by which route.
+async function loadOriginalPayment(client, orderId) {
+  const { rows } = await client.query(
+    `SELECT method, processor_txn_id, processor_payment_type
+       FROM payments
+      WHERE order_id = $1 AND refund_id IS NULL
+      ORDER BY created_at
+      LIMIT 1`,
+    [orderId]
+  );
+  const p = rows[0];
+  return {
+    method: p ? p.method : "other",
+    processorTxnId: p ? p.processor_txn_id : null,
+    processorPaymentType: p ? p.processor_payment_type : null,
+  };
+}
+
+// Decides how a reversal actually settles (decision D5). Pure policy, kept
+// separate so the rule is readable in one place rather than inferred from
+// branches scattered through the write path.
+//
+//   internal      — no processor involved. A cash sale, or a pre-Stripe mock
+//                   card sale. Settles instantly, exactly as it always has.
+//   internal_cash — an explicit cash-out of a CARD sale. The money goes back
+//                   over the counter in notes, so the ledger records 'cash'
+//                   and Stripe is never called. This is the escape hatch for
+//                   an Interac customer who cannot return with their card.
+//   stripe_api    — credit card_present. Refundable remotely, no customer
+//                   present, so Back Office can issue it days later.
+//   stripe_reader — interac_present. The network requires the physical card
+//                   at the reader, so this is only possible at the POS with
+//                   the customer standing there.
+function decideRefundSettlement({ original, surface, refundMethod, readerId }) {
+  if (refundMethod === "cash") return "internal_cash";
+
+  const isStripeSale = original.method === "card" && Boolean(original.processorTxnId);
+  if (!isStripeSale) return "internal";
+
+  if (original.processorPaymentType === "interac_present") {
+    if (surface !== "pos") {
+      throw new HttpError(
+        409,
+        "This was an Interac payment, which can only be refunded to the card at the reader. " +
+          "Ask the customer to return to the counter with their card, or issue a cash refund instead."
+      );
+    }
+    if (!readerId) {
+      throw new HttpError(
+        409,
+        "This Interac payment must be refunded at the reader, but no card reader is assigned to this till. " +
+          "Assign one in Back Office → Devices, or issue a cash refund instead."
+      );
+    }
+    return "stripe_reader";
+  }
+
+  return "stripe_api";
+}
+
 async function applyRefund(client, {
   orderId, type, reason, reasonNote, amount, items, requestedBy, approvedBy, approverRole,
   selfApproved = false,
+  // Slice 7. `surface` decides whether an Interac card refund is even possible
+  // (the customer has to be present); `refundMethod: 'cash'` is the explicit
+  // cash-out; `readerId` is the till's bound reader for a card-present refund.
+  surface = "pos", refundMethod = null, readerId = null,
 }) {
   if (!REFUND_TYPES.includes(type)) {
     throw new HttpError(400, "type must be 'void' or 'refund'");
@@ -2541,14 +2632,23 @@ async function applyRefund(client, {
     );
   }
 
-  // 1. Audit record — mock settles immediately ('completed'); a Stripe webhook
-  //    would later flip a 'pending' row to 'completed'/'failed'.
+  // ---- How does this reversal actually settle? (Slice 7, decision D5) ----
+  // Decided before anything is written, so an Interac refund that cannot be
+  // issued from this surface is rejected with nothing recorded.
+  const original = await loadOriginalPayment(client, orderId);
+  const settlement = decideRefundSettlement({ original, surface, refundMethod, readerId });
+
+  // 1. Audit record. Internal reversals settle immediately ('completed'); a
+  //    Stripe one starts 'pending' and is promoted by the webhook that
+  //    confirms the processor actually returned the money.
+  const refundStatus =
+    settlement === "stripe_api" || settlement === "stripe_reader" ? "pending" : "completed";
   const { rows: insRows } = await client.query(
     `INSERT INTO order_refunds (order_id, type, amount, tax_amount, reason, reason_note,
                                 requested_by, approved_by, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed')
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING id, created_at`,
-    [orderId, type, refundAmount, refundTax, reason, note, requestedBy, approvedBy]
+    [orderId, type, refundAmount, refundTax, reason, note, requestedBy, approvedBy, refundStatus]
   );
   const refundId = insRows[0].id;
 
@@ -2564,16 +2664,29 @@ async function applyRefund(client, {
     }
   }
 
-  // 3. Negative money row on the ledger; method mirrors the original capture.
-  const { rows: payRows } = await client.query(
-    "SELECT method FROM payments WHERE order_id = $1 AND refund_id IS NULL ORDER BY created_at LIMIT 1",
-    [orderId]
-  );
-  const method = payRows[0] ? payRows[0].method : "other";
+  // 3. Negative money row on the ledger.
+  //
+  // Internal reversals settle instantly, exactly as they always have. Anything
+  // going back through Stripe starts PENDING on both rows and is only promoted
+  // by the webhook once the processor confirms it — money is not returned just
+  // because we asked. settledPaymentsWhere() counts 'captured' + 'refunded'
+  // only, so a pending (or failed) reversal is invisible to every report until
+  // it genuinely settles, and a refund Stripe rejects never becomes a deduction.
+  const goesThroughStripe = settlement === "stripe_api" || settlement === "stripe_reader";
+  const ledgerMethod =
+    settlement === "internal_cash" ? "cash" : original.method === "other" ? "other" : original.method;
+  //
+  // processor_txn_id is deliberately LEFT NULL on this row. It is tempting to
+  // copy the PaymentIntent across for traceability, but payments carries a
+  // partial UNIQUE index on that column — the backstop that makes it
+  // impossible to record the same PaymentIntent as captured twice — and a
+  // second row bearing the same id violates it. The link back to the sale
+  // already exists through refund_id → order_refunds → order_id, and the
+  // reversal's own processor reference lives on order_refunds.stripe_refund_id.
   await client.query(
     `INSERT INTO payments (order_id, method, amount, status, refund_id)
-     VALUES ($1, $2, $3, 'refunded', $4)`,
-    [orderId, method, -refundAmount, refundId]
+     VALUES ($1, $2, $3, $4, $5)`,
+    [orderId, ledgerMethod, -refundAmount, goesThroughStripe ? "pending" : "refunded", refundId]
   );
 
   // 4. A void erases the sale. voided_from_status preserves how far the order
@@ -2600,9 +2713,25 @@ async function applyRefund(client, {
       reasonNote: note,
       requestedBy,
       approvedBy,
-      status: "completed",
+      status: refundStatus,
       createdAt: insRows[0].created_at,
     },
+    settlement,
+    // Set only when money still has to leave Stripe. The caller performs this
+    // AFTER committing, so no transaction is held open across a network call
+    // and a crash can never leave a Stripe refund with no local record of why
+    // (same ordering rule as the checkout path in Slice 1).
+    pendingStripeRefund:
+      settlement === "stripe_api" || settlement === "stripe_reader"
+        ? {
+            refundId,
+            orderId,
+            mode: settlement === "stripe_reader" ? "reader" : "api",
+            paymentIntentId: original.processorTxnId,
+            amount: refundAmount,
+            readerId,
+          }
+        : null,
     orderStatus,
     // What a FUTURE reversal could still return. Anything after this point is
     // necessarily a partial (something has now been refunded), so it is capped
@@ -2615,6 +2744,174 @@ async function applyRefund(client, {
   };
 }
 
+// Sends an already-recorded reversal to Stripe. Runs AFTER the refund
+// transaction has committed, so the local audit row always exists before any
+// money is asked to move — if this process dies mid-call, the pending row is
+// still there to explain what was attempted.
+//
+// Both calls carry an Idempotency-Key derived from the refund id (D9), so a
+// timeout and retry can never refund twice.
+//
+// Returns the row's resulting state; it does NOT decide success. Only the
+// webhook promotes a refund to 'completed', because Stripe accepting the
+// request is not the same as the money reaching the customer.
+async function settleStripeRefund(pending) {
+  if (!stripeClient) {
+    await failStripeRefund(pending.refundId, "Stripe is not configured on this server");
+    return { status: "failed", error: "Stripe is not configured on this server" };
+  }
+  const idempotencyKey = `rf_${pending.refundId}`;
+  try {
+    if (pending.mode === "reader") {
+      // Interac: the customer must present the card. This starts an action on
+      // the reader; the refund object only exists once they tap, so there is no
+      // stripe_refund_id to store yet — the webhook matches on the
+      // PaymentIntent instead and fills it in.
+      await stripeClient.terminal.readers.refundPayment(
+        pending.readerId,
+        {
+          payment_intent: pending.paymentIntentId,
+          amount: toStripeAmount(pending.amount),
+          refund_payment_config: { enable_customer_cancellation: true },
+        },
+        { idempotencyKey }
+      );
+      await pool.query(
+        `UPDATE order_refunds SET processor_status = 'awaiting_card' WHERE id = $1`,
+        [pending.refundId]
+      );
+      return { status: "pending", awaitingCard: true };
+    }
+
+    const refund = await stripeClient.refunds.create(
+      {
+        payment_intent: pending.paymentIntentId,
+        amount: toStripeAmount(pending.amount),
+        metadata: { order_refund_id: pending.refundId, order_id: pending.orderId },
+      },
+      { idempotencyKey }
+    );
+
+    await pool.query(
+      `UPDATE order_refunds
+          SET stripe_refund_id = $2, processor_status = $3
+        WHERE id = $1`,
+      [pending.refundId, refund.id, refund.status || null]
+    );
+
+    // Stripe often returns 'succeeded' synchronously for a card refund. Promote
+    // immediately in that case rather than leaving the cashier staring at a
+    // pending reversal waiting for a webhook that adds nothing.
+    if (refund.status === "succeeded") {
+      await promoteStripeRefund(pending.refundId, refund.id, refund.status);
+      return { status: "completed", stripeRefundId: refund.id };
+    }
+    if (refund.status === "failed" || refund.status === "canceled") {
+      await failStripeRefund(pending.refundId, `Stripe refund ${refund.status}`, refund.id, refund.status);
+      return { status: "failed", stripeRefundId: refund.id };
+    }
+    return { status: "pending", stripeRefundId: refund.id };
+  } catch (err) {
+    console.error(`Stripe refund failed (order_refund=${pending.refundId}): ${err.message}`);
+    await failStripeRefund(pending.refundId, err.message);
+    return { status: "failed", error: err.message };
+  }
+}
+
+// Promote a pending reversal to settled. Guarded on 'pending' so a webhook
+// replay cannot re-settle, and so a refund a human already marked failed is
+// not silently resurrected.
+async function promoteStripeRefund(refundId, stripeRefundId, processorStatus) {
+  const { rowCount } = await pool.query(
+    `UPDATE order_refunds
+        SET status = 'completed',
+            stripe_refund_id = COALESCE($2, stripe_refund_id),
+            processor_status = $3
+      WHERE id = $1 AND status = 'pending'`,
+    [refundId, stripeRefundId || null, processorStatus || null]
+  );
+  if (rowCount === 1) {
+    // The money row becomes real at the same moment — this is what makes the
+    // reversal visible to settledPaymentsWhere() and therefore to every report.
+    await pool.query(
+      `UPDATE payments SET status = 'refunded' WHERE refund_id = $1 AND status = 'pending'`,
+      [refundId]
+    );
+  }
+  return rowCount === 1;
+}
+
+// Mark a reversal failed. The negative payments row goes to 'failed', which
+// settledPaymentsWhere() excludes — so a refund Stripe rejected is never
+// counted as money returned, and the order's refundable balance is restored.
+async function failStripeRefund(refundId, message, stripeRefundId, processorStatus) {
+  const { rowCount } = await pool.query(
+    `UPDATE order_refunds
+        SET status = 'failed',
+            stripe_refund_id = COALESCE($2, stripe_refund_id),
+            processor_status = COALESCE($3, processor_status),
+            reason_note = COALESCE(reason_note, '') ||
+                          CASE WHEN COALESCE(reason_note,'') = '' THEN '' ELSE ' | ' END ||
+                          $4
+      WHERE id = $1 AND status = 'pending'`,
+    [refundId, stripeRefundId || null, processorStatus || null, `Refund failed: ${String(message).slice(0, 200)}`]
+  );
+  if (rowCount === 1) {
+    await pool.query(
+      `UPDATE payments SET status = 'failed' WHERE refund_id = $1 AND status = 'pending'`,
+      [refundId]
+    );
+  }
+  return rowCount === 1;
+}
+
+// Resolve a Stripe Refund object onto our row. Matches on stripe_refund_id
+// first; failing that (a reader-initiated Interac refund has no id until the
+// customer taps) it falls back to the oldest pending reversal for the same
+// PaymentIntent and adopts the id.
+async function applyStripeRefundOutcome(refund) {
+  let refundId = null;
+  const { rows } = await pool.query("SELECT id, status FROM order_refunds WHERE stripe_refund_id = $1", [refund.id]);
+  if (rows[0]) {
+    refundId = rows[0].id;
+  } else if (refund.payment_intent) {
+    // Matched through the ORIGINAL capture row, which is the only row that
+    // carries the PaymentIntent (see the note on the negative row above).
+    const { rows: byPi } = await pool.query(
+      `SELECT r.id
+         FROM order_refunds r
+         JOIN payments cap ON cap.order_id = r.order_id AND cap.refund_id IS NULL
+        WHERE r.status = 'pending' AND cap.processor_txn_id = $1
+        ORDER BY r.created_at
+        LIMIT 1`,
+      [refund.payment_intent]
+    );
+    if (byPi[0]) refundId = byPi[0].id;
+  }
+  if (!refundId) return { matched: false };
+
+  if (refund.status === "succeeded") {
+    const promoted = await promoteStripeRefund(refundId, refund.id, refund.status);
+    return { matched: true, refundId, outcome: promoted ? "completed" : "already_resolved" };
+  }
+  if (refund.status === "failed" || refund.status === "canceled") {
+    const failed = await failStripeRefund(
+      refundId,
+      refund.failure_reason || `Stripe reported ${refund.status}`,
+      refund.id,
+      refund.status
+    );
+    return { matched: true, refundId, outcome: failed ? "failed" : "already_resolved" };
+  }
+  // Still pending at Stripe — record the id/status and wait.
+  await pool.query(
+    `UPDATE order_refunds SET stripe_refund_id = COALESCE($2, stripe_refund_id), processor_status = $3
+      WHERE id = $1 AND status = 'pending'`,
+    [refundId, refund.id, refund.status || null]
+  );
+  return { matched: true, refundId, outcome: "still_pending" };
+}
+
 // POST /api/orders/:id/refund   (POS — device-paired)
 // Body: { staffId, approverStaffId, approverPin, type, reason, reasonNote, amount, items }
 // Dual-control: a cashier INITIATES; a manager/owner/admin APPROVES with their
@@ -2622,9 +2919,10 @@ async function applyRefund(client, {
 // cash). The approver may equal the initiator when the initiator is manager+.
 app.post("/api/orders/:id/refund", requireDevicePairing, async (req, res) => {
   const { id } = req.params;
-  const { staffId, approverStaffId, approverPin, type, reason, reasonNote, amount, items } =
+  const { staffId, approverStaffId, approverPin, type, reason, reasonNote, amount, items, refundMethod } =
     req.body || {};
   const client = await pool.connect();
+  let committed = false;
   try {
     // Initiator: any working role except kitchen.
     const initiator = await requireStaffIdParam(staffId, ["owner", "admin", "manager", "cashier"]);
@@ -2641,6 +2939,13 @@ app.post("/api/orders/:id/refund", requireDevicePairing, async (req, res) => {
       await verifyStaffPin(approver.id, approverPin);
     }
 
+    // The till's bound reader — needed only for an Interac card refund, which
+    // the customer must authorise by presenting the card.
+    const { rows: devRows } = await client.query(
+      "SELECT stripe_reader_id FROM device_pairings WHERE device_id = $1",
+      [req.deviceId]
+    );
+
     await client.query("BEGIN");
     const result = await applyRefund(client, {
       orderId: id,
@@ -2653,11 +2958,24 @@ app.post("/api/orders/:id/refund", requireDevicePairing, async (req, res) => {
       approvedBy: approver.id,
       approverRole: approver.role,
       selfApproved,
+      // At the counter: the customer can present a card, so an Interac refund
+      // is possible here (and only here).
+      surface: "pos",
+      refundMethod: refundMethod === "cash" ? "cash" : null,
+      readerId: devRows[0]?.stripe_reader_id || null,
     });
     await client.query("COMMIT");
+    committed = true;
+
+    // Outside the transaction — see settleStripeRefund.
+    if (result.pendingStripeRefund) {
+      result.stripe = await settleStripeRefund(result.pendingStripeRefund);
+      result.refund.status = result.stripe.status;
+    }
+    delete result.pendingStripeRefund;
     res.status(201).json(result);
   } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
+    if (!committed) await client.query("ROLLBACK").catch(() => {});
     sendHttpError(res, err, "Failed to process refund");
   } finally {
     client.release();
@@ -3000,8 +3318,9 @@ app.get("/api/staff/approvers", requireDevicePairing, async (req, res) => {
 // the trust hierarchy and self-approve (approved_by = requested_by = session staff).
 app.post("/api/backoffice/orders/:id/refund", async (req, res) => {
   const { id } = req.params;
-  const { type, reason, reasonNote, amount, items } = req.body || {};
+  const { type, reason, reasonNote, amount, items, refundMethod } = req.body || {};
   const client = await pool.connect();
+  let committed = false;
   try {
     const staff = await requireBackofficeSession(req); // owner/admin only
     await client.query("BEGIN");
@@ -3015,11 +3334,22 @@ app.post("/api/backoffice/orders/:id/refund", async (req, res) => {
       requestedBy: staff.id,
       approvedBy: staff.id,
       approverRole: staff.role,
+      // Remote surface: nobody is holding a card, so an Interac reversal is
+      // rejected here (D5). `refundMethod: 'cash'` is the deliberate way out.
+      surface: "backoffice",
+      refundMethod: refundMethod === "cash" ? "cash" : null,
     });
     await client.query("COMMIT");
+    committed = true;
+
+    if (result.pendingStripeRefund) {
+      result.stripe = await settleStripeRefund(result.pendingStripeRefund);
+      result.refund.status = result.stripe.status;
+    }
+    delete result.pendingStripeRefund;
     res.status(201).json(result);
   } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
+    if (!committed) await client.query("ROLLBACK").catch(() => {});
     sendHttpError(res, err, "Failed to process refund");
   } finally {
     client.release();
