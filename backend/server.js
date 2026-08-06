@@ -641,9 +641,30 @@ async function startTerminalPayment(res, pending) {
       [pending.id, paymentIntent.id]
     );
 
+    // On-reader tipping (Slice 4). The 15/18/20% Terminal Configuration on the
+    // Stripe Location supplies the PERCENTAGES, but in a server-driven
+    // integration it does not by itself make the reader ask: process_config
+    // .tipping is the switch. Without it the reader charges the exact amount
+    // and never shows a tip screen, however the Configuration is set up.
+    //
+    // amount_eligible is the base those percentages are calculated from, and
+    // it is deliberately the DISCOUNTED PRE-TAX subtotal, not the full charge:
+    // tipping on HST would quietly inflate every suggestion by 13%. To tip on
+    // the full amount instead, drop amount_eligible and Stripe falls back to
+    // the PaymentIntent total.
+    const tipEligibleCents = Math.round(
+      (parseFloat(pending.subtotal) - parseFloat(pending.discount)) * 100
+    );
     await stripeClient.terminal.readers.processPaymentIntent(
       pending.readerId,
-      { payment_intent: paymentIntent.id },
+      {
+        payment_intent: paymentIntent.id,
+        // A fully-discounted (free) order has nothing to tip on — asking would
+        // be absurd, and Stripe rejects a zero/negative eligible amount.
+        ...(tipEligibleCents > 0
+          ? { process_config: { tipping: { amount_eligible: tipEligibleCents } } }
+          : {}),
+      },
       { idempotencyKey: `${idemBase}_process` }
     );
 
@@ -833,6 +854,31 @@ async function materializeOrderFromPendingCheckout(client, { pending, paymentInt
       presentDetails?.last4 || null,
     ]
   );
+
+  // ---- assert the money invariant against what was actually written ----
+  // orders.total and payments.amount come from the same `total` above, so they
+  // agree by construction today — but "by construction" silently stops being
+  // true the moment someone edits one of those two INSERTs. This reads both
+  // rows back and compares them for real. It runs inside the transaction, so a
+  // mismatch rolls the whole order back rather than recording a sale whose
+  // money does not add up, and the outer handler flags it as orphaned.
+  const { rows: checkRows } = await client.query(
+    `SELECT o.total::numeric AS order_total,
+            COALESCE(SUM(p.amount), 0)::numeric AS captured
+       FROM orders o
+  LEFT JOIN payments p ON p.order_id = o.id AND p.status = 'captured'
+      WHERE o.id = $1
+   GROUP BY o.total`,
+    [order.id]
+  );
+  const written = checkRows[0];
+  if (!written || parseFloat(written.order_total) !== parseFloat(written.captured)) {
+    throw new HttpError(
+      409,
+      `Money invariant violated on order ${order.id}: orders.total=${written?.order_total} ` +
+        `but captured payments=${written?.captured}`
+    );
+  }
 
   // ---- close out the pending checkout ----
   // status and order_id move together; the CHECK constraint on the table
@@ -3279,6 +3325,7 @@ app.get("/api/backoffice/stripe/diagnostics", async (req, res) => {
       location: null,
       readers: [],
       readerSummary: null,
+      tipping: null,
       // Actionable, human-readable notes about anything that looks half-wired.
       // Empty means nothing needed explaining.
       hints: [],
@@ -3346,6 +3393,35 @@ app.get("/api/backoffice/stripe/diagnostics", async (req, res) => {
           ? report.readers.filter((r) => r.matchesConfiguredLocation).length
           : null,
       };
+
+      // Tipping (Slice 4). Reports what the readers will actually offer, so
+      // "are the 15/18/20% options live?" is answerable from here instead of by
+      // standing in front of the device. Best-effort: a failure to read the
+      // configuration must not fail the whole diagnostic.
+      try {
+        const configs = await stripeClient.terminal.configurations.list({ limit: 10 });
+        report.tipping = configs.data.map((c) => ({
+          id: c.id,
+          isAccountDefault: Boolean(c.is_account_default),
+          // Percentages are per-currency; CAD is the one that matters here.
+          percentages: c.tipping?.cad?.percentages || null,
+          fixedAmounts: c.tipping?.cad?.fixed_amounts || null,
+          smartTipThreshold: c.tipping?.cad?.smart_tip_threshold ?? null,
+        }));
+        if (report.tipping.length === 0) {
+          report.hints.push(
+            "No Terminal Configuration found, so readers will use Stripe's defaults. " +
+              "Create one to control the 15/18/20% tip options."
+          );
+        } else if (!report.tipping.some((t) => t.percentages?.length)) {
+          report.hints.push(
+            "A Terminal Configuration exists but defines no CAD tip percentages — the reader " +
+              "will not offer percentage tips."
+          );
+        }
+      } catch (err) {
+        console.error("Could not list Terminal configurations:", err.message);
+      }
 
       // Turn the two silent-empty cases into an explicit, actionable answer.
       if (rawLocationId && rawLocationId !== configuredLocationId) {
