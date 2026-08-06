@@ -431,8 +431,40 @@ assume `tip = 0`:
 
 Prepare the data path only; do not block core payments on printer hardware.
 After a successful payment everything a receipt needs is available: order,
-lines, tax, tip, `card_brand`, `card_last4`, PI id. Decide later between
-Stripe's emailed receipt, a local printer, or both.
+lines, tax, tip, `card_brand`, `card_last4`, PI id.
+
+**Shipped in Slice 8** — the decision was "both", with no hardware dependency
+either way:
+
+- `GET /api/orders/:id/receipt` (device-paired) is the single read-only
+  projection every receipt renders from — business details, lines with their
+  modifier/removal/add-on detail, totals, the payment row's card fields, and any
+  reversals. It prices nothing and writes nothing, so a reprint an hour later is
+  identical to the original.
+- **Print** is the browser's own print dialog over an 80mm layout
+  (`ReceiptModal.jsx`), so any receipt printer the tablet's OS already sees just
+  works — no driver, no printer config, and no reason to wait for hardware.
+- **Email** is `POST /api/orders/:id/receipt/email`, which sets `receipt_email`
+  on the Stripe charge and lets Stripe send its own receipt. Deliberately not
+  our own template: Stripe already renders the card brand and last4 from the
+  charge itself. Cash sales, and anything taken while `PAYMENTS_PROVIDER=mock`,
+  have no charge to attach an address to and are print-only — the endpoint says
+  so specifically rather than failing vaguely.
+- Reachable from the checkout confirmation (which stops its own 2-second
+  self-dismiss when a receipt is asked for) and from Order Recall, which is the
+  reprint surface for any past order.
+
+**Money display rule**: `order_items.unit_price` already includes modifier
+deltas and paid add-ons, so `SUM(unit_price × quantity)` *is* `orders.subtotal`.
+Modifiers therefore print as descriptive sub-lines with no money beside them —
+printing a per-modifier price next to a line total that already contains it is
+how a receipt stops adding up in the customer's hands.
+
+**Outstanding**: the HST registration number has no home in the schema. A
+Canadian receipt should carry it so a customer can claim an input tax credit;
+`locations.hst_number` is the right place and needs a migration. Until then it
+comes from the optional `BUSINESS_TAX_NUMBER` env var and the line is omitted
+when unset.
 
 ---
 
@@ -598,8 +630,11 @@ Stripe refunds so the math is proven independently.
 **Slice 7 — Stripe refunds (R2).** Refund API wiring, the pending/failed state
 machine, terminal-present refunds, the Interac block and cash-out path.
 
-**Slice 8 — Receipts path.** Confirm the data is complete; stub or implement
-the print/email trigger.
+**Slice 8 — Receipts path.** Done. One read-only receipt endpoint, an 80mm
+browser-print layout reachable from the checkout confirmation and Order Recall,
+and Stripe's own emailed receipt for card sales. No schema change. See the
+Receipts section above for what shipped and the one outstanding gap (HST
+registration number).
 
 **Slice 9 — Hardware and go-live.** Register the physical reader; end-to-end on
 test keys then live; switch keys; final production verification of reports,
@@ -666,6 +701,9 @@ All existing refund acceptance and report reconciliation checks must still pass.
 - [ ] Reconciliation sweep running
 - [ ] Stripe refunds verified, including a deliberate failure
 - [ ] Reports still reconcile end to end
+- [ ] Receipt printer chosen and confirmed visible in the tablet's print dialog
+- [ ] Decide whether the HST registration number goes on
+      `locations.hst_number` (migration) or stays on `BUSINESS_TAX_NUMBER`
 - [ ] Live keys switched; small live transaction successful
 - [ ] Kill-switch tested — flip to `mock` and back
 - [ ] Staff trained on the card flow, the tip screen, and the Interac refund rule

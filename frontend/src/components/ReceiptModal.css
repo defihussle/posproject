@@ -1,0 +1,312 @@
+/* Customer receipt — on-screen preview + the print layout (plan Slice 8).
+   The paper itself is always light-on-white in BOTH themes: it is a print
+   preview of black ink on white paper, and a dark-mode receipt would be a
+   preview of something no printer will ever produce. */
+
+.rcpt-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  z-index: 1200; /* above OrderRecallModal (1000) — it opens on top of it */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.rcpt-modal {
+  background: var(--bg-surface, #fff);
+  color: var(--text-primary, #1a1a1a);
+  width: 100%;
+  max-width: 400px;
+  max-height: 92vh;
+  border-radius: var(--radius-lg, 16px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-color, #e5e5e5);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+}
+
+.rcpt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border-color, #e5e5e5);
+}
+
+.rcpt-header-title {
+  font-family: var(--font-headline, sans-serif);
+  font-size: 1.1rem;
+  text-transform: uppercase;
+  margin: 0;
+}
+
+.rcpt-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #6b6b6b);
+  cursor: pointer;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-full, 9999px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rcpt-close:hover {
+  background: var(--bg-surface-hover, #f5f5f4);
+}
+
+.rcpt-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  background: var(--bg-primary, #fafaf9);
+}
+
+.rcpt-loading,
+.rcpt-error {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--text-secondary, #6b6b6b);
+  font-size: 0.9rem;
+}
+
+.rcpt-error {
+  color: var(--red, #e8442e);
+}
+
+/* ---- The paper ---- */
+/* 80mm thermal roll, minus the printer's own margins. Fixed width so the
+   on-screen preview is a true representation of the printed output. */
+.rcpt-paper {
+  width: 72mm;
+  margin: 0 auto;
+  padding: 4mm;
+  background: #ffffff;
+  color: #000000;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
+}
+
+.rcpt-brand {
+  text-align: center;
+  font-family: var(--font-headline, sans-serif);
+  font-size: 15px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.rcpt-brand-line {
+  text-align: center;
+  font-size: 10px;
+}
+
+.rcpt-void {
+  text-align: center;
+  font-weight: 700;
+  font-size: 13px;
+  margin-top: 4px;
+  letter-spacing: 0.08em;
+}
+
+.rcpt-rule {
+  border-top: 1px dashed #000;
+  margin: 6px 0;
+}
+
+.rcpt-meta {
+  text-align: center;
+  font-size: 10px;
+}
+
+.rcpt-order-no {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.rcpt-line + .rcpt-line {
+  margin-top: 5px;
+}
+
+.rcpt-line-main {
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+}
+
+.rcpt-line-qty {
+  flex: 0 0 auto;
+}
+
+.rcpt-line-name {
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+.rcpt-line-amt {
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.rcpt-sub {
+  padding-left: 18px;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.rcpt-sub--note {
+  font-style: italic;
+}
+
+.rcpt-total-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.rcpt-total-row--grand {
+  font-size: 13px;
+  font-weight: 700;
+  margin-top: 3px;
+}
+
+.rcpt-txn {
+  font-size: 9px;
+  overflow-wrap: anywhere;
+  color: #333;
+}
+
+.rcpt-footer {
+  text-align: center;
+  font-size: 10px;
+}
+
+/* ---- Actions ---- */
+.rcpt-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.85rem 1.25rem;
+  border-top: 1px solid var(--border-color, #e5e5e5);
+}
+
+.rcpt-btn {
+  flex: 1;
+  padding: 0.7rem 1rem;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--border-color, #e5e5e5);
+  background: var(--bg-surface, #fff);
+  color: var(--text-primary, #1a1a1a);
+  font-family: var(--font-body, sans-serif);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.rcpt-btn:hover:not(:disabled) {
+  background: var(--bg-surface-hover, #f5f5f4);
+}
+
+.rcpt-btn--primary {
+  background: var(--red, #e8442e);
+  border-color: var(--red, #e8442e);
+  color: #fff;
+}
+
+.rcpt-btn--primary:hover:not(:disabled) {
+  background: var(--red-hover, #d13a26);
+}
+
+.rcpt-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.rcpt-actions-note {
+  flex: 1;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--text-muted, #757575);
+}
+
+.rcpt-email {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0 1.25rem 1rem;
+}
+
+.rcpt-email-input {
+  flex: 1 1 180px;
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--border-color, #e5e5e5);
+  background: var(--bg-surface, #fff);
+  color: var(--text-primary, #1a1a1a);
+  font-family: var(--font-body, sans-serif);
+  font-size: 0.9rem;
+}
+
+.rcpt-email .rcpt-btn {
+  flex: 0 0 auto;
+}
+
+.rcpt-email-ok,
+.rcpt-email-err {
+  flex: 1 0 100%;
+  font-size: 0.8rem;
+}
+
+.rcpt-email-ok {
+  color: var(--green, #34a853);
+}
+
+.rcpt-email-err {
+  color: var(--red, #e8442e);
+}
+
+/* ---- Print ---- */
+/* visibility (not display) so the paper keeps its position in the flow; it is
+   then pulled to the top-left of the sheet. Everything else in the document —
+   the modal chrome and the whole POS behind it — is hidden. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  #rcpt-print-area,
+  #rcpt-print-area * {
+    visibility: visible;
+  }
+
+  #rcpt-print-area {
+    position: absolute;
+    top: 0;
+    left: 0;
+    margin: 0;
+    padding: 0;
+    width: 72mm;
+    box-shadow: none;
+  }
+
+  /* The preview scrolls inside a fixed-height modal; the printout must not be
+     cut off at that height. The absolute positioning above already escapes
+     these boxes — this is belt and braces against a browser that clips anyway. */
+  .rcpt-modal,
+  .rcpt-scroll {
+    overflow: visible;
+    max-height: none;
+  }
+
+  @page {
+    margin: 4mm;
+  }
+}

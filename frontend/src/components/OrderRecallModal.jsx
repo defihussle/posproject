@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { API_URL } from "../config";
+import ReceiptModal from "./ReceiptModal";
 import "./OrderRecallModal.css";
 
 const REFUND_REASONS = [
@@ -66,6 +67,10 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
   const [submitting, setSubmitting] = useState(false);
   const [pinError, setPinError] = useState(null);
   const [successMsg, setSuccessMsg] = useState(null);
+
+  // Receipt — order id, or null when closed. Recall is the reprint surface:
+  // any past order can be found here and printed again.
+  const [receiptOrderId, setReceiptOrderId] = useState(null);
 
   // Fetch recent orders for recall
   const fetchOrders = useCallback(async (query = "") => {
@@ -399,10 +404,16 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                       <span>Time: {new Date(selectedOrder.created_at).toLocaleString()}</span>
                     </div>
                   </div>
-                  <div>
+                  <div className="orm-detail-aside">
                     <span className={`orm-badge ${orderStateBadge(selectedOrder).cls}`}>
                       {orderStateBadge(selectedOrder).text}
                     </span>
+                    <button
+                      className="orm-btn orm-btn--secondary orm-receipt-btn"
+                      onClick={() => setReceiptOrderId(selectedOrder.id)}
+                    >
+                      Receipt
+                    </button>
                   </div>
                 </div>
 
@@ -755,6 +766,10 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
             )}
           </div>
         </div>
+      )}
+
+      {receiptOrderId && (
+        <ReceiptModal orderId={receiptOrderId} onClose={() => setReceiptOrderId(null)} />
       )}
     </div>
   );

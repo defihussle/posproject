@@ -218,6 +218,21 @@
   gap: 1rem;
 }
 
+/* Status badge + Receipt, stacked at the top-right of the detail panel. The
+   receipt button sits away from the reversal bar on purpose — it's the one
+   action here that changes nothing. */
+.orm-detail-aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.orm-receipt-btn {
+  padding: 0.4rem 0.9rem;
+  font-size: 0.8rem;
+}
+
 .orm-items-table {
   width: 100%;
   border-collapse: collapse;

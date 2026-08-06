@@ -7,6 +7,7 @@ import ChangePinModal from "./ChangePinModal";
 import MyHoursModal from "./MyHoursModal";
 import ClockCard from "./ClockCard";
 import OrderRecallModal from "./OrderRecallModal";
+import ReceiptModal from "./ReceiptModal";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import { API_URL } from "../config";
 import "./OrderEntry.css";
@@ -148,6 +149,11 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   // React state lags a tick, and "retry" needs to re-enter checkout immediately
   // after clearing it.
   const submittingRef = useRef(false);
+  // The confirmation screen's 2-second self-dismiss. Held so asking for a
+  // receipt can cancel it (see openReceiptFromConfirmation).
+  const autoCloseRef = useRef(null);
+  // Receipt — order id, or null when closed.
+  const [receiptOrderId, setReceiptOrderId] = useState(null);
   const [upsellOpen, setUpsellOpen] = useState(false); // post-checkout guac prompt
 
   // Total cart items count
@@ -320,19 +326,50 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   }, [clearCardState]);
 
   // A completed sale — cash or card, identical from here on. The cart is only
-  // ever cleared at this point, once money is genuinely collected.
-  const completeSale = useCallback((orderNumber) => {
+  // ever cleared at this point, once money is genuinely collected. The order id
+  // comes along purely so the confirmation can offer a receipt.
+  const completeSale = useCallback((orderNumber, orderId) => {
     setCardState(null);
-    setConfirmation({ orderNumber });
+    setConfirmation({ orderNumber, orderId });
     setCart([]);
     setDiscount(null);
-    setTimeout(() => {
+    autoCloseRef.current = setTimeout(() => {
+      autoCloseRef.current = null;
       setConfirmation(null);
       setCheckoutOpen(false);
       submittingRef.current = false;
       setSubmitting(false);
     }, 2000);
   }, []);
+
+  // "Receipt?" is asked at the counter, in the two seconds the confirmation is
+  // on screen — so asking for one has to stop the screen closing underneath it.
+  // The checkout modal is then dismissed by hand once the receipt is done.
+  const openReceiptFromConfirmation = useCallback(() => {
+    if (autoCloseRef.current) {
+      clearTimeout(autoCloseRef.current);
+      autoCloseRef.current = null;
+    }
+    submittingRef.current = false;
+    setSubmitting(false);
+    setReceiptOrderId(confirmation?.orderId || null);
+  }, [confirmation?.orderId]);
+
+  // Closing the receipt is what ends the sale, since the self-dismiss above was
+  // cancelled to open it. Without this the confirmation would sit there with no
+  // way out — the overlay deliberately ignores clicks while it is showing.
+  const closeReceipt = useCallback(() => {
+    setReceiptOrderId(null);
+    setConfirmation(null);
+    setCheckoutOpen(false);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (autoCloseRef.current) clearTimeout(autoCloseRef.current);
+    },
+    []
+  );
 
   // Submit the order with the chosen payment method
   const handleCheckout = useCallback(
@@ -374,7 +411,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
           });
           return;
         }
-        completeSale(data.order_number);
+        completeSale(data.order_number, data.id);
       } catch (err) {
         // Failure — keep the cart intact so nothing is lost, let staff retry
         setCheckoutError(err.message || "Network error. Please try again.");
@@ -413,7 +450,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
 
       if (data.status === "succeeded") {
         // Too late — they paid. Show it as the sale it is.
-        completeSale(data.orderNumber);
+        completeSale(data.orderNumber, data.orderId);
       } else if (data.paymentAlreadyCompleted) {
         // Stripe says the money landed; the order is moments away. Go back to
         // waiting rather than claiming a cancellation that did not happen.
@@ -449,7 +486,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
         if (stopped) return;
 
         if (data.status === "succeeded") {
-          completeSale(data.orderNumber);
+          completeSale(data.orderNumber, data.orderId);
         } else if (data.status === "failed") {
           setCardState((s) => (s ? { ...s, phase: "declined", message: data.errorMessage } : s));
         } else if (data.status === "cancelled") {
@@ -1025,6 +1062,17 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                   Order #{confirmation.orderNumber}
                 </div>
                 <div className="oe-checkout__success-sub">sent to kitchen</div>
+                {/* Offered, never forced — most customers walk away without
+                    one, so this must not slow the default path down. Any order
+                    can also be reprinted later from Order Recall. */}
+                {confirmation.orderId && (
+                  <button
+                    className="oe-checkout__result-btn oe-checkout__receipt-btn"
+                    onClick={openReceiptFromConfirmation}
+                  >
+                    Receipt
+                  </button>
+                )}
               </div>
             ) : (
               <>
@@ -1102,6 +1150,10 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
           staff={staff}
           onClose={() => setOrderRecallOpen(false)}
         />
+      )}
+
+      {receiptOrderId && (
+        <ReceiptModal orderId={receiptOrderId} onClose={closeReceipt} />
       )}
     </div>
   );

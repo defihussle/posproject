@@ -3313,6 +3313,323 @@ app.get("/api/staff/approvers", requireDevicePairing, async (req, res) => {
   }
 });
 
+// --------------- Receipts (plan Slice 8) ---------------
+//
+// A receipt is a READ-ONLY projection of an order that has already settled. It
+// prices nothing, decides nothing and writes nothing: every figure it shows was
+// fixed at checkout (or, for a card sale, by the webhook that materialized the
+// order), so a reprint an hour later is identical to the original.
+//
+// Two triggers sit on top of this one builder, matching the plan's "prepare the
+// data path" scope:
+//   • PRINT — the frontend lays the payload out at 80mm and calls the browser's
+//     print dialog, so any receipt printer the tablet's OS already knows about
+//     works with no driver or hardware dependency in this app.
+//   • EMAIL — Stripe's own receipt for a Stripe-funded card sale. Deliberately
+//     NOT a template of ours: Stripe already renders the card brand, last4 and
+//     merchant details, and one fewer email template is one fewer thing to keep
+//     reconciled with what was actually charged.
+//
+// Money note: order_items.unit_price already INCLUDES modifier deltas and paid
+// add-ons (see priceCart) — SUM(unit_price × quantity) is exactly orders.subtotal.
+// So modifiers appear on the receipt as descriptive sub-lines with NO money
+// beside them. Printing a per-modifier price next to a line total that already
+// contains it is how a receipt stops adding up in the customer's hands.
+async function buildReceipt(client, orderId) {
+  const { rows: orderRows } = await client.query(
+    `SELECT o.id, o.order_number, o.status, o.created_at, o.completed_at,
+            o.customer_name, o.subtotal, o.discount, o.discount_percent,
+            o.discount_reason, o.tax, o.tip, o.total,
+            s.name AS staff_name,
+            l.name AS location_name, l.address AS location_address,
+            l.phone AS location_phone, l.tax_rate
+       FROM orders o
+       JOIN staff s ON s.id = o.staff_id
+       JOIN locations l ON l.id = o.location_id
+      WHERE o.id = $1`,
+    [orderId]
+  );
+  const o = orderRows[0];
+  if (!o) throw new HttpError(404, "Order not found");
+
+  const { rows: lineRows } = await client.query(
+    `SELECT oi.id, oi.item_id, oi.quantity, oi.unit_price, oi.notes,
+            mi.name AS item_name, iv.name AS variant_name
+       FROM order_items oi
+       JOIN menu_items mi ON mi.id = oi.item_id
+  LEFT JOIN item_variants iv ON iv.id = oi.variant_id
+      WHERE oi.order_id = $1
+      ORDER BY oi.created_at, oi.id`,
+    [orderId]
+  );
+  const lineIds = lineRows.map((l) => l.id);
+  const menuItemIds = [...new Set(lineRows.map((l) => l.item_id))];
+
+  // Same three-way split the KDS uses (see fetchKdsOrders): required-group
+  // choices define what the item IS, non-default options are what the customer
+  // added, and a default option with no row is something they took OFF. A
+  // receipt that prints "NO ONIONS" is what an allergy-conscious customer
+  // checks before they walk away from the counter.
+  const { rows: modRows } = lineIds.length
+    ? await client.query(
+        `SELECT oim.order_item_id, oim.modifier_option_id, oim.quantity,
+                mo.name AS option_name, mo.default_selected,
+                mg.name AS group_name, mg.required AS group_required
+           FROM order_item_modifiers oim
+           JOIN modifier_options mo ON mo.id = oim.modifier_option_id
+           JOIN modifier_groups mg ON mg.id = mo.group_id
+          WHERE oim.order_item_id = ANY($1::uuid[])
+          ORDER BY mo.sort_order`,
+        [lineIds]
+      )
+    : { rows: [] };
+
+  const { rows: defaultRows } = menuItemIds.length
+    ? await client.query(
+        `SELECT img.item_id, mo.id AS option_id, mo.name AS option_name
+           FROM item_modifier_groups img
+           JOIN modifier_groups mg ON mg.id = img.modifier_group_id
+           JOIN modifier_options mo ON mo.group_id = mg.id
+          WHERE img.item_id = ANY($1::uuid[])
+            AND mg.required = false
+            AND mo.default_selected = true
+            AND mo.active = true
+          ORDER BY mo.sort_order`,
+        [menuItemIds]
+      )
+    : { rows: [] };
+
+  const { rows: addonRows } = lineIds.length
+    ? await client.query(
+        `SELECT oa.order_item_id, mi.name AS addon_name, oa.quantity, oa.is_complimentary
+           FROM order_item_addons oa
+           JOIN menu_items mi ON mi.id = oa.addon_item_id
+          WHERE oa.order_item_id = ANY($1::uuid[])
+          ORDER BY oa.is_complimentary DESC`,
+        [lineIds]
+      )
+    : { rows: [] };
+
+  const presentByLine = {};
+  const choicesByLine = {};
+  const addedByLine = {};
+  for (const m of modRows) {
+    (presentByLine[m.order_item_id] ||= new Set()).add(m.modifier_option_id);
+    if (m.group_required) {
+      (choicesByLine[m.order_item_id] ||= []).push({
+        group: m.group_name,
+        choice: m.option_name,
+      });
+    } else if (!m.default_selected) {
+      (addedByLine[m.order_item_id] ||= []).push({
+        name: m.option_name,
+        quantity: m.quantity,
+      });
+    }
+  }
+
+  const defaultsByMenuItem = {};
+  for (const d of defaultRows) {
+    (defaultsByMenuItem[d.item_id] ||= []).push({ optionId: d.option_id, name: d.option_name });
+  }
+
+  const addonsByLine = {};
+  for (const a of addonRows) {
+    (addonsByLine[a.order_item_id] ||= []).push({
+      name: a.addon_name,
+      quantity: a.quantity,
+      complimentary: a.is_complimentary,
+    });
+  }
+
+  const lines = lineRows.map((l) => {
+    const present = presentByLine[l.id] || new Set();
+    const unitPrice = parseFloat(l.unit_price);
+    return {
+      id: l.id,
+      name: l.item_name,
+      variantName: l.variant_name || null,
+      quantity: l.quantity,
+      unitPrice,
+      lineTotal: round2(unitPrice * l.quantity),
+      choices: choicesByLine[l.id] || [],
+      added: addedByLine[l.id] || [],
+      removed: (defaultsByMenuItem[l.item_id] || [])
+        .filter((d) => !present.has(d.optionId))
+        .map((d) => d.name),
+      addons: addonsByLine[l.id] || [],
+      notes: l.notes || null,
+    };
+  });
+
+  // The original capture — refund_id IS NULL is what distinguishes it from the
+  // negative reversal rows written alongside it (see applyRefund).
+  const { rows: payRows } = await client.query(
+    `SELECT method, amount, status, processor_txn_id, processor_payment_type,
+            card_brand, card_last4
+       FROM payments
+      WHERE order_id = $1 AND refund_id IS NULL
+      ORDER BY created_at
+      LIMIT 1`,
+    [orderId]
+  );
+  const pay = payRows[0] || null;
+
+  const { rows: refundRows } = await client.query(
+    `SELECT id, type, amount, reason, created_at
+       FROM order_refunds
+      WHERE order_id = $1 AND status <> 'failed'
+      ORDER BY created_at`,
+    [orderId]
+  );
+  const refunds = refundRows.map((r) => ({
+    id: r.id,
+    type: r.type,
+    amount: parseFloat(r.amount),
+    reason: r.reason,
+    createdAt: r.created_at,
+  }));
+  const refundedTotal = round2(refunds.reduce((acc, r) => acc + r.amount, 0));
+  const total = parseFloat(o.total);
+
+  // Whether the "email it" button is worth showing at all. Stripe can only mail
+  // a receipt for a charge it actually processed, so a cash sale — and every
+  // sale taken while PAYMENTS_PROVIDER=mock — is print-only, and the frontend
+  // is told why rather than being left to guess.
+  const isStripeCharge = Boolean(
+    stripeClient && PAYMENTS_PROVIDER === "stripe" && pay?.processor_txn_id?.startsWith("pi_")
+  );
+
+  return {
+    business: {
+      name: o.location_name,
+      address: o.location_address || null,
+      phone: o.location_phone || null,
+      // No home in the schema yet. A Canadian receipt should carry the HST
+      // registration number so a customer can claim an input tax credit;
+      // locations.hst_number is the right place for it and needs a migration,
+      // so this env var is the stopgap and is simply omitted when unset.
+      taxNumber: process.env.BUSINESS_TAX_NUMBER || null,
+    },
+    order: {
+      id: o.id,
+      number: o.order_number,
+      status: o.status,
+      voided: o.status === "cancelled",
+      placedAt: o.created_at,
+      completedAt: o.completed_at,
+      servedBy: o.staff_name,
+      customerName: o.customer_name || null,
+    },
+    lines,
+    totals: {
+      subtotal: parseFloat(o.subtotal),
+      discount: parseFloat(o.discount),
+      discountPercent: o.discount_percent == null ? null : parseFloat(o.discount_percent),
+      discountReason: o.discount_reason,
+      tax: parseFloat(o.tax),
+      taxRatePercent: round2(parseFloat(o.tax_rate) * 100),
+      tip: parseFloat(o.tip),
+      total,
+    },
+    payment: pay
+      ? {
+          method: pay.method,
+          amount: parseFloat(pay.amount),
+          status: pay.status,
+          cardBrand: pay.card_brand,
+          cardLast4: pay.card_last4,
+          // card_present | interac_present | other — null on cash and on
+          // anything taken through the mocked path.
+          entryType: pay.processor_payment_type,
+          processorTxnId: pay.processor_txn_id,
+        }
+      : null,
+    refunds,
+    refundedTotal,
+    netPaid: round2(total - refundedTotal),
+    email: {
+      available: isStripeCharge,
+      reason: isStripeCharge
+        ? null
+        : "Emailed receipts are only available for card payments taken through the reader. Print this receipt instead.",
+    },
+  };
+}
+
+// GET /api/orders/:id/receipt   (POS — device-paired)
+app.get("/api/orders/:id/receipt", requireDevicePairing, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const receipt = await buildReceipt(client, req.params.id);
+    res.json({ receipt });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to build receipt");
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/orders/:id/receipt/email   (POS — device-paired)   { email }
+//
+// Hands the address to Stripe and lets Stripe mail its own receipt for the
+// charge. Setting receipt_email on a succeeded charge is what triggers the send.
+//
+// The idempotency key folds in the address (D9): a double-tapped button cannot
+// send twice, but a genuine correction to a mistyped address is a different key
+// and still goes through.
+app.post("/api/orders/:id/receipt/email", requireDevicePairing, async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+
+    const { rows } = await pool.query(
+      `SELECT processor_txn_id
+         FROM payments
+        WHERE order_id = $1 AND refund_id IS NULL
+        ORDER BY created_at
+        LIMIT 1`,
+      [req.params.id]
+    );
+    const paymentIntentId = rows[0]?.processor_txn_id;
+
+    if (!stripeClient || PAYMENTS_PROVIDER !== "stripe" || !paymentIntentId?.startsWith("pi_")) {
+      throw new HttpError(
+        400,
+        "This order has no card charge to email a receipt for — print the receipt instead"
+      );
+    }
+
+    const intent = await stripeClient.paymentIntents.retrieve(paymentIntentId);
+    const chargeId =
+      typeof intent.latest_charge === "string" ? intent.latest_charge : intent.latest_charge?.id;
+    if (!chargeId) {
+      throw new HttpError(409, "Stripe has no charge on record for this order yet");
+    }
+
+    await stripeClient.charges.update(
+      chargeId,
+      { receipt_email: email },
+      {
+        idempotencyKey: `receipt-${req.params.id}-${crypto
+          .createHash("sha256")
+          .update(email)
+          .digest("hex")
+          .slice(0, 32)}`,
+      }
+    );
+
+    res.json({ sent: true, email });
+  } catch (err) {
+    // A Stripe-side failure is not our 500 — say what happened so the cashier
+    // can fall back to printing rather than retrying into the same wall.
+    if (err?.type?.startsWith("Stripe")) {
+      console.error("Stripe receipt email failed:", err.message);
+      return res.status(502).json({ error: `Stripe could not send the receipt: ${err.message}` });
+    }
+    sendHttpError(res, err, "Failed to email the receipt");
+  }
+});
+
 // POST /api/backoffice/orders/:id/refund   (Back Office — owner/admin session)
 // Body: { type, reason, reasonNote, amount, items }. Owner/admin are the top of
 // the trust hierarchy and self-approve (approved_by = requested_by = session staff).
@@ -6942,6 +7259,11 @@ function surfaceColumnForRequest(req) {
   // checkout screen, never the KDS.
   if (/^\/api\/orders\/pending\/[^/]+/.test(path)) return "last_order_entry_at";
   if (method === "POST" && /^\/api\/orders\/[^/]+\/refund$/.test(path)) {
+    return "last_order_entry_at";
+  }
+  // Receipts (print + email) — a till-side action. The KDS never sees prices,
+  // let alone a receipt.
+  if (/^\/api\/orders\/[^/]+\/receipt(\/email)?$/.test(path)) {
     return "last_order_entry_at";
   }
   return "last_kds_at";

@@ -1061,6 +1061,12 @@
   cursor: default;
 }
 
+/* Receipt, offered on the confirmation screen. Quiet on purpose — most
+   customers walk off without one, and the default path is "don't touch it". */
+.oe-checkout__receipt-btn {
+  margin-top: 6px;
+}
+
 .oe-checkout__result-btn--primary {
   background: var(--red);
   border-color: var(--red);
