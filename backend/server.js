@@ -586,6 +586,24 @@ async function resolveReaderForDevice(client, deviceId) {
   return readerId;
 }
 
+// Classifies a Stripe Terminal failure into something a cashier can act on.
+// "Reader busy" and "reader offline" need genuinely different responses at the
+// counter — wait a moment and retry vs. go and check the device — so they must
+// not collapse into one generic error message.
+function readerErrorKind(err) {
+  const code = String(err?.code || "").toLowerCase();
+  const message = String(err?.message || "").toLowerCase();
+  const says = (s) => code.includes(s) || message.includes(s);
+
+  if (says("busy") || says("already in progress") || says("intent_invalid_state")) {
+    return "reader_busy";
+  }
+  if (says("offline") || says("timeout") || says("unreachable") || says("hardware_fault")) {
+    return "reader_offline";
+  }
+  return "reader_error";
+}
+
 // Creates the PaymentIntent for an already-committed pending checkout and hands
 // it to the reader.
 //
@@ -656,9 +674,17 @@ async function startTerminalPayment(res, pending) {
       )
       .catch((e) => console.error("Could not mark pending checkout failed:", e.message));
 
-    console.error(`Terminal payment failed (pending_checkout=${pending.id}):`, err.message);
+    const kind = readerErrorKind(err);
+    console.error(
+      `Terminal payment failed (pending_checkout=${pending.id}, kind=${kind}):`,
+      err.message
+    );
     return res.status(502).json({
       error: `Could not start the payment on the reader: ${err.message}`,
+      // Machine-readable so Order Entry can say something specific and
+      // actionable instead of "something went wrong".
+      code: kind,
+      detail: err.message,
       pendingCheckoutId: pending.id,
     });
   }
@@ -2307,6 +2333,154 @@ app.post("/api/orders/:id/refund", requireDevicePairing, async (req, res) => {
 // GET /api/orders/pos-recall?search=...&limit=20   (POS — device-paired)
 // Order-recall endpoint for POS. Returns recent orders with financial totals,
 // line-item breakdown, payment details, and prior refund history.
+// GET /api/orders/pending/:id — what happened to this card payment?
+//
+// The Order Entry waiting panel polls this. The payment result arrives at the
+// backend as a webhook, not as a reply to the checkout request, so this is how
+// the till finds out. Deliberately tiny: one indexed lookup, no Stripe call, so
+// polling it every second or two costs nothing.
+//
+// Scoped to the device that started the checkout — a payment in progress at one
+// till is not another till's business, and the device cookie is already proven
+// by requireDevicePairing.
+app.get("/api/orders/pending/:id", requireDevicePairing, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT pc.id, pc.status, pc.total, pc.error_message, pc.order_id,
+              o.order_number
+         FROM pending_checkouts pc
+    LEFT JOIN orders o ON o.id = pc.order_id
+        WHERE pc.id = $1 AND pc.device_id = $2`,
+      [req.params.id, req.deviceId]
+    );
+    const row = rows[0];
+    if (!row) throw new HttpError(404, "Unknown payment for this device");
+
+    res.json({
+      id: row.id,
+      status: row.status, // awaiting_payment | succeeded | failed | cancelled | expired | orphaned
+      total: parseFloat(row.total),
+      orderId: row.order_id,
+      orderNumber: row.order_number,
+      errorMessage: row.error_message,
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to check payment status");
+  }
+});
+
+// POST /api/orders/pending/:id/cancel — cashier aborts a live card payment.
+//
+// Cancels the action on the reader FIRST (so the customer stops being prompted)
+// and then the PaymentIntent, both with Idempotency-Keys.
+//
+// The race this has to survive: the customer may tap in the moment the cashier
+// reaches for Cancel. So nothing here forces a cancelled outcome — the row is
+// only moved to 'cancelled' while it is still 'awaiting_payment'. If the
+// webhook has already materialized an order, that UPDATE matches nothing and
+// the response reports the sale, which is the truth. Cancelling a payment that
+// already succeeded would be inventing one.
+app.post("/api/orders/pending/:id/cancel", requireDevicePairing, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT pc.id, pc.status, pc.stripe_payment_intent_id, pc.stripe_reader_id, pc.order_id,
+              o.order_number
+         FROM pending_checkouts pc
+    LEFT JOIN orders o ON o.id = pc.order_id
+        WHERE pc.id = $1 AND pc.device_id = $2`,
+      [req.params.id, req.deviceId]
+    );
+    const pending = rows[0];
+    if (!pending) throw new HttpError(404, "Unknown payment for this device");
+
+    // Already finished one way or the other — report it, change nothing.
+    if (pending.status !== "awaiting_payment") {
+      return res.json({
+        status: pending.status,
+        orderNumber: pending.order_number,
+        alreadyResolved: true,
+      });
+    }
+    if (!stripeClient) throw new HttpError(503, "Stripe is not configured on this server");
+
+    const idemBase = `pc_${pending.id}`;
+
+    // 1. Stop the reader prompting. "No action in progress" is a perfectly
+    //    normal outcome here (the customer may have just finished), so a
+    //    failure is logged and does not abort the cancel.
+    if (pending.stripe_reader_id) {
+      try {
+        await stripeClient.terminal.readers.cancelAction(
+          pending.stripe_reader_id,
+          {},
+          { idempotencyKey: `${idemBase}_cancel_action` }
+        );
+      } catch (err) {
+        console.warn(`cancelAction on ${pending.stripe_reader_id} did not apply: ${err.message}`);
+      }
+    }
+
+    // 2. Cancel the PaymentIntent so it cannot later be completed or linger.
+    //    If Stripe refuses because it has already succeeded, that IS the answer
+    //    — fall through and let the status re-read below report the sale.
+    let alreadySucceeded = false;
+    if (pending.stripe_payment_intent_id) {
+      try {
+        await stripeClient.paymentIntents.cancel(
+          pending.stripe_payment_intent_id,
+          {},
+          { idempotencyKey: `${idemBase}_cancel_pi` }
+        );
+      } catch (err) {
+        const msg = String(err.message || "").toLowerCase();
+        if (msg.includes("succeeded") || msg.includes("cannot be canceled")) {
+          alreadySucceeded = true;
+        } else {
+          console.warn(`Could not cancel ${pending.stripe_payment_intent_id}: ${err.message}`);
+        }
+      }
+    }
+
+    // 3. Record the cancellation ONLY if the payment is still open, and only if
+    //    Stripe did not just tell us the money had already landed. Marking a
+    //    completed payment 'cancelled' would be a lie the webhook then has to
+    //    undo; leaving the row open lets the webhook resolve it to 'succeeded'
+    //    a moment later, which is what actually happened.
+    let rowCount = 0;
+    if (!alreadySucceeded) {
+      ({ rowCount } = await pool.query(
+        `UPDATE pending_checkouts
+            SET status = 'cancelled', error_message = $2, updated_at = now()
+          WHERE id = $1 AND status = 'awaiting_payment'`,
+        [pending.id, "Cancelled at the till"]
+      ));
+    }
+
+    // Re-read: between step 1 and here the webhook may have materialized an
+    // order. Whatever the row says now is the truth.
+    const { rows: finalRows } = await pool.query(
+      `SELECT pc.status, pc.error_message, o.order_number
+         FROM pending_checkouts pc
+    LEFT JOIN orders o ON o.id = pc.order_id
+        WHERE pc.id = $1`,
+      [pending.id]
+    );
+    const final = finalRows[0];
+
+    return res.json({
+      status: final.status,
+      orderNumber: final.order_number,
+      errorMessage: final.error_message,
+      cancelled: rowCount === 1,
+      // True when Stripe told us the money had already landed — the webhook
+      // may still be moments away from writing the order.
+      paymentAlreadyCompleted: alreadySucceeded,
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to cancel the payment");
+  }
+});
+
 app.get("/api/orders/pos-recall", requireDevicePairing, async (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || "20", 10) || 20, 1), 50);
   const search = req.query.search ? req.query.search.toString().trim() : "";
@@ -6070,6 +6244,9 @@ function surfaceColumnForRequest(req) {
   // KDS dismissing a voided ticket.
   if (path === "/api/orders/pos-recall") return "last_order_entry_at";
   if (path === "/api/staff/approvers") return "last_order_entry_at";
+  // Card-payment status polling and cancel — both driven from the Order Entry
+  // checkout screen, never the KDS.
+  if (/^\/api\/orders\/pending\/[^/]+/.test(path)) return "last_order_entry_at";
   if (method === "POST" && /^\/api\/orders\/[^/]+\/refund$/.test(path)) {
     return "last_order_entry_at";
   }
