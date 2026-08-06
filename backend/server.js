@@ -542,6 +542,122 @@ const REFUND_FLAG_THRESHOLD = 50; // $ — logged, never silently invisible (mir
 // approve (misuse guard). Back Office callers are already owner/admin.
 const REFUND_OWNER_APPROVAL_THRESHOLD = 100; // $
 
+// Is this checkout the one that talks to a physical reader? Cash never is, and
+// neither is Card while PAYMENTS_PROVIDER=mock — both keep the synchronous
+// insert-an-order-immediately path they have always had (decision D11).
+function isStripeCardCheckout(paymentMethod) {
+  return paymentMethod === "card" && PAYMENTS_PROVIDER === "stripe";
+}
+
+// Money is NUMERIC(10,2) here and integer cents at Stripe. ONE helper and one
+// rounding rule, so the two representations can never disagree by a cent —
+// which matters because Slice 2 asserts the amount Stripe charged against the
+// amount we stored before it will write an order.
+function toStripeAmount(dollars) {
+  const cents = Math.round(Number(dollars) * 100);
+  if (!Number.isFinite(cents) || cents <= 0) {
+    throw new HttpError(400, `Refusing to charge an invalid amount (${dollars})`);
+  }
+  return cents;
+}
+
+// Which reader should this till drive? The binding lives on the device pairing
+// (device_pairings.stripe_reader_id), so a second till is configuration rather
+// than a code change. Stripe readers remain a SEPARATE trust layer from device
+// pairing — this column binds them without merging them.
+async function resolveReaderForDevice(client, deviceId) {
+  const { rows } = await client.query(
+    "SELECT stripe_reader_id FROM device_pairings WHERE device_id = $1",
+    [deviceId]
+  );
+  const readerId = rows[0]?.stripe_reader_id ? String(rows[0].stripe_reader_id).trim() : null;
+  if (!readerId) {
+    throw new HttpError(
+      409,
+      "This till has no card reader assigned yet. Assign one in Back Office → Devices before taking card payments."
+    );
+  }
+  return readerId;
+}
+
+// Creates the PaymentIntent for an already-committed pending checkout and hands
+// it to the reader.
+//
+// Deliberately runs OUTSIDE the checkout transaction, after the pooled client
+// has been released. The pending_checkouts row is committed FIRST so that a
+// crash between here and Stripe can never leave money moving with nothing
+// locally to explain it. The reverse order — holding a transaction open across
+// two network round-trips to Stripe — would pin a pooled connection for seconds
+// and risk a committed PaymentIntent whose row got rolled back.
+//
+// Both calls carry an Idempotency-Key derived from the pending-checkout id
+// (decision D9), so a network timeout and retry can never double-charge. One
+// attempt per pending checkout in this slice; retry-after-decline creates a new
+// attempt and arrives with the frontend states in Slice 3.
+async function startTerminalPayment(res, pending) {
+  const idemBase = `pc_${pending.id}`;
+  try {
+    const paymentIntent = await stripeClient.paymentIntents.create(
+      {
+        amount: toStripeAmount(pending.total),
+        currency: "cad",
+        payment_method_types: ["card_present", "interac_present"],
+        capture_method: "automatic",
+        metadata: {
+          pending_checkout_id: pending.id,
+          location_id: pending.locationId,
+          staff_id: pending.staffId,
+        },
+      },
+      { idempotencyKey: `${idemBase}_pi` }
+    );
+
+    await pool.query(
+      "UPDATE pending_checkouts SET stripe_payment_intent_id = $2, updated_at = now() WHERE id = $1",
+      [pending.id, paymentIntent.id]
+    );
+
+    await stripeClient.terminal.readers.processPaymentIntent(
+      pending.readerId,
+      { payment_intent: paymentIntent.id },
+      { idempotencyKey: `${idemBase}_process` }
+    );
+
+    // 202, not 201: nothing has been created yet. No order and no payments row
+    // exist, and none will until the success webhook arrives (Slice 2).
+    return res.status(202).json({
+      pending: true,
+      pendingCheckoutId: pending.id,
+      paymentIntentId: paymentIntent.id,
+      readerId: pending.readerId,
+      status: "awaiting_payment",
+      subtotal: pending.subtotal,
+      discount: pending.discount,
+      tax: pending.tax,
+      total: pending.total,
+    });
+  } catch (err) {
+    // A rejected amount, an offline reader, a reader already mid-action, a bad
+    // key. No money has moved: an un-processed PaymentIntent holds no funds.
+    // Mark the attempt failed so it stops looking in-flight, and keep the
+    // reason for the cashier and for the Slice 6 sweep.
+    await pool
+      .query(
+        `UPDATE pending_checkouts
+            SET status = 'failed', error_message = $2, updated_at = now()
+          WHERE id = $1 AND status = 'awaiting_payment'`,
+        [pending.id, String(err.message || "Unknown Stripe error").slice(0, 500)]
+      )
+      .catch((e) => console.error("Could not mark pending checkout failed:", e.message));
+
+    console.error(`Terminal payment failed (pending_checkout=${pending.id}):`, err.message);
+    return res.status(502).json({
+      error: `Could not start the payment on the reader: ${err.message}`,
+      pendingCheckoutId: pending.id,
+    });
+  }
+}
+
 // Prices and validates a whole cart server-side, from the database, and
 // returns a fully-priced snapshot. Extracted from the checkout route so that
 // Cash (which inserts an order synchronously) and Card-under-Stripe (which
@@ -838,6 +954,11 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
   }
 
   const client = await pool.connect();
+  // Set only on the Stripe-card path, and only once its row is committed —
+  // the Stripe calls then happen after the transaction closes (see
+  // startTerminalPayment).
+  let pendingForReader = null;
+  let committed = false;
   try {
     await client.query("BEGIN");
 
@@ -850,75 +971,137 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
     });
     const { staff, location, pricedLines, subtotal, discountAmount, tax, tip, total } = priced;
 
-    // ---- Insert order ----
-    const { rows: orderRows } = await client.query(
-      `INSERT INTO orders (location_id, staff_id, status, subtotal, tax, tip, total,
-                            discount, discount_percent, discount_reason, discount_applied_by)
-       VALUES ($1, $2, 'open', $3, $4, $5, $6, $7, $8, $9, $10)
-       RETURNING id, order_number`,
-      [
-        location.id,
-        staff.id,
+    // ---- Card under real Stripe: freeze the cart, create NO order ----
+    // Decision D1 (Option B): the orders + payments rows are written only when
+    // the success webhook arrives, so a declined or abandoned checkout leaves
+    // nothing behind — nothing on the KDS, nothing in pos-recall, and no
+    // phantom 'cancelled' order in the Transaction Log. What is written here is
+    // the frozen priced snapshot (D2), which is authoritative from this moment
+    // on: a price edit in Manage Menu while the customer is tapping must never
+    // change what they are charged.
+    if (isStripeCardCheckout(paymentMethod)) {
+      if (!stripeClient) {
+        // Unreachable in practice: PAYMENTS_PROVIDER=stripe already requires a
+        // key at boot. Fails loudly rather than silently falling back to the
+        // mocked path and recording a sale nobody paid for.
+        throw new HttpError(503, "Card payments are enabled but Stripe is not configured on this server");
+      }
+      const readerId = await resolveReaderForDevice(client, req.deviceId);
+
+      const { rows: pcRows } = await client.query(
+        `INSERT INTO pending_checkouts
+           (location_id, staff_id, device_id, payload, subtotal, discount,
+            discount_percent, discount_reason, tax, total, stripe_reader_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING id`,
+        [
+          location.id,
+          staff.id,
+          req.deviceId,
+          JSON.stringify({
+            lines: pricedLines,
+            discountAppliedBy: discountPercent ? staff.id : null,
+          }),
+          subtotal,
+          discountAmount,
+          discountPercent,
+          discountReason,
+          tax,
+          total,
+          readerId,
+        ]
+      );
+
+      await client.query("COMMIT");
+      committed = true;
+      pendingForReader = {
+        id: pcRows[0].id,
+        readerId,
+        locationId: location.id,
+        staffId: staff.id,
         subtotal,
+        discount: discountAmount,
+        tax,
+        total,
+      };
+    } else {
+      // ---- Cash, and Card under mock: unchanged synchronous path ----
+
+      // ---- Insert order ----
+      const { rows: orderRows } = await client.query(
+        `INSERT INTO orders (location_id, staff_id, status, subtotal, tax, tip, total,
+                              discount, discount_percent, discount_reason, discount_applied_by)
+         VALUES ($1, $2, 'open', $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING id, order_number`,
+        [
+          location.id,
+          staff.id,
+          subtotal,
+          tax,
+          tip,
+          total,
+          discountAmount,
+          discountPercent,
+          discountReason,
+          discountPercent ? staff.id : null,
+        ]
+      );
+      const order = orderRows[0];
+
+      // ---- Insert lines, modifiers, addons ----
+      for (const line of pricedLines) {
+        const { rows: oiRows } = await client.query(
+          `INSERT INTO order_items (order_id, item_id, variant_id, quantity, unit_price, notes)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING id`,
+          [order.id, line.itemId, line.variantId, line.quantity, line.unitPrice, line.notes]
+        );
+        const orderItemId = oiRows[0].id;
+
+        for (const mod of line.modifiers) {
+          await client.query(
+            `INSERT INTO order_item_modifiers (order_item_id, modifier_option_id, price_delta, quantity)
+             VALUES ($1, $2, $3, $4)`,
+            [orderItemId, mod.optionId, mod.priceDelta, mod.quantity]
+          );
+        }
+
+        for (const addon of line.addons) {
+          await client.query(
+            `INSERT INTO order_item_addons (order_item_id, addon_item_id, quantity, unit_price, is_complimentary)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [orderItemId, addon.addonItemId, addon.quantity, addon.unitPrice, addon.isComplimentary]
+          );
+        }
+      }
+
+      // ---- Insert payment (mocked — captured immediately, no processor) ----
+      await client.query(
+        `INSERT INTO payments (order_id, method, amount, status)
+         VALUES ($1, $2, $3, 'captured')`,
+        [order.id, paymentMethod, total]
+      );
+
+      await client.query("COMMIT");
+      return res.status(201).json({
+        id: order.id,
+        order_number: order.order_number,
+        subtotal,
+        discount: discountAmount,
+        discount_percent: discountPercent,
+        discount_reason: discountReason,
         tax,
         tip,
         total,
-        discountAmount,
-        discountPercent,
-        discountReason,
-        discountPercent ? staff.id : null,
-      ]
-    );
-    const order = orderRows[0];
-
-    // ---- Insert lines, modifiers, addons ----
-    for (const line of pricedLines) {
-      const { rows: oiRows } = await client.query(
-        `INSERT INTO order_items (order_id, item_id, variant_id, quantity, unit_price, notes)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id`,
-        [order.id, line.itemId, line.variantId, line.quantity, line.unitPrice, line.notes]
-      );
-      const orderItemId = oiRows[0].id;
-
-      for (const mod of line.modifiers) {
-        await client.query(
-          `INSERT INTO order_item_modifiers (order_item_id, modifier_option_id, price_delta, quantity)
-           VALUES ($1, $2, $3, $4)`,
-          [orderItemId, mod.optionId, mod.priceDelta, mod.quantity]
-        );
-      }
-
-      for (const addon of line.addons) {
-        await client.query(
-          `INSERT INTO order_item_addons (order_item_id, addon_item_id, quantity, unit_price, is_complimentary)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [orderItemId, addon.addonItemId, addon.quantity, addon.unitPrice, addon.isComplimentary]
-        );
-      }
+      });
     }
-
-    // ---- Insert payment (mocked — captured immediately, no processor) ----
-    await client.query(
-      `INSERT INTO payments (order_id, method, amount, status)
-       VALUES ($1, $2, $3, 'captured')`,
-      [order.id, paymentMethod, total]
-    );
-
-    await client.query("COMMIT");
-    return res.status(201).json({
-      id: order.id,
-      order_number: order.order_number,
-      subtotal,
-      discount: discountAmount,
-      discount_percent: discountPercent,
-      discount_reason: discountReason,
-      tax,
-      tip,
-      total,
-    });
   } catch (err) {
-    await client.query("ROLLBACK");
+    // The Stripe path commits before it leaves this block; rolling back after
+    // a successful COMMIT would only log a spurious "no transaction in
+    // progress" warning.
+    if (!committed) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
     if (err instanceof HttpError) {
       return res.status(err.status).json({ error: err.message });
     }
@@ -927,6 +1110,11 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
   } finally {
     client.release();
   }
+
+  // Only reachable on the Stripe-card path: the pending checkout is committed
+  // and the pooled connection is released, so the Stripe round-trips below hold
+  // no database resources.
+  return startTerminalPayment(res, pendingForReader);
 });
 
 // --------------- Kitchen Display System (KDS) ---------------
