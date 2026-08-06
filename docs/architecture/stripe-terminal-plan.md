@@ -650,10 +650,12 @@ webhook → order → refund → receipt) with every required webhook event hand
 and surfaced three operational gaps that a simulated reader never forces anyone
 to confront:
 
-1. **`device_pairings.stripe_reader_id` and `locations.stripe_location_id` have
-   no read or write surface.** Both are set by hand in SQL. The 409 a cashier
-   sees when the binding is missing says "Assign one in Back Office → Devices",
-   which is a screen that cannot do it. Smallest, highest-value follow-up.
+1. ~~**`device_pairings.stripe_reader_id` has no read or write surface.**~~
+   **Fixed** — Back Office → Devices now shows each till's bound reader and
+   sets/clears it, with a live reader picker from the diagnostics endpoint and
+   `tmr_` validation that catches a pasted Location id or serial number.
+   `locations.stripe_location_id` is still SQL-only, but it is set once per
+   store rather than whenever hardware changes.
 2. **The Interac cash-out has no button.** `applyRefund()` accepts
    `refundMethod: 'cash'`; no frontend sends it, so an Interac refund without
    the physical card is a dead end at the counter.

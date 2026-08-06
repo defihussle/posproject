@@ -339,10 +339,21 @@ percentages, and a `hints[]` array that names whatever looks half-wired. It
 deliberately lists *all* readers rather than filtering by Location, so a
 mismatch reads as a mismatch instead of an empty list.
 
-**Known gaps** (see `stripe-go-live.md`): `device_pairings.stripe_reader_id`
-and `locations.stripe_location_id` are SQL-only — no UI binds a reader to a
-till — and the Interac cash-out path exists in `applyRefund()` but has no
-button.
+**Reader binding** — which reader a till drives lives on
+`device_pairings.stripe_reader_id` and is managed from **Back Office →
+Devices**: every row shows its bound reader (or "No reader") under the device
+name, and the detail modal's **Card reader** block sets, changes or clears it.
+Entering edit mode pulls the account's readers from the diagnostics endpoint
+and offers them as one-tap chips with online/offline status; the text input is
+the real input and the picker is simply absent when Stripe has nothing to
+offer. The field rejects anything not shaped like `tmr_…`, which catches the
+two realistic mistakes — pasting the Location id (`tml_…`) or the reader's
+serial number. `PUT /api/backoffice/devices/:id` is a partial update, so
+renaming a device can never unbind its reader.
+
+**Known gaps** (see `stripe-go-live.md`): the Interac cash-out path exists in
+`applyRefund()` but has no button, and `locations.stripe_location_id` is still
+SQL-only (set once per store).
 
 ## Receipts
 `GET /api/orders/:id/receipt` (device-paired) is one read-only projection of a

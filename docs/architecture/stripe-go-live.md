@@ -46,18 +46,17 @@ Nothing above is broken. But three things that a simulated reader never forced
 anyone to confront will bite on hardware day, and they are listed here rather
 than discovered at the counter.
 
-**1. There is no UI for binding a reader to a till.**
-`device_pairings.stripe_reader_id` is what tells a till which reader to drive.
-It has **no read or write surface anywhere** — `GET /api/backoffice/devices`
-doesn't return it, `PUT /api/backoffice/devices/:id` only accepts
-`device_name`, and the Devices screen has no field for it. It is set with SQL,
-by hand. Worse, when it is missing the error a cashier sees says *"Assign one
-in Back Office → Devices"* — pointing at a screen that cannot do it.
+**1. ~~There is no UI for binding a reader to a till.~~ — FIXED.**
+`device_pairings.stripe_reader_id` is now set from **Back Office → Devices**:
+tap a device, use the **Card reader** block. The error a cashier sees when it
+is missing finally points at a screen that can do the job. `GET
+/api/backoffice/devices` returns the binding and `PUT
+/api/backoffice/devices/:id` accepts it as a partial update, so a rename can't
+unbind a reader. Sending `null` clears it. See step 1.5.
 
-The same is true of `locations.stripe_location_id`.
-
-This is not a blocker (the SQL is two lines, below), but a small Back Office
-field should land before the store depends on it. Tracked as the top open item.
+**`locations.stripe_location_id` is still SQL-only** — but it is set once per
+store, ever, whereas the reader binding changes whenever hardware is swapped.
+Step 1.4 keeps the command.
 
 **2. The Interac cash-out path has no button.**
 The server fully supports it — `applyRefund()` accepts `refundMethod: 'cash'`
@@ -160,28 +159,28 @@ easier not to introduce it.
 
 ### 1.5 Bind the reader to the till
 
-This is the step with no UI (Part 0, gap 1). The till is a **paired device** —
-the tablet that runs Order Entry — and the binding says "this till drives that
-reader".
+The till is a **paired device** — the tablet that runs Order Entry — and this
+binding says "this till drives that reader".
 
-First find the till's row:
+1. Back Office → **Devices**.
+2. Tap the counter tablet's row. (Every row shows its reader underneath the
+   name, so you can see at a glance which tills are bound and which aren't.)
+3. In the **Card reader** block, tap **Set** (or **Change**).
+4. Either tap your reader in the list that appears — it is pulled live from
+   Stripe with each reader's online/offline status — or paste the `tmr_` id.
+5. **Save**.
 
-```bash
-psql "<Render External Database URL>" -c \
-  "SELECT device_id, device_name, last_order_entry_at FROM device_pairings
-    WHERE paired_at IS NOT NULL AND revoked_at IS NULL ORDER BY last_order_entry_at DESC NULLS LAST;"
-```
+The field rejects anything that isn't a `tmr_` id, which catches the two
+mistakes people actually make: pasting the **Location** id (`tml_…`) or the
+reader's **serial number** off the back of the box.
 
-Pick the one whose `device_name` matches the counter tablet, then:
+To unbind later, open the same block and tap **Clear**.
 
-```bash
-psql "<Render External Database URL>" -c \
-  "UPDATE device_pairings SET stripe_reader_id = 'tmr_xxx' WHERE device_name = 'Front Counter Tablet';"
-```
+> If the reader list comes up empty, Stripe either isn't configured on this
+> environment or has no readers registered to this account/mode. Pasting the id
+> by hand still works — check §1.6 to find out which it is.
 
-Confirm exactly one row was updated (`UPDATE 1`).
-
-A second till later is the same two lines with its own `tmr_` id — that is the
+A second till later is the same five taps with its own reader — that is the
 whole of "multi-till support". Stripe readers and device pairings stay separate
 trust layers; this column binds them without merging them.
 
@@ -284,10 +283,11 @@ earlier one passed.
       - `RECONCILE_INTERVAL_MINUTES` = `5`
       - `RECONCILE_STALE_MINUTES` = `20` (the default; set it explicitly so it
         is visible)
-- [ ] **11.** Update the two database values to their **live** equivalents:
+- [ ] **11.** Point the store and the till at their **live** Stripe objects.
+      The reader is re-bound in Back Office → Devices → the till → **Card
+      reader** → **Change** (§1.5); the Location is still SQL:
       ```sql
       UPDATE locations SET stripe_location_id = 'tml_LIVE' WHERE active = true;
-      UPDATE device_pairings SET stripe_reader_id = 'tmr_LIVE' WHERE device_name = 'Front Counter Tablet';
       ```
 - [ ] **12.** Let Render redeploy. In the logs, confirm the boot line reads
       `Payments: provider=mock, stripeClient=configured, keyMode=live` and
@@ -459,11 +459,11 @@ outstanding — the customer paid for food nobody made.
 
 Carried forward from the plan, plus what this runbook surfaced:
 
-1. **No UI to bind a reader to a till** (`device_pairings.stripe_reader_id`) or
-   to set `locations.stripe_location_id`. Both are SQL-only, and the error
-   message points at a Back Office screen that cannot do it. Smallest, highest
-   value thing to build next.
-2. **No Interac cash-out button.** The server path exists; nothing calls it.
+1. **No Interac cash-out button.** The server path exists
+   (`applyRefund({ refundMethod: 'cash' })`); nothing calls it. Now the top gap.
+2. **`locations.stripe_location_id` is still SQL-only.** Set once per store, so
+   much lower value than the reader binding was — but it is the last piece of
+   Stripe config with no screen.
 3. **T600 availability** for Canadian accounts — unconfirmed, not a blocker.
 4. **HST registration number** has no home in the schema
    (`BUSINESS_TAX_NUMBER` env var is the stopgap).

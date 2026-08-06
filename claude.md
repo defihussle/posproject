@@ -170,7 +170,8 @@ Three independent trust layers — full narrative/history:
 - Back Office: Home dashboard (KPIs w/ vs-last-period deltas, Sales
   Trend/Hourly/Category/Labor charts, discounts, top items, staff
   performance, custom date range), Staff Management, Menu Management,
-  Payroll, Devices — plus Manage Menu and a Staff popup, POS-reachable
+  Payroll, Devices (pairing codes, rename, revoke, **card-reader
+  binding**) — plus Manage Menu and a Staff popup, POS-reachable
   equivalents
 - Payroll: weekly (Mon–Sun) hours + gross pay per staff, Mark-as-Paid
   (persisted in `payroll_status`), CSV/PDF export; owners excluded,
@@ -220,10 +221,9 @@ Full detail: `docs/architecture/features.md`
   *simulated* reader, but no physical reader has been bought or registered
   and production still runs `PAYMENTS_PROVIDER=mock`. No customer has been
   charged through Stripe. Full procedure: `docs/architecture/stripe-go-live.md`
-  - **No UI binds a reader to a till.** `device_pairings.stripe_reader_id`
-    and `locations.stripe_location_id` are set by hand in SQL, and the error
-    a cashier sees points at a Back Office → Devices screen that can't do it.
-    Smallest, highest-value follow-up
+  - `locations.stripe_location_id` is still set by hand in SQL (once per
+    store). The **reader binding is done** — Back Office → Devices → a
+    device → Card reader
   - **No Interac cash-out button.** `applyRefund()` accepts
     `refundMethod: 'cash'`; no frontend sends it, so an Interac refund
     without the physical card is a dead end at the counter
