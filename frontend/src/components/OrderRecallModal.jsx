@@ -44,6 +44,18 @@ const fmtLogTime = (iso) =>
 const selfVoidAllowed = (order, actionType) =>
   actionType === "void" && (order?.status === "open" || order?.status === "preparing");
 
+// Interac debit can only be refunded to the card with the card physically at
+// the reader — Stripe cannot push an interac_present refund remotely (plan
+// decision D5). So when the customer has walked off without it, refunding to
+// the card is not a slow path, it is an impossible one, and cash is the only
+// way to give the money back.
+//
+// Credit (card_present) is unaffected and always refunds through Stripe, so the
+// choice is deliberately NOT offered there — a cash-out on a credit sale would
+// take money out of the till for a reversal the processor was going to make
+// anyway, and the two would double up.
+const isInteracOrder = (order) => order?.processor_payment_type === "interac_present";
+
 export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -59,6 +71,10 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
   const [reasonNote, setReasonNote] = useState("");
   const [partialAmount, setPartialAmount] = useState("");
   const [lineQuantities, setLineQuantities] = useState({}); // { [order_item_id]: qty_to_refund }
+  // How the money goes back. Only ever shown (and only ever sent) for an
+  // Interac sale — see isInteracOrder. 'card' is the default and means "the
+  // customer is here with their card"; 'cash' is the D5 cash-out.
+  const [refundMethod, setRefundMethod] = useState("card");
 
   // PIN Approval Modal state
   const [pinModalOpen, setPinModalOpen] = useState(false);
@@ -124,6 +140,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
     setReasonNote("");
     setPartialAmount("");
     setLineQuantities({});
+    setRefundMethod("card");
     setSuccessMsg(null);
   }, [selectedOrderId]);
 
@@ -172,6 +189,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
     setActionType(type);
     setReason("wrong_order");
     setReasonNote("");
+    setRefundMethod("card"); // to the card unless staff deliberately choose cash
     setSuccessMsg(null);
     setPinError(null); // errors now show in the options popup — don't carry one in
 
@@ -262,6 +280,10 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
     setPinError(null);
 
     const type = actionType === "void" ? "void" : "refund";
+    // Guarded on the order as well as the toggle: a stale 'cash' selection must
+    // never ride along onto a credit sale, where it would empty the till for a
+    // reversal Stripe was going to make anyway.
+    const cashOut = isInteracOrder(selectedOrder) && refundMethod === "cash";
     // For a line-item refund we deliberately send NO dollar amount — the server
     // prices the selected lines itself (unit_price × qty, scaled to what was
     // actually collected so discount and tax are included). Sending a figure
@@ -297,17 +319,33 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
           reasonNote: reasonNote.trim() || undefined,
           amount: amountPayload,
           items: itemsPayload,
+          // ONLY on an Interac sale, and only when staff explicitly chose the
+          // cash-out. Everything else omits the field entirely and keeps the
+          // server's own settlement decision — credit refunds through the
+          // Stripe API, cash sales internally.
+          ...(cashOut ? { refundMethod: "cash" } : {}),
         }),
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to process reversal");
 
-      // Success
+      // Success. An Interac refund TO THE CARD is not finished when this
+      // returns — the server has started an action on the reader and the
+      // customer still has to present their card, so the reversal comes back
+      // 'pending' and only settles when Stripe confirms. Saying "processed
+      // successfully" there would tell the cashier money had gone back before
+      // the customer had touched the reader.
       setPinModalOpen(false);
       setActionType(null);
       setSelectedApprover(null);
-      setSuccessMsg(`${type.toUpperCase()} processed successfully!`);
+      setSuccessMsg(
+        data.refund?.status === "pending"
+          ? `${type.toUpperCase()} started — ask the customer to present their card on the reader.`
+          : cashOut
+            ? `${type.toUpperCase()} processed — give the customer $${Number(data.refund?.amount ?? 0).toFixed(2)} in cash.`
+            : `${type.toUpperCase()} processed successfully!`
+      );
       fetchOrders(search);
       if (onOrderUpdated) onOrderUpdated();
     } catch (err) {
@@ -318,7 +356,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
     }
   }, [
     selectedApprover, approverPin, actionType, partialAmount, selectedOrder,
-    lineQuantities, reason, reasonNote, staff.id, search, fetchOrders, onOrderUpdated,
+    lineQuantities, reason, reasonNote, refundMethod, staff.id, search, fetchOrders, onOrderUpdated,
   ]);
 
   // Auto-submit when 4 digits entered. submitReversal is a dependency because
@@ -546,6 +584,44 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
               Confirm {actionType.toUpperCase().replace("_", " ")} — ${calculatedReversalAmount.toFixed(2)}
             </h4>
             <p className="orm-options-order">Order #{selectedOrder.order_number}</p>
+
+            {/* Interac only. Stripe cannot push an interac_present refund
+                remotely, so if the customer no longer has the card, refunding
+                to it is impossible rather than slow — cash is the only way to
+                give the money back (plan decision D5). Credit sales never see
+                this and always refund through Stripe. */}
+            {isInteracOrder(selectedOrder) && (
+              <div className="orm-field">
+                <label className="orm-label">How is the money going back?</label>
+                <div className="orm-method-choice">
+                  <button
+                    type="button"
+                    className={`orm-method${refundMethod === "card" ? " orm-method--active" : ""}`}
+                    onClick={() => setRefundMethod("card")}
+                  >
+                    <span className="orm-method__title">To the card</span>
+                    <span className="orm-method__sub">
+                      Customer taps their card on the reader
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`orm-method${refundMethod === "cash" ? " orm-method--active" : ""}`}
+                    onClick={() => setRefundMethod("cash")}
+                  >
+                    <span className="orm-method__title">Refund as cash</span>
+                    <span className="orm-method__sub">
+                      Customer doesn't have the card — pay from the till
+                    </span>
+                  </button>
+                </div>
+                <p className="orm-method-note">
+                  {refundMethod === "cash"
+                    ? "No money goes back to the card. Hand the amount over in cash and it is recorded as a cash reversal."
+                    : "Interac debit can only be refunded to the card with the card present at the reader."}
+                </p>
+              </div>
+            )}
 
             <div className="orm-field">
               <label className="orm-label">Reason</label>

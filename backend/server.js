@@ -3314,7 +3314,13 @@ app.get("/api/orders/pos-recall", requireDevicePairing, async (req, res) => {
               o.staff_id, s.name AS staff_name,
               o.subtotal, o.tax, o.tip, o.discount, o.discount_percent, o.discount_reason, o.total,
               o.created_at, o.completed_at,
-              COALESCE(p.method, 'other') AS payment_method
+              COALESCE(p.method, 'other') AS payment_method,
+              -- card_present | interac_present | other | NULL (cash, or a sale
+              -- taken on the mocked path). The POS reversal flow reads this to
+              -- decide whether to offer the Interac cash-out (D5): an Interac
+              -- refund needs the physical card at the reader, so when the
+              -- customer no longer has it, cash is the only way to return money.
+              p.processor_payment_type
          FROM orders o
          JOIN staff s ON s.id = o.staff_id
     LEFT JOIN payments p ON p.order_id = o.id AND p.refund_id IS NULL
@@ -3429,6 +3435,7 @@ app.get("/api/orders/pos-recall", requireDevicePairing, async (req, res) => {
         discount_reason: o.discount_reason,
         total: oTotal,
         payment_method: o.payment_method,
+        processor_payment_type: o.processor_payment_type,
         created_at: o.created_at,
         completed_at: o.completed_at,
         items: itemsByOrder[o.id] || [],
