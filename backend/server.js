@@ -3202,7 +3202,24 @@ app.delete("/api/backoffice/modifier-groups/:id", async (req, res) => {
       [req.params.id]
     );
 
-    if (refRows[0].n > 0) {
+    // Same in-flight window as the option route above, and it matters more
+    // here: deleting a group CASCADES to its options, so one menu edit could
+    // remove several rows a committed, already-charging checkout still needs.
+    const { rows: pendRows } = await pool.query(
+      `SELECT count(*)::int AS n
+         FROM pending_checkouts pc
+        WHERE pc.status = 'awaiting_payment'
+          AND EXISTS (
+                SELECT 1
+                  FROM jsonb_array_elements(pc.payload->'lines') AS line,
+                       jsonb_array_elements(line->'modifiers') AS m
+                  JOIN modifier_options mo ON mo.id = (m->>'optionId')::uuid
+                 WHERE mo.group_id = $1
+              )`,
+      [req.params.id]
+    );
+
+    if (refRows[0].n > 0 || pendRows[0].n > 0) {
       const { rows } = await pool.query(
         "UPDATE modifier_groups SET active = false WHERE id = $1 RETURNING id",
         [req.params.id]
@@ -3322,6 +3339,34 @@ app.put("/api/backoffice/modifier-options/:id", async (req, res) => {
 // historical orders stay intact. Same success shape either way; GET
 // /api/backoffice/menu excludes inactive options, so it just disappears
 // from the editor regardless of which path was taken.
+// Does an in-flight card checkout still need this modifier option?
+//
+// A pending checkout has been PRICED and may already be charging at the reader,
+// but it has no order_items rows yet — those are written from the webhook. So
+// the "is anything referencing this?" check that guards a hard delete looks
+// straight through it, and an owner editing the menu mid-service could delete a
+// row the deferred order insert still needs, failing it on a foreign key AFTER
+// the customer has been charged. Explicitly called out in the Stripe Terminal
+// plan as the one new hazard Option B introduces.
+//
+// Scoped to 'awaiting_payment' only: a settled, failed, cancelled or expired
+// checkout is never inserted from, so it must not pin the menu forever.
+async function pendingCheckoutsUsingModifierOption(optionId) {
+  const { rows } = await pool.query(
+    `SELECT count(*)::int AS n
+       FROM pending_checkouts pc
+      WHERE pc.status = 'awaiting_payment'
+        AND EXISTS (
+              SELECT 1
+                FROM jsonb_array_elements(pc.payload->'lines') AS line,
+                     jsonb_array_elements(line->'modifiers') AS m
+               WHERE m->>'optionId' = $1
+            )`,
+    [optionId]
+  );
+  return rows[0].n;
+}
+
 app.delete("/api/backoffice/modifier-options/:id", async (req, res) => {
   try {
     await requireBackofficeSession(req);
@@ -3330,8 +3375,13 @@ app.delete("/api/backoffice/modifier-options/:id", async (req, res) => {
       "SELECT count(*)::int AS n FROM order_item_modifiers WHERE modifier_option_id = $1",
       [req.params.id]
     );
+    const inFlight = await pendingCheckoutsUsingModifierOption(req.params.id);
 
-    if (refRows[0].n > 0) {
+    // Soft-delete when real history references it OR a card payment is in
+    // flight against it. Deactivating is safe either way — it hides the option
+    // from the editor and from Order Entry while leaving the row (and so the
+    // foreign key the pending insert depends on) intact.
+    if (refRows[0].n > 0 || inFlight > 0) {
       const { rows } = await pool.query(
         "UPDATE modifier_options SET active = false WHERE id = $1 RETURNING id",
         [req.params.id]
