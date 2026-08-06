@@ -221,6 +221,12 @@ app.use(
     credentials: true, // required for the Back Office session cookie to be sent/received cross-origin
   })
 );
+// Stripe webhook signature verification hashes the EXACT bytes Stripe sent, so
+// this one path must keep its raw body. It has to be mounted BEFORE the global
+// express.json() below — once that has parsed and discarded the raw buffer,
+// every signature check fails and there is no way to recover it. Scoped to the
+// single webhook path so nothing else changes shape.
+app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 app.use(cookieParser());
 
@@ -657,6 +663,384 @@ async function startTerminalPayment(res, pending) {
     });
   }
 }
+
+// ---------------- Stripe webhook: order materialization (Slice 2) ------------
+//
+// This is where a card sale becomes real. Everything before it — the pending
+// checkout, the PaymentIntent, the reader prompt — is provisional; nothing has
+// been recorded as a sale. Decision D1 (Option B) puts the whole
+// order-creation step HERE, behind confirmed payment, which is what keeps a
+// declined or abandoned checkout from leaving any trace: no KDS ticket, no
+// pos-recall row, no phantom 'cancelled' order in the Transaction Log.
+//
+// Writes, in ONE transaction, from the FROZEN snapshot (D2 — never re-priced):
+//   orders → order_items → order_item_modifiers/addons → payments →
+//   pending_checkouts.status='succeeded' + order_id
+//
+// The caller holds a `SELECT … FOR UPDATE` on the pending row, so two
+// concurrent webhook deliveries serialise here and the second sees
+// status='succeeded' and does nothing. The partial UNIQUE index on
+// payments.processor_txn_id is the backstop underneath that.
+async function materializeOrderFromPendingCheckout(client, { pending, paymentIntent, charge }) {
+  const snapshot = pending.payload || {};
+  const lines = Array.isArray(snapshot.lines) ? snapshot.lines : [];
+  if (lines.length === 0) {
+    throw new Error(`pending_checkout ${pending.id} has an empty snapshot — refusing to write an order`);
+  }
+
+  // ---- Money: what the snapshot said vs. what Stripe actually took ----
+  // The tip is not known until the customer taps, so the amount charged is the
+  // snapshot total PLUS whatever they tipped on the reader. Deriving the tip as
+  // the difference makes the arithmetic self-checking: it can only be right if
+  // Stripe charged exactly what we asked plus a non-negative tip.
+  const snapshotCents = toStripeAmount(pending.total);
+  const chargedCents = Number(
+    paymentIntent.amount_received != null ? paymentIntent.amount_received : paymentIntent.amount
+  );
+  const tipCents = chargedCents - snapshotCents;
+
+  if (!Number.isFinite(chargedCents) || tipCents < 0) {
+    // Stripe took LESS than the cart. Not something a retry can fix, so this is
+    // not a transient error: refuse to write an order and let the reversal be a
+    // human decision.
+    throw new HttpError(
+      409,
+      `Amount mismatch on pending_checkout ${pending.id}: charged ${chargedCents}¢ but the cart was ${snapshotCents}¢`
+    );
+  }
+
+  // Cross-check against the charge's own tip figure when Stripe reports one.
+  // Disagreement means our model of the amounts is wrong, which is exactly the
+  // thing that must never be papered over.
+  const reportedTipCents = charge?.amount_details?.tip?.amount;
+  if (reportedTipCents != null && Number(reportedTipCents) !== tipCents) {
+    throw new HttpError(
+      409,
+      `Tip mismatch on pending_checkout ${pending.id}: derived ${tipCents}¢ but Stripe reports ${reportedTipCents}¢`
+    );
+  }
+
+  const tip = round2(tipCents / 100);
+  // THE money invariant: orders.total is tip-inclusive, and the payments row
+  // equals it exactly. Every report reconciles through
+  //   SUM(orders.total) [ready] − refunds == SUM(settled payments)
+  // so if these two ever diverge, Sales Summary stops balancing silently.
+  const total = round2(parseFloat(pending.total) + tip);
+  if (toStripeAmount(total) !== chargedCents) {
+    throw new HttpError(
+      409,
+      `Refusing to write an order whose total (${total}) does not equal what Stripe charged (${chargedCents}¢)`
+    );
+  }
+
+  // ---- orders ----
+  const { rows: orderRows } = await client.query(
+    `INSERT INTO orders (location_id, staff_id, status, subtotal, tax, tip, total,
+                          discount, discount_percent, discount_reason, discount_applied_by)
+     VALUES ($1, $2, 'open', $3, $4, $5, $6, $7, $8, $9, $10)
+     RETURNING id, order_number`,
+    [
+      pending.location_id,
+      pending.staff_id,
+      pending.subtotal,
+      pending.tax,
+      tip,
+      total,
+      pending.discount,
+      pending.discount_percent,
+      pending.discount_reason,
+      snapshot.discountAppliedBy || null,
+    ]
+  );
+  const order = orderRows[0];
+
+  // ---- lines, modifiers, addons — replayed verbatim from the snapshot ----
+  for (const line of lines) {
+    const { rows: oiRows } = await client.query(
+      `INSERT INTO order_items (order_id, item_id, variant_id, quantity, unit_price, notes)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id`,
+      [order.id, line.itemId, line.variantId, line.quantity, line.unitPrice, line.notes]
+    );
+    const orderItemId = oiRows[0].id;
+
+    for (const mod of line.modifiers || []) {
+      await client.query(
+        `INSERT INTO order_item_modifiers (order_item_id, modifier_option_id, price_delta, quantity)
+         VALUES ($1, $2, $3, $4)`,
+        [orderItemId, mod.optionId, mod.priceDelta, mod.quantity]
+      );
+    }
+
+    for (const addon of line.addons || []) {
+      await client.query(
+        `INSERT INTO order_item_addons (order_item_id, addon_item_id, quantity, unit_price, is_complimentary)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [orderItemId, addon.addonItemId, addon.quantity, addon.unitPrice, addon.isComplimentary]
+      );
+    }
+  }
+
+  // ---- payments: ONE captured row, amount === orders.total ----
+  // processor_payment_type is what the Interac refund rule (D5) reads later:
+  // an interac_present sale cannot be refunded remotely from Back Office.
+  const details = charge?.payment_method_details || {};
+  const presentDetails = details.card_present || details.interac_present || null;
+  const processorPaymentType = details.card_present
+    ? "card_present"
+    : details.interac_present
+      ? "interac_present"
+      : charge
+        ? "other"
+        : null;
+
+  await client.query(
+    `INSERT INTO payments (order_id, method, amount, status, processor_txn_id,
+                           processor_payment_type, card_brand, card_last4)
+     VALUES ($1, 'card', $2, 'captured', $3, $4, $5, $6)`,
+    [
+      order.id,
+      total,
+      paymentIntent.id,
+      processorPaymentType,
+      presentDetails?.brand || null,
+      presentDetails?.last4 || null,
+    ]
+  );
+
+  // ---- close out the pending checkout ----
+  // status and order_id move together; the CHECK constraint on the table
+  // rejects 'succeeded' with a NULL order_id, so a half-written outcome cannot
+  // be recorded even if this were called wrongly.
+  await client.query(
+    `UPDATE pending_checkouts
+        SET status = 'succeeded', order_id = $2, error_message = NULL, updated_at = now()
+      WHERE id = $1`,
+    [pending.id, order.id]
+  );
+
+  return { order, tip, total };
+}
+
+// Marks an in-flight attempt failed. Never touches a checkout that already
+// succeeded — a late `payment_failed` for a superseded attempt must not
+// invalidate a real sale (decision D7: a failure writes no order and no
+// payments row, it only closes out the attempt).
+async function markPendingCheckoutFailed(paymentIntentId, message) {
+  const { rowCount } = await pool.query(
+    `UPDATE pending_checkouts
+        SET status = 'failed', error_message = $2, updated_at = now()
+      WHERE stripe_payment_intent_id = $1
+        AND status = 'awaiting_payment'`,
+    [paymentIntentId, String(message || "Payment failed").slice(0, 500)]
+  );
+  return rowCount;
+}
+
+async function handlePaymentIntentSucceeded(paymentIntent) {
+  // Card brand/last4 and Stripe's own tip figure live on the CHARGE, which the
+  // event carries only as an id. This is a read — idempotency keys apply to
+  // POSTs, not GETs — and it is best-effort: if it fails we still materialize
+  // the order (money correctness outranks receipt metadata) with the tip
+  // derived from the amounts.
+  let charge = null;
+  if (paymentIntent.latest_charge) {
+    try {
+      charge =
+        typeof paymentIntent.latest_charge === "string"
+          ? await stripeClient.charges.retrieve(paymentIntent.latest_charge)
+          : paymentIntent.latest_charge;
+    } catch (err) {
+      console.error(`Could not retrieve charge for ${paymentIntent.id}:`, err.message);
+    }
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // FOR UPDATE serialises concurrent deliveries of the same event: the second
+    // one blocks here, then sees status='succeeded' below and does nothing.
+    const { rows } = await client.query(
+      "SELECT * FROM pending_checkouts WHERE stripe_payment_intent_id = $1 FOR UPDATE",
+      [paymentIntent.id]
+    );
+    const pending = rows[0];
+
+    if (!pending) {
+      await client.query("ROLLBACK");
+      console.warn(
+        `payment_intent.succeeded for ${paymentIntent.id} with no matching pending checkout — ignoring ` +
+          `(most likely a different environment pointed at this endpoint)`
+      );
+      return { handled: false, reason: "no_pending_checkout" };
+    }
+    if (pending.status === "succeeded") {
+      await client.query("ROLLBACK");
+      return { handled: true, duplicate: true, orderId: pending.order_id };
+    }
+
+    const result = await materializeOrderFromPendingCheckout(client, {
+      pending,
+      paymentIntent,
+      charge,
+    });
+    await client.query("COMMIT");
+    console.log(
+      `Order #${result.order.order_number} created from ${paymentIntent.id} ` +
+        `(total $${result.total}, tip $${result.tip})`
+    );
+    return { handled: true, orderId: result.order.id, orderNumber: result.order.order_number };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+
+    // Money has moved but no order exists — decision D8's orphan case, the one
+    // real cost of Option B. Record it so the Slice 6 sweep and a human can
+    // find it. 'orphaned' is not terminal: a later retry that succeeds moves
+    // the row straight to 'succeeded'.
+    await pool
+      .query(
+        `UPDATE pending_checkouts
+            SET status = 'orphaned', error_message = $2, updated_at = now()
+          WHERE stripe_payment_intent_id = $1 AND status <> 'succeeded'`,
+        [paymentIntent.id, String(err.message || "Order materialization failed").slice(0, 500)]
+      )
+      .catch((e) => console.error("Could not flag orphaned checkout:", e.message));
+
+    console.error(
+      `ORPHANED PAYMENT — ${paymentIntent.id} succeeded at Stripe but no order was written: ${err.message}`
+    );
+
+    // An amount/tip mismatch is not something a retry can fix, so swallow it
+    // here (200) rather than have Stripe redeliver forever against a problem
+    // only a human can resolve. Anything else is treated as transient and
+    // rethrown so the delivery fails and Stripe retries.
+    if (err instanceof HttpError) {
+      return { handled: false, reason: "amount_mismatch", error: err.message };
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// POST /api/stripe/webhook — Stripe's callback. NOT device-gated (Stripe has no
+// pairing cookie), and CORS does not apply: this is server-to-server. Its
+// authentication is the signature check below and nothing else, which is why
+// that check runs before anything is read from the body.
+app.post("/api/stripe/webhook", async (req, res) => {
+  if (!stripeClient || !STRIPE_WEBHOOK_SECRET) {
+    // Fails closed: an unconfigured server must never accept unverifiable
+    // payment events.
+    return res.status(503).json({ error: "Stripe webhooks are not configured on this server" });
+  }
+
+  let event;
+  try {
+    event = stripeClient.webhooks.constructEvent(
+      req.body, // raw Buffer — see the express.raw mount near the top
+      req.headers["stripe-signature"],
+      STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error("Stripe webhook signature verification failed:", err.message);
+    return res.status(400).json({ error: "Signature verification failed" });
+  }
+
+  // ---- Durable dedup (decision D9) ----
+  // Keyed on Stripe's own event id so a redelivery is recognised across
+  // restarts. A row that exists but was never processed (a crash mid-handler)
+  // is deliberately allowed through again — dedup must not turn a crash into a
+  // permanently skipped payment.
+  try {
+    const { rowCount } = await pool.query(
+      `INSERT INTO stripe_events (id, type, api_version, payload)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (id) DO NOTHING`,
+      [event.id, event.type, event.api_version || null, JSON.stringify(event)]
+    );
+    if (rowCount === 0) {
+      const { rows } = await pool.query(
+        "SELECT processed_at FROM stripe_events WHERE id = $1",
+        [event.id]
+      );
+      if (rows[0]?.processed_at) {
+        return res.json({ received: true, duplicate: true });
+      }
+      console.warn(`Reprocessing ${event.id} (${event.type}) — recorded earlier but never completed`);
+    }
+  } catch (err) {
+    console.error("Could not record Stripe event:", err.message);
+    return res.status(500).json({ error: "Could not record event" });
+  }
+
+  // ---- Dispatch ----
+  // Handled synchronously rather than acknowledged-then-queued: the critical
+  // path is a handful of inserts in one transaction, and doing it inline keeps
+  // Stripe's retry as a real safety net. Returning 200 first would throw that
+  // away — a failed write would look delivered and never come back.
+  try {
+    let outcome = { handled: false };
+
+    switch (event.type) {
+      case "payment_intent.succeeded":
+        outcome = await handlePaymentIntentSucceeded(event.data.object);
+        break;
+
+      case "payment_intent.payment_failed": {
+        const pi = event.data.object;
+        const reason = pi.last_payment_error?.message || "Card was declined";
+        const n = await markPendingCheckoutFailed(pi.id, reason);
+        outcome = { handled: true, markedFailed: n };
+        break;
+      }
+
+      case "terminal.reader.action_failed": {
+        // The reader itself could not complete — customer cancelled at the
+        // reader, timed out, or the device errored. Same outcome as a decline:
+        // close the attempt, write nothing.
+        const reader = event.data.object;
+        const action = reader.action || {};
+        const piId = action.process_payment_intent?.payment_intent || null;
+        const reason = action.failure_message || action.failure_code || "Reader action failed";
+        const n = piId ? await markPendingCheckoutFailed(piId, reason) : 0;
+        outcome = { handled: true, markedFailed: n, paymentIntentId: piId };
+        break;
+      }
+
+      case "terminal.reader.action_succeeded":
+        // Informational only. The reader finishing its action is not the same
+        // as money being captured — payment_intent.succeeded is the event that
+        // creates the order, and it is the only one that may.
+        outcome = { handled: true, informational: true };
+        break;
+
+      default:
+        // Refund events land here for now and are handled in Slice 7. Recorded
+        // in stripe_events either way, so nothing is lost.
+        outcome = { handled: false, reason: "unhandled_event_type" };
+    }
+
+    await pool
+      .query("UPDATE stripe_events SET processed_at = now(), process_error = NULL WHERE id = $1", [
+        event.id,
+      ])
+      .catch((e) => console.error("Could not mark event processed:", e.message));
+
+    return res.json({ received: true, ...outcome });
+  } catch (err) {
+    console.error(`Stripe webhook handler failed for ${event.id} (${event.type}):`, err.message);
+    await pool
+      .query("UPDATE stripe_events SET process_error = $2 WHERE id = $1", [
+        event.id,
+        String(err.message).slice(0, 1000),
+      ])
+      .catch(() => {});
+    // 500 so Stripe redelivers; processed_at stays NULL so the retry is allowed
+    // back through the dedup check above.
+    return res.status(500).json({ error: "Webhook processing failed" });
+  }
+});
 
 // Prices and validates a whole cart server-side, from the database, and
 // returns a fully-priced snapshot. Extracted from the checkout route so that
