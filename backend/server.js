@@ -2075,7 +2075,8 @@ async function applyRefund(client, {
 
   // Lock the order for the duration of the reversal.
   const { rows: oRows } = await client.query(
-    "SELECT id, status, subtotal, total, tax FROM orders WHERE id = $1 FOR UPDATE",
+    // tip is needed to separate the SALE from the GIFT (see refundableBase below).
+    "SELECT id, status, subtotal, total, tax, tip FROM orders WHERE id = $1 FOR UPDATE",
     [orderId]
   );
   if (oRows.length === 0) throw new HttpError(404, "Order not found");
@@ -2109,6 +2110,23 @@ async function applyRefund(client, {
   const orderSubtotal = parseFloat(order.subtotal);
   const orderTotal = parseFloat(order.total);
   const orderTax = parseFloat(order.tax);
+  const orderTip = parseFloat(order.tip);
+
+  // ---- The tip boundary (plan decision D3) ----
+  // orders.total is TIP-INCLUSIVE since on-reader tipping shipped, and a tip is
+  // not part of what was sold — it is money the customer chose to give the
+  // staff. So the refundable money splits in two:
+  //
+  //   refundableBase = subtotal − discount + tax   (the SALE)
+  //   orderTip                                     (the GIFT)
+  //
+  // A full refund or a void unwinds the entire transaction and returns both.
+  // A partial or line-item refund corrects part of the sale and returns NO tip,
+  // so it is capped at refundableBase. Every proration below divides by
+  // refundableBase rather than orderTotal: with a tip in the denominator the
+  // tax portion of a partial refund comes out too low, which under-records
+  // refunded HST and overstates what is owed to the CRA.
+  const refundableBase = round2(orderTotal - orderTip);
 
   // Prior (non-failed) refunds on this order.
   const { rows: rRows } = await client.query(
@@ -2118,7 +2136,10 @@ async function applyRefund(client, {
   );
   const alreadyRefunded = parseFloat(rRows[0].refunded);
   const alreadyRefundedTax = parseFloat(rRows[0].refunded_tax);
-  const remaining = round2(orderTotal - alreadyRefunded);
+  // Two caps, because the two kinds of reversal can reach different money.
+  // Identical whenever the tip is 0, which is every pre-Stripe order.
+  const remainingFull = round2(orderTotal - alreadyRefunded);
+  const remainingPartial = round2(refundableBase - alreadyRefunded);
 
   // ---- Line-item detail: validated, and PRICED, entirely server-side ----
   // Caller-supplied line detail is validated against the ORDER before anything
@@ -2134,11 +2155,15 @@ async function applyRefund(client, {
   // Pricing: order_items.unit_price is the fully-priced per-unit figure
   // (variant + modifier deltas + paid addon extras) and orders.subtotal is
   // exactly Σ(unit_price × quantity), so a line's share of what was actually
-  // COLLECTED is (qty × unit_price) × total/subtotal. Scaling by total/subtotal
-  // allocates the order's discount, tax and tip across the lines
-  // proportionally — refunding every line therefore returns exactly
-  // orders.total, tax included, and refunding a line of a discounted order
+  // COLLECTED is (qty × unit_price) × refundableBase/subtotal. Scaling by
+  // refundableBase/subtotal allocates the order's discount and tax across the
+  // lines proportionally — refunding every line therefore returns exactly
+  // orders.total MINUS the tip, and refunding a line of a discounted order
   // returns what was really paid for it, not its undiscounted list price.
+  //
+  // The tip is deliberately NOT in that ratio (D3). Scaling by total/subtotal
+  // instead would hand back a slice of the tip every time a single taco was
+  // refunded, which nobody chose — it would just fall out of the arithmetic.
   let validatedItems = null;
   let lineItemsTotal = 0;
   if (Array.isArray(items) && items.length > 0) {
@@ -2180,8 +2205,9 @@ async function applyRefund(client, {
       requested.set(lineId, (requested.get(lineId) || 0) + qty);
     }
 
-    // Ratio of collected-to-list, i.e. how discount/tax/tip scale each line.
-    const collectedRatio = orderSubtotal > 0 ? orderTotal / orderSubtotal : 0;
+    // Ratio of collected-to-list, i.e. how discount and tax scale each line.
+    // refundableBase, NOT orderTotal — see the tip note above.
+    const collectedRatio = orderSubtotal > 0 ? refundableBase / orderSubtotal : 0;
 
     validatedItems = [];
     for (const [lineId, qty] of requested) {
@@ -2202,14 +2228,24 @@ async function applyRefund(client, {
     }
   }
 
-  let refundAmount, refundTax;
+  // Tax portion of a partial reversal, prorated over the SALE only. The
+  // denominator is refundableBase, never orderTotal: a tip carries no tax, so
+  // including it would dilute the ratio and under-record refunded HST — on a
+  // $113 order with a $10 tip, refunding half would book $5.97 of tax instead
+  // of $6.50, and Sales Summary's `tax − refundTax` would overstate what is
+  // owed to the CRA.
+  const proratedTax = (amt) => (refundableBase > 0 ? round2(amt * (orderTax / refundableBase)) : 0);
+
+  let refundAmount, refundTax, cap;
   if (type === "void") {
-    // Full-order erase — only valid before any partial refund exists.
+    // Full-order erase — only valid before any partial refund exists. A void
+    // unwinds the whole transaction, tip included.
     if (alreadyRefunded > 0) {
       throw new HttpError(409, "Order has partial refunds — reverse the remainder with a refund, not a void");
     }
     refundAmount = orderTotal;
     refundTax = orderTax;
+    cap = remainingFull;
   } else {
     // Refund — a standing completed sale. In-progress orders reverse via void.
     if (order.status !== "ready") {
@@ -2218,28 +2254,50 @@ async function applyRefund(client, {
     if (validatedItems) {
       // Line-item refund — the amount is the sum of the server-priced lines, so
       // order_refunds.amount always equals SUM(order_refund_items.amount)
-      // exactly. Any `amount` in the request is deliberately ignored.
+      // exactly. Any `amount` in the request is deliberately ignored. Priced
+      // off refundableBase, so no tip comes back (D3).
       refundAmount = lineItemsTotal;
-      refundTax = orderTotal > 0 ? round2(refundAmount * (orderTax / orderTotal)) : 0;
+      refundTax = proratedTax(refundAmount);
+      cap = remainingPartial;
     } else if (amount === undefined || amount === null) {
-      refundAmount = remaining; // full remaining
-      refundTax = round2(orderTax - alreadyRefundedTax);
+      // Neither lines nor an amount. Ambiguous once tips exist, so decision D4
+      // settles it by whether anything has been refunded yet:
+      //   nothing refunded  → this is a FULL refund. Unwind everything,
+      //                       tip included, exactly like a void.
+      //   already partial   → this is a top-up of the remaining SALE. No tip:
+      //                       once the sale has been partly corrected, the tip
+      //                       stays with the staff.
+      if (alreadyRefunded === 0) {
+        refundAmount = orderTotal;
+        refundTax = orderTax;
+        cap = remainingFull;
+      } else {
+        refundAmount = remainingPartial;
+        refundTax = round2(orderTax - alreadyRefundedTax);
+        cap = remainingPartial;
+      }
     } else {
       const amt = Number(amount);
       if (!Number.isFinite(amt) || amt <= 0) {
         throw new HttpError(400, "amount must be a positive number");
       }
       refundAmount = round2(amt);
-      // Tax portion proportional to the money returned.
-      refundTax = orderTotal > 0 ? round2(refundAmount * (orderTax / orderTotal)) : 0;
+      refundTax = proratedTax(refundAmount);
+      cap = remainingPartial;
     }
   }
 
   if (refundAmount <= 0) throw new HttpError(409, "Order is already fully refunded");
-  if (refundAmount > remaining + 0.005) {
+  if (refundAmount > cap + 0.005) {
+    // The message names the tip when that is what puts the amount out of reach,
+    // so "why can't I refund the full $44.52?" answers itself.
+    const tipNote =
+      type !== "void" && orderTip > 0 && refundAmount <= remainingFull + 0.005
+        ? ` (a partial refund cannot return the $${orderTip.toFixed(2)} tip)`
+        : "";
     throw new HttpError(
       400,
-      `Refund amount ${refundAmount.toFixed(2)} exceeds remaining refundable ${remaining.toFixed(2)}`
+      `Refund amount ${refundAmount.toFixed(2)} exceeds remaining refundable ${cap.toFixed(2)}${tipNote}`
     );
   }
 
@@ -2323,7 +2381,14 @@ async function applyRefund(client, {
       createdAt: insRows[0].created_at,
     },
     orderStatus,
-    remainingRefundable: round2(remaining - refundAmount),
+    // What a FUTURE reversal could still return. Anything after this point is
+    // necessarily a partial (something has now been refunded), so it is capped
+    // at refundableBase — the tip is no longer reachable. Clamped at 0 because
+    // a full refund returns orderTotal, which overshoots that base by the tip.
+    remainingRefundable: Math.max(
+      0,
+      round2(refundableBase - alreadyRefunded - refundAmount)
+    ),
   };
 }
 
