@@ -81,9 +81,18 @@
   opacity: 0.5;
 }
 
+/* Name + the reader binding underneath it. Stacked rather than given its own
+   column: a reader id is far too wide to sit next to Last Seen and Status on a
+   tablet, and it reads naturally as a property OF the device. */
 .devices-row__name {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.devices-row__name-text {
   font-family: var(--font-body);
   font-size: 0.88rem;
   font-weight: 600;
@@ -91,6 +100,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.devices-row__reader {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.devices-row__reader--none {
+  color: var(--text-muted);
+  opacity: 0.75;
 }
 
 .devices-row__date {
@@ -191,6 +214,98 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* ---------- Detail modal — card reader binding ---------- */
+/* Reuses the name block's view/edit shell; only the reader-specific pieces
+   (the id readout, the picker chips, the helper text) live here. */
+.devices__reader-value {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.devices__reader-value--none {
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.devices__reader-help,
+.devices__reader-hint {
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+/* One-tap choices from the account's actual readers. Absent whenever Stripe
+   is unconfigured or has nothing to offer — the text input still works. */
+.devices__reader-picks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.devices__reader-pick {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  text-align: left;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.devices__reader-pick:hover:not(:disabled) {
+  background: var(--bg-surface-hover);
+}
+
+.devices__reader-pick--active {
+  border-color: var(--red);
+  background: var(--red-light);
+}
+
+.devices__reader-pick-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.devices__reader-pick-status {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+}
+
+.devices__reader-pick-status--on {
+  color: var(--green);
+  background: var(--green-light);
+}
+
+.devices__reader-pick-status--off {
+  color: var(--text-muted);
+  background: var(--bg-surface-hover);
 }
 
 /* ---------- Detail modal — read-only Paired/Last seen/Revoked rows ---------- */

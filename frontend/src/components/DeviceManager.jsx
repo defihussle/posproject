@@ -16,6 +16,13 @@ function fmtDateTime(iso) {
   });
 }
 
+// Reader ids all share the `tmr_` prefix and are far too long for a list row,
+// so the TAIL is the part that actually tells two readers apart at a glance.
+// The full id is always shown in the detail modal.
+function shortReader(id) {
+  return id.length > 13 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+}
+
 function fmtRelative(iso) {
   if (!iso) return "Never";
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
@@ -129,7 +136,17 @@ export default function DeviceManager() {
                 className={`devices-row${row.revoked_at ? " devices-row--revoked" : ""}`}
                 onClick={() => setSelectedId(row.id)}
               >
-                <span className="devices-row__name">{row.device_name}</span>
+                <span className="devices-row__name">
+                  <span className="devices-row__name-text">{row.device_name}</span>
+                  {/* Which card reader this till drives. Shown for every device
+                      (not just tills) so "why isn't the reader waking up?" is
+                      answerable from the list without opening each row. */}
+                  <span
+                    className={`devices-row__reader${row.stripe_reader_id ? "" : " devices-row__reader--none"}`}
+                  >
+                    {row.stripe_reader_id ? shortReader(row.stripe_reader_id) : "No reader"}
+                  </span>
+                </span>
                 <span className="devices-row__date">{fmtRelative(row.last_seen_at)}</span>
                 <span className={`staffmgr__status-pill devices-row__pill${row.revoked_at ? " staffmgr__status-pill--off" : ""}`}>
                   {row.revoked_at ? "Revoked" : "Paired"}
@@ -189,6 +206,17 @@ function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
   const isRevoked = !!row.revoked_at;
 
+  // Card-reader binding. Kept in its own state from the name above so the two
+  // save independently — the PUT is a partial update, so saving one field can
+  // never overwrite the other.
+  const [readerDraft, setReaderDraft] = useState(row.stripe_reader_id || "");
+  const [editingReader, setEditingReader] = useState(false);
+  const [savingReader, setSavingReader] = useState(false);
+  // null = not looked up yet, [] = looked up and Stripe offered nothing.
+  const [readerOptions, setReaderOptions] = useState(null);
+  const [loadingReaders, setLoadingReaders] = useState(false);
+  const readerDirty = readerDraft.trim() !== (row.stripe_reader_id || "");
+
   // What this device is connected to, derived from the per-surface activity
   // stamped by requireDevicePairing (Order Entry = PIN login + checkout,
   // KDS = board/history/status). A non-null timestamp means it's been used
@@ -240,6 +268,59 @@ function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
     } finally {
       setSaving(false);
     }
+  };
+
+  // Sends ONLY stripe_reader_id, never the name — the backend writes just the
+  // fields present in the body. An empty string is the explicit "unbind".
+  const saveReader = async (value) => {
+    if (savingReader) return;
+    setSavingReader(true);
+    try {
+      const trimmed = value.trim();
+      const res = await fetch(`${API_URL}/api/backoffice/devices/${row.id}`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stripe_reader_id: trimmed || null }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      onError(null);
+      onSaved(data);
+      setReaderDraft(data.stripe_reader_id || "");
+      setEditingReader(false);
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setSavingReader(false);
+    }
+  };
+
+  // Offers the account's actual readers as one-tap choices so nobody has to
+  // transcribe `tmr_FoNuGnCJEbGwzT` by hand. Strictly a convenience: the text
+  // input stays the real input, and a Stripe that is unconfigured, unreachable
+  // or simply has no readers just leaves the picker out.
+  const beginEditReader = async () => {
+    setEditingReader(true);
+    if (readerOptions !== null || loadingReaders) return;
+    setLoadingReaders(true);
+    try {
+      const res = await fetch(`${API_URL}/api/backoffice/stripe/diagnostics`, {
+        credentials: "include",
+      });
+      const data = await res.json();
+      setReaderOptions(res.ok && Array.isArray(data.readers) ? data.readers : []);
+    } catch {
+      setReaderOptions([]);
+    } finally {
+      setLoadingReaders(false);
+    }
+  };
+
+  const cancelEditReader = () => {
+    setReaderDraft(row.stripe_reader_id || "");
+    setEditingReader(false);
+    onError(null);
   };
 
   const performRevoke = async () => {
@@ -311,6 +392,101 @@ function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
                 </button>
               </div>
             )}
+          </div>
+
+          <div className="staffmgr__modal-divider" />
+
+          {/* Card reader binding — device_pairings.stripe_reader_id. This is
+              what tells a till which reader to send payments to; without it,
+              Card checkout refuses with "no card reader assigned". */}
+          <div className="devices__name-block">
+            <span className="devices__field-label">Card reader</span>
+            {editingReader ? (
+              <div className="devices__name-edit">
+                <input
+                  className="staffmgr__input"
+                  value={readerDraft}
+                  onChange={(e) => setReaderDraft(e.target.value.slice(0, 255))}
+                  placeholder="tmr_…"
+                  disabled={savingReader}
+                  autoFocus
+                />
+
+                {loadingReaders && (
+                  <span className="devices__reader-hint">Looking up readers in Stripe…</span>
+                )}
+
+                {readerOptions && readerOptions.length > 0 && (
+                  <div className="devices__reader-picks">
+                    {readerOptions.map((r) => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        className={`devices__reader-pick${readerDraft.trim() === r.id ? " devices__reader-pick--active" : ""}`}
+                        onClick={() => setReaderDraft(r.id)}
+                        disabled={savingReader}
+                      >
+                        <span className="devices__reader-pick-name">{r.label || r.id}</span>
+                        <span
+                          className={`devices__reader-pick-status devices__reader-pick-status--${
+                            r.status === "online" ? "on" : "off"
+                          }`}
+                        >
+                          {r.status || "unknown"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {readerOptions && readerOptions.length === 0 && !loadingReaders && (
+                  <span className="devices__reader-hint">
+                    No readers found in Stripe. Paste the id from Stripe Dashboard → Terminal →
+                    Readers.
+                  </span>
+                )}
+
+                <div className="staffmgr__modal-actions">
+                  <button
+                    className="staffmgr__btn"
+                    onClick={cancelEditReader}
+                    disabled={savingReader}
+                  >
+                    Cancel
+                  </button>
+                  {row.stripe_reader_id && (
+                    <button
+                      className="staffmgr__btn"
+                      onClick={() => saveReader("")}
+                      disabled={savingReader}
+                    >
+                      Clear
+                    </button>
+                  )}
+                  <button
+                    className="staffmgr__btn staffmgr__btn--save"
+                    onClick={() => saveReader(readerDraft)}
+                    disabled={savingReader || !readerDirty}
+                  >
+                    {savingReader ? "Saving…" : "Save"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="devices__name-view">
+                <span
+                  className={`devices__reader-value${row.stripe_reader_id ? "" : " devices__reader-value--none"}`}
+                >
+                  {row.stripe_reader_id || "None"}
+                </span>
+                <button className="devices__edit-btn" onClick={beginEditReader}>
+                  {row.stripe_reader_id ? "Change" : "Set"}
+                </button>
+              </div>
+            )}
+            <span className="devices__reader-help">
+              Which card reader this till sends payments to. Leave unset for a KDS screen.
+            </span>
           </div>
 
           <div className="staffmgr__modal-divider" />
