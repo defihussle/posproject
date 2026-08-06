@@ -84,17 +84,22 @@ posproject/
   complete**, no "picked up" step; `completed_at` set the moment status
   becomes `ready`
 - Payment happens **upfront**, before the kitchen sees the order
-- Payments are **mocked** (Cash/Card recorded, no processor) — real
-  integration will be **Stripe Terminal** (BBPOS WisePOS E) later
+- **Cash** is recorded with no processor and inserts the order immediately.
+  **Card** runs real **Stripe Terminal** card-present payments (built,
+  simulated-reader verified) behind the `PAYMENTS_PROVIDER=mock|stripe`
+  kill-switch — production is still on `mock`, where Card takes the same
+  synchronous mocked path as Cash. See `docs/architecture/stripe-terminal-plan.md`
 - **Discounts** — cart-level, all roles. Presets (10/20/50%) + custom %;
   a reason is **required**, from a fixed set (`family`/`friend`/
   `employee`/`neighbouring_store`, CHECK-constrained server-side). Client
   sends only percent + reason, **never** a dollar amount — the real
   discount is always recomputed server-side from the live subtotal at
   checkout; a forged amount in the request is ignored
-- **Tips** — `orders.tip` summed as a Back Office stat, but there's no
-  tip-collection UI yet; deferred to Stripe Terminal (tipping happens on
-  the physical reader, not this app)
+- **Tips** — collected **on the card reader** (15/18/20% + custom/no-tip),
+  never in this app. Percentages are calculated on the discounted pre-tax
+  subtotal, not the taxed total. `orders.total` is tip-inclusive and the
+  `payments` row equals it exactly — that invariant is asserted in code at
+  insert time. A cash order still has `tip = 0`
 
 ## Auth model
 Three independent trust layers — full narrative/history:
@@ -191,6 +196,19 @@ Three independent trust layers — full narrative/history:
   with its own alert sound that kitchen staff must manually acknowledge
   (never auto-cleared), after which it stays in KDS history marked voided.
   See `docs/architecture/refunds-plan.md`
+- **Stripe Terminal card payments** (Slices 0–8, simulated-reader verified;
+  production still on `PAYMENTS_PROVIDER=mock`). Card checkout freezes a
+  server-priced cart onto `pending_checkouts` and creates **no order row**
+  until the success webhook arrives — so a decline or an abandoned payment
+  leaves nothing behind anywhere. On-reader tipping, webhook-driven order
+  materialization with the money invariant asserted at insert, real Stripe
+  refunds with a pending/failed state machine, the Interac "card must be
+  present" rule, a reconciliation/orphan sweep, and an owner/admin Stripe
+  diagnostics endpoint. Design: `docs/architecture/stripe-terminal-plan.md`;
+  hardware + go-live procedure: `docs/architecture/stripe-go-live.md`
+- **Receipts** — one read-only `GET /api/orders/:id/receipt` projection;
+  80mm browser-print layout from the checkout confirmation and Order Recall,
+  plus Stripe's own emailed receipt for card sales
 - Self-service: Change PIN, Clock In/Out (timer shows worked time, breaks
   subtracted), My Hours
 
@@ -198,7 +216,23 @@ Full detail: `docs/architecture/features.md`
 
 ## What's NOT built yet
 - Back Office Orders section
-- Real Stripe Terminal integration (payments mocked, no tip UI)
+- **Stripe Terminal go-live** — the integration is built and verified on the
+  *simulated* reader, but no physical reader has been bought or registered
+  and production still runs `PAYMENTS_PROVIDER=mock`. No customer has been
+  charged through Stripe. Full procedure: `docs/architecture/stripe-go-live.md`
+  - **No UI binds a reader to a till.** `device_pairings.stripe_reader_id`
+    and `locations.stripe_location_id` are set by hand in SQL, and the error
+    a cashier sees points at a Back Office → Devices screen that can't do it.
+    Smallest, highest-value follow-up
+  - **No Interac cash-out button.** `applyRefund()` accepts
+    `refundMethod: 'cash'`; no frontend sends it, so an Interac refund
+    without the physical card is a dead end at the counter
+  - The reconciliation sweep is opt-in (`RECONCILE_INTERVAL_MINUTES`,
+    default `0` = never runs) and must be set in production before go-live
+  - HST registration number has no schema home — optional
+    `BUSINESS_TAX_NUMBER` env var is the stopgap for receipts
+- No Back Office UI for Stripe diagnostics or reconciliation — both are
+  API-only, reachable from a browser tab while logged into Back Office
 - Owner/admin accounts still need first-time Back Office setup — see
   `seed_test_staff.sql` for test PINs
 - KDS device-pairing revocation isn't live-polled yet (checked on page

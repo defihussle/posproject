@@ -37,7 +37,12 @@ groups with min/max/required rules, addons, ingredient checklists with
 default-checked items), working cart, cart-level discounts (presets +
 custom %, required reason, server-recomputed), checkout
 (`POST /api/orders`) with full server-side price + discount
-recomputation and mocked Cash/Card payment.
+recomputation.
+
+Checkout splits by method. **Cash** inserts the order immediately, exactly as
+it always has. **Card** either does the same (while `PAYMENTS_PROVIDER=mock`,
+the default) or runs the real Stripe Terminal flow — see **Card payments**
+below. A receipt can be printed straight from the confirmation screen.
 
 The reversal flow is entered from one place — the **Recall / Refund
 Orders** item at the top of the account dropdown, opening
@@ -257,6 +262,111 @@ report, asserting that the Refunds Report agrees with Sales Summary and
 the Transaction Log for a window containing both a sale and its reversal,
 *and* that the two legitimately diverge for a window containing only one
 of the pair (the activity-view vs original-sale-period scoping below).
+
+## Card payments — Stripe Terminal
+Real card-present payments on a Stripe smart reader. Design and locked
+decisions: `stripe-terminal-plan.md`. Operational procedure (registering a
+reader, going live, staff training): `stripe-go-live.md`. Migration:
+`database/stripe_terminal.sql`.
+
+**Status**: Slices 0–8 built and verified end to end on the **simulated
+reader**. No physical reader has been purchased, and production still runs
+`PAYMENTS_PROVIDER=mock` — so no customer has been charged through Stripe yet.
+
+**The kill-switch** — `PAYMENTS_PROVIDER=mock|stripe`, defaulting to `mock`.
+On `mock`, Cash *and* Card both take the original synchronous path and no
+Stripe call is ever made; a dead terminal is recoverable with an env var
+rather than a deploy. On `stripe`, the three Stripe vars become mandatory and
+a missing one throws at boot rather than in front of a customer.
+
+**No order row until the money lands** (decision D1, "Option B"). Card
+checkout prices the cart with the *same* `priceCart()` the cash path uses,
+freezes that snapshot onto a `pending_checkouts` row, creates a PaymentIntent
+and hands it to the reader — and creates **nothing else**. A decline, a
+cancel or a customer who walks away leaves no order, no payments row, no KDS
+ticket and no phantom `cancelled` row in the Transaction Log. The real
+`orders` + `payments` rows are written only when the success webhook arrives,
+in one transaction, from the frozen snapshot (never re-priced — a price edit
+mid-payment must not change what the customer was charged).
+
+**The money invariant**, asserted in code at insert time and re-read from the
+written rows before the transaction commits:
+`orders.total = subtotal − discount + tax + tip`, and the `payments` row
+equals `orders.total` exactly. A mismatch rolls the order back and flags the
+checkout `orphaned` rather than recording a sale whose money doesn't add up.
+
+**Tipping** — on the reader, 15/18/20 % plus custom and no-tip, from a
+Terminal Configuration on the Stripe Location. The percentages are calculated
+on the **discounted pre-tax subtotal** (`process_config.tipping
+.amount_eligible`), not the full charge — tipping on HST would quietly inflate
+every suggestion by 13 %. The tip is derived as *charged minus snapshot*, then
+cross-checked against Stripe's own tip figure; disagreement is a hard failure.
+
+**Webhooks are the source of truth.** Raw-body signature verification mounted
+before the global `express.json()`, durable dedup on `stripe_events.id` backed
+by a partial UNIQUE index on `payments.processor_txn_id` (the dedup that
+actually makes a double-insert impossible), and `SELECT … FOR UPDATE` on the
+pending row so concurrent deliveries serialise. Handled:
+`payment_intent.succeeded` / `.payment_failed`,
+`terminal.reader.action_succeeded` / `.action_failed`, `refund.created` /
+`.updated` / `.failed`, `charge.refunded`.
+
+**Reconciliation** (`POST /api/backoffice/payments/reconcile`, plus a
+read-only `/status`) is the safety net, not the mechanism: it materializes
+orders for missed webhooks, expires abandoned checkouts, and flags
+"PaymentIntent succeeded but no order row" as `orphaned` and loudly. The
+background schedule is **opt-in via `RECONCILE_INTERVAL_MINUTES` and off by
+default** — it must be set in production before go-live.
+
+**Refunds** reuse the existing dual-control flow unchanged. Tip policy: a full
+refund and a void return the tip; partial and line-item refunds never do, and
+all their math runs off `refundableBase = total − tip` (which also fixed a real
+tax-proration bug that was overstating HST remitted to CRA). Card refunds go to
+Stripe and sit at `status='pending'` — excluded from every total by
+`settledPaymentsWhere()` — until a webhook promotes them to `completed` or
+`failed`. **Interac refunds require the physical card at the reader**, so the
+Back Office path rejects them with a specific message.
+
+**Cashier-facing states** — waiting / declined / cancelled / reader-busy /
+reader-offline, each with its own copy and actions (retry card, switch to
+cash, back to cart). The cart is never cleared until money is genuinely
+collected, so no failed attempt loses an order.
+
+**Diagnostics** — `GET /api/backoffice/stripe/diagnostics` (owner/admin,
+read-only) reports account, Location wiring, every registered reader with its
+online status and whether it matches the configured Location, the live tipping
+percentages, and a `hints[]` array that names whatever looks half-wired. It
+deliberately lists *all* readers rather than filtering by Location, so a
+mismatch reads as a mismatch instead of an empty list.
+
+**Known gaps** (see `stripe-go-live.md`): `device_pairings.stripe_reader_id`
+and `locations.stripe_location_id` are SQL-only — no UI binds a reader to a
+till — and the Interac cash-out path exists in `applyRefund()` but has no
+button.
+
+## Receipts
+`GET /api/orders/:id/receipt` (device-paired) is one read-only projection of a
+settled order — business details, lines with their required-group choices,
+added modifiers, "NO onions" removals, add-ons and notes, totals, the payment
+row's card brand/last4/entry type, and any reversals with a net-paid figure. It
+prices nothing and writes nothing, so a reprint an hour later is identical to
+the original.
+
+**Print** is the browser's own dialog over an 80mm layout (`ReceiptModal.jsx`),
+so any receipt printer the tablet's OS already sees works with no driver in this
+app. **Email** (`POST /api/orders/:id/receipt/email`) sets `receipt_email` on
+the Stripe charge and lets Stripe send its own receipt — cash sales and anything
+taken on `mock` have no charge to attach an address to and are print-only.
+
+Reachable from the checkout confirmation (which cancels its own 2-second
+self-dismiss when a receipt is asked for) and from Order Recall, the reprint
+surface for any past order.
+
+`order_items.unit_price` already includes modifier deltas and paid add-ons, so
+`SUM(unit_price × quantity)` *is* `orders.subtotal` — modifiers therefore print
+as descriptive sub-lines with no money beside them. The HST registration number
+has no home in the schema yet and comes from the optional `BUSINESS_TAX_NUMBER`
+env var.
 
 ## Back Office (`/backoffice`)
 Sidebar order (`NAV_ITEMS` in `BackOffice.jsx`): Home, Staff Management,

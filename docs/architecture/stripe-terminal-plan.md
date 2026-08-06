@@ -4,8 +4,10 @@ Companion plan for real **card-present payments** via Stripe Terminal, written
 for review before implementation, in the same spirit as `refunds-plan.md`,
 `reports-plan.md` and `payroll-plan.md`. No code yet.
 
-**Status**: reviewed against the codebase, decisions locked, ready to implement
-**Last updated**: 2026-08-04
+**Status**: Slices 0–8 implemented and verified on the simulated reader. Slice 9
+is readiness-only — no physical hardware, `PAYMENTS_PROVIDER=mock` in
+production. The operational runbook is `stripe-go-live.md`.
+**Last updated**: 2026-08-06
 **Target**: production-grade card payments matching Square/Clover in
 reliability, security and cashier experience.
 
@@ -636,10 +638,31 @@ and Stripe's own emailed receipt for card sales. No schema change. See the
 Receipts section above for what shipped and the one outstanding gap (HST
 registration number).
 
-**Slice 9 — Hardware and go-live.** Register the physical reader; end-to-end on
-test keys then live; switch keys; final production verification of reports,
-refunds and dual-control. Update `features.md` and CLAUDE.md's "What's NOT built
-yet".
+**Slice 9 — Hardware and go-live.** Readiness done; execution pending hardware.
+The procedure — reader registration, Location/till binding, the ordered
+switch-to-live checklist, staff training and the in-service fallback — lives in
+`stripe-go-live.md`, which is the operational companion to this design doc. This
+slice deliberately ships **no code**: no hardware is present, no keys are
+flipped, and `PAYMENTS_PROVIDER` stays `mock`.
+
+The simulated-reader audit found the full loop complete (payment → tip →
+webhook → order → refund → receipt) with every required webhook event handled,
+and surfaced three operational gaps that a simulated reader never forces anyone
+to confront:
+
+1. **`device_pairings.stripe_reader_id` and `locations.stripe_location_id` have
+   no read or write surface.** Both are set by hand in SQL. The 409 a cashier
+   sees when the binding is missing says "Assign one in Back Office → Devices",
+   which is a screen that cannot do it. Smallest, highest-value follow-up.
+2. **The Interac cash-out has no button.** `applyRefund()` accepts
+   `refundMethod: 'cash'`; no frontend sends it, so an Interac refund without
+   the physical card is a dead end at the counter.
+3. **`RECONCILE_INTERVAL_MINUTES` defaults to `0`** — the sweep never runs
+   unattended unless production sets it. Now documented in `.env.example` and a
+   step in the go-live checklist.
+
+None of the three is a defect in the payment path; all three are between the
+code and the counter, which is exactly where this slice was supposed to look.
 
 ---
 
