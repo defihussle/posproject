@@ -542,6 +542,254 @@ const REFUND_FLAG_THRESHOLD = 50; // $ — logged, never silently invisible (mir
 // approve (misuse guard). Back Office callers are already owner/admin.
 const REFUND_OWNER_APPROVAL_THRESHOLD = 100; // $
 
+// Prices and validates a whole cart server-side, from the database, and
+// returns a fully-priced snapshot. Extracted from the checkout route so that
+// Cash (which inserts an order synchronously) and Card-under-Stripe (which
+// freezes this snapshot onto a pending_checkouts row and charges the reader)
+// price through EXACTLY the same code. That shared path is the point: the
+// amount a customer is charged at the reader and the amount an order is
+// eventually written for cannot drift apart, because they are computed once,
+// here, from the menu — never from the request.
+//
+// Throws HttpError on any validation failure; the caller rolls back and
+// surfaces the message unchanged.
+async function priceCart(client, { staffId, items, discountPercent, discountReason }) {
+  // ---- Resolve staff + location (source of the tax rate) ----
+  const { rows: staffRows } = await client.query(
+    "SELECT id, location_id FROM staff WHERE id = $1 AND active = true",
+    [staffId]
+  );
+  if (staffRows.length === 0) {
+    throw new HttpError(400, "Unknown or inactive staff member");
+  }
+  const staff = staffRows[0];
+
+  // Owners have location_id = NULL (all locations) — fall back to the
+  // single active location for a concrete order/tax context.
+  const locResult = staff.location_id
+    ? await client.query("SELECT id, tax_rate FROM locations WHERE id = $1", [staff.location_id])
+    : await client.query(
+        "SELECT id, tax_rate FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
+      );
+  if (locResult.rows.length === 0) {
+    throw new HttpError(400, "No location available for this order");
+  }
+  const location = locResult.rows[0];
+  const taxRate = parseFloat(location.tax_rate);
+
+  // ---- Recompute every line from the database ----
+  // We build a fully-priced structure first (validating as we go), then
+  // do the inserts. Nothing is written until all lines pass validation.
+  const pricedLines = [];
+  let subtotal = 0;
+
+  for (let i = 0; i < items.length; i++) {
+    const line = items[i] || {};
+    const { itemId, variantId, modifiers, addons, notes } = line;
+    const quantity = Number(line.quantity);
+
+    if (!itemId || typeof itemId !== "string") {
+      throw new HttpError(400, `Line ${i + 1}: itemId is required`);
+    }
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      throw new HttpError(400, `Line ${i + 1}: quantity must be a positive integer`);
+    }
+
+    // Menu item (authoritative base price)
+    const { rows: itemRows } = await client.query(
+      "SELECT id, name, base_price FROM menu_items WHERE id = $1 AND active = true",
+      [itemId]
+    );
+    if (itemRows.length === 0) {
+      throw new HttpError(400, `Line ${i + 1}: menu item not found or unavailable`);
+    }
+    const menuItem = itemRows[0];
+
+    // Base unit price = variant price (if any) else item base_price
+    let unitPrice = parseFloat(menuItem.base_price);
+
+    // Does this item have active variants? If so, a variant is required.
+    const { rows: itemVariants } = await client.query(
+      "SELECT id, price FROM item_variants WHERE item_id = $1 AND active = true",
+      [itemId]
+    );
+    let resolvedVariantId = null;
+    if (itemVariants.length > 0) {
+      if (!variantId) {
+        throw new HttpError(400, `Line ${i + 1}: "${menuItem.name}" requires a variant selection`);
+      }
+      const variant = itemVariants.find((v) => v.id === variantId);
+      if (!variant) {
+        throw new HttpError(400, `Line ${i + 1}: invalid variant for "${menuItem.name}"`);
+      }
+      unitPrice = parseFloat(variant.price);
+      resolvedVariantId = variant.id;
+    } else if (variantId) {
+      throw new HttpError(400, `Line ${i + 1}: "${menuItem.name}" has no variants`);
+    }
+
+    // ---- Modifiers ----
+    // Which modifier groups are valid for this item?
+    const { rows: itemGroups } = await client.query(
+      `SELECT mg.id, mg.name, mg.min_select, mg.max_select, mg.required
+         FROM item_modifier_groups img
+         JOIN modifier_groups mg ON mg.id = img.modifier_group_id
+        WHERE img.item_id = $1`,
+      [itemId]
+    );
+    const groupById = new Map(itemGroups.map((g) => [g.id, g]));
+    const selectedPerGroup = new Map(); // groupId -> count of distinct selected options
+
+    const pricedModifiers = [];
+    const submittedMods = Array.isArray(modifiers) ? modifiers : [];
+    for (const mod of submittedMods) {
+      const optionId = mod?.optionId;
+      const modQty = Number(mod?.quantity);
+      if (!optionId || typeof optionId !== "string") {
+        throw new HttpError(400, `Line ${i + 1}: modifier optionId is required`);
+      }
+      if (!Number.isInteger(modQty) || modQty < 1) {
+        throw new HttpError(400, `Line ${i + 1}: modifier quantity must be a positive integer`);
+      }
+
+      const { rows: optRows } = await client.query(
+        "SELECT id, group_id, price_delta, max_quantity FROM modifier_options WHERE id = $1 AND active = true",
+        [optionId]
+      );
+      if (optRows.length === 0) {
+        throw new HttpError(400, `Line ${i + 1}: modifier option not found`);
+      }
+      const opt = optRows[0];
+
+      // The option's group must actually apply to this item
+      if (!groupById.has(opt.group_id)) {
+        throw new HttpError(400, `Line ${i + 1}: modifier does not belong to "${menuItem.name}"`);
+      }
+      const maxQ = opt.max_quantity || 1;
+      if (modQty > maxQ) {
+        throw new HttpError(400, `Line ${i + 1}: modifier quantity exceeds its limit`);
+      }
+
+      selectedPerGroup.set(opt.group_id, (selectedPerGroup.get(opt.group_id) || 0) + 1);
+      const priceDelta = parseFloat(opt.price_delta);
+      unitPrice += priceDelta * modQty;
+      pricedModifiers.push({ optionId: opt.id, priceDelta, quantity: modQty });
+    }
+
+    // Enforce each group's min/max selection rules
+    for (const g of itemGroups) {
+      const count = selectedPerGroup.get(g.id) || 0;
+      if (g.required && count < g.min_select) {
+        throw new HttpError(
+          400,
+          `Line ${i + 1}: "${g.name}" requires at least ${g.min_select} selection${g.min_select > 1 ? "s" : ""}`
+        );
+      }
+      if (count > g.max_select) {
+        throw new HttpError(400, `Line ${i + 1}: "${g.name}" allows at most ${g.max_select}`);
+      }
+    }
+
+    // ---- Add-ons ----
+    // Driven by the item's actual add-ons in the DB (authoritative), so
+    // complimentary items are always recorded even if the client omits them.
+    // Paid extras come from the extraQty the client submitted per add-on.
+    const { rows: itemAddons } = await client.query(
+      `SELECT ia.id, ia.addon_item_id, ia.included_quantity, ia.extra_price,
+              mi.base_price AS addon_base_price
+         FROM item_addons ia
+         JOIN menu_items mi ON mi.id = ia.addon_item_id
+        WHERE ia.item_id = $1`,
+      [itemId]
+    );
+    const submittedAddons = Array.isArray(addons) ? addons : [];
+    const extraByAddonId = new Map();
+    for (const a of submittedAddons) {
+      if (!a || typeof a.addonId !== "string") continue;
+      const extraQty = Number(a.extraQty) || 0;
+      if (!Number.isInteger(extraQty) || extraQty < 0) {
+        throw new HttpError(400, `Line ${i + 1}: addon extraQty must be a non-negative integer`);
+      }
+      // Reject add-ons that don't belong to this item
+      if (!itemAddons.some((ia) => ia.id === a.addonId)) {
+        throw new HttpError(400, `Line ${i + 1}: addon does not belong to "${menuItem.name}"`);
+      }
+      extraByAddonId.set(a.addonId, extraQty);
+    }
+
+    const pricedAddons = [];
+    for (const ia of itemAddons) {
+      const extraUnitPrice =
+        ia.extra_price != null ? parseFloat(ia.extra_price) : parseFloat(ia.addon_base_price);
+      const includedQty = ia.included_quantity;
+      const extraQty = extraByAddonId.get(ia.id) || 0;
+
+      // Complimentary portion (free, recorded for the kitchen)
+      if (includedQty > 0) {
+        pricedAddons.push({
+          addonItemId: ia.addon_item_id,
+          quantity: includedQty,
+          unitPrice: 0,
+          isComplimentary: true,
+        });
+      }
+      // Paid extras beyond the included quantity
+      if (extraQty > 0) {
+        unitPrice += extraUnitPrice * extraQty;
+        pricedAddons.push({
+          addonItemId: ia.addon_item_id,
+          quantity: extraQty,
+          unitPrice: round2(extraUnitPrice),
+          isComplimentary: false,
+        });
+      }
+    }
+
+    unitPrice = round2(unitPrice);
+    subtotal += unitPrice * quantity;
+
+    pricedLines.push({
+      itemId: menuItem.id,
+      variantId: resolvedVariantId,
+      quantity,
+      unitPrice,
+      notes: typeof notes === "string" && notes.trim() ? notes.trim() : null,
+      modifiers: pricedModifiers,
+      addons: pricedAddons,
+    });
+  }
+
+  // ---- Totals ----
+  // subtotal here is the recomputed pre-discount list price. The discount
+  // dollar amount is ALWAYS derived server-side from (subtotal × percent)
+  // — the client only ever supplies the percent + reason, never a dollar
+  // figure. Tax is charged on the discounted amount (matches how HST is
+  // actually applied at point of sale when a % discount is given).
+  subtotal = round2(subtotal);
+  const discountAmount = discountPercent ? round2(subtotal * (discountPercent / 100)) : 0;
+  const discountedSubtotal = round2(subtotal - discountAmount);
+  const tax = round2(discountedSubtotal * taxRate);
+  // Still 0 here by construction: with on-reader tipping the tip is not known
+  // until the customer has tipped, so it is added when the order is written
+  // from the webhook (Slice 2), never at pricing time.
+  const tip = 0;
+  const total = round2(discountedSubtotal + tax + tip);
+
+  return {
+    staff,
+    location,
+    taxRate,
+    pricedLines,
+    subtotal,
+    discountAmount,
+    discountPercent,
+    discountReason,
+    tax,
+    tip,
+    total,
+  };
+}
+
 app.post("/api/orders", requireDevicePairing, async (req, res) => {
   const { staffId, paymentMethod, items, discount } = req.body || {};
 
@@ -593,225 +841,14 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // ---- Resolve staff + location (source of the tax rate) ----
-    const { rows: staffRows } = await client.query(
-      "SELECT id, location_id FROM staff WHERE id = $1 AND active = true",
-      [staffId]
-    );
-    if (staffRows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Unknown or inactive staff member" });
-    }
-    const staff = staffRows[0];
-
-    // Owners have location_id = NULL (all locations) — fall back to the
-    // single active location for a concrete order/tax context.
-    const locResult = staff.location_id
-      ? await client.query("SELECT id, tax_rate FROM locations WHERE id = $1", [staff.location_id])
-      : await client.query(
-          "SELECT id, tax_rate FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
-        );
-    if (locResult.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "No location available for this order" });
-    }
-    const location = locResult.rows[0];
-    const taxRate = parseFloat(location.tax_rate);
-
-    // ---- Recompute every line from the database ----
-    // We build a fully-priced structure first (validating as we go), then
-    // do the inserts. Nothing is written until all lines pass validation.
-    const pricedLines = [];
-    let subtotal = 0;
-
-    for (let i = 0; i < items.length; i++) {
-      const line = items[i] || {};
-      const { itemId, variantId, modifiers, addons, notes } = line;
-      const quantity = Number(line.quantity);
-
-      if (!itemId || typeof itemId !== "string") {
-        throw new HttpError(400, `Line ${i + 1}: itemId is required`);
-      }
-      if (!Number.isInteger(quantity) || quantity < 1) {
-        throw new HttpError(400, `Line ${i + 1}: quantity must be a positive integer`);
-      }
-
-      // Menu item (authoritative base price)
-      const { rows: itemRows } = await client.query(
-        "SELECT id, name, base_price FROM menu_items WHERE id = $1 AND active = true",
-        [itemId]
-      );
-      if (itemRows.length === 0) {
-        throw new HttpError(400, `Line ${i + 1}: menu item not found or unavailable`);
-      }
-      const menuItem = itemRows[0];
-
-      // Base unit price = variant price (if any) else item base_price
-      let unitPrice = parseFloat(menuItem.base_price);
-
-      // Does this item have active variants? If so, a variant is required.
-      const { rows: itemVariants } = await client.query(
-        "SELECT id, price FROM item_variants WHERE item_id = $1 AND active = true",
-        [itemId]
-      );
-      let resolvedVariantId = null;
-      if (itemVariants.length > 0) {
-        if (!variantId) {
-          throw new HttpError(400, `Line ${i + 1}: "${menuItem.name}" requires a variant selection`);
-        }
-        const variant = itemVariants.find((v) => v.id === variantId);
-        if (!variant) {
-          throw new HttpError(400, `Line ${i + 1}: invalid variant for "${menuItem.name}"`);
-        }
-        unitPrice = parseFloat(variant.price);
-        resolvedVariantId = variant.id;
-      } else if (variantId) {
-        throw new HttpError(400, `Line ${i + 1}: "${menuItem.name}" has no variants`);
-      }
-
-      // ---- Modifiers ----
-      // Which modifier groups are valid for this item?
-      const { rows: itemGroups } = await client.query(
-        `SELECT mg.id, mg.name, mg.min_select, mg.max_select, mg.required
-           FROM item_modifier_groups img
-           JOIN modifier_groups mg ON mg.id = img.modifier_group_id
-          WHERE img.item_id = $1`,
-        [itemId]
-      );
-      const groupById = new Map(itemGroups.map((g) => [g.id, g]));
-      const selectedPerGroup = new Map(); // groupId -> count of distinct selected options
-
-      const pricedModifiers = [];
-      const submittedMods = Array.isArray(modifiers) ? modifiers : [];
-      for (const mod of submittedMods) {
-        const optionId = mod?.optionId;
-        const modQty = Number(mod?.quantity);
-        if (!optionId || typeof optionId !== "string") {
-          throw new HttpError(400, `Line ${i + 1}: modifier optionId is required`);
-        }
-        if (!Number.isInteger(modQty) || modQty < 1) {
-          throw new HttpError(400, `Line ${i + 1}: modifier quantity must be a positive integer`);
-        }
-
-        const { rows: optRows } = await client.query(
-          "SELECT id, group_id, price_delta, max_quantity FROM modifier_options WHERE id = $1 AND active = true",
-          [optionId]
-        );
-        if (optRows.length === 0) {
-          throw new HttpError(400, `Line ${i + 1}: modifier option not found`);
-        }
-        const opt = optRows[0];
-
-        // The option's group must actually apply to this item
-        if (!groupById.has(opt.group_id)) {
-          throw new HttpError(400, `Line ${i + 1}: modifier does not belong to "${menuItem.name}"`);
-        }
-        const maxQ = opt.max_quantity || 1;
-        if (modQty > maxQ) {
-          throw new HttpError(400, `Line ${i + 1}: modifier quantity exceeds its limit`);
-        }
-
-        selectedPerGroup.set(opt.group_id, (selectedPerGroup.get(opt.group_id) || 0) + 1);
-        const priceDelta = parseFloat(opt.price_delta);
-        unitPrice += priceDelta * modQty;
-        pricedModifiers.push({ optionId: opt.id, priceDelta, quantity: modQty });
-      }
-
-      // Enforce each group's min/max selection rules
-      for (const g of itemGroups) {
-        const count = selectedPerGroup.get(g.id) || 0;
-        if (g.required && count < g.min_select) {
-          throw new HttpError(
-            400,
-            `Line ${i + 1}: "${g.name}" requires at least ${g.min_select} selection${g.min_select > 1 ? "s" : ""}`
-          );
-        }
-        if (count > g.max_select) {
-          throw new HttpError(400, `Line ${i + 1}: "${g.name}" allows at most ${g.max_select}`);
-        }
-      }
-
-      // ---- Add-ons ----
-      // Driven by the item's actual add-ons in the DB (authoritative), so
-      // complimentary items are always recorded even if the client omits them.
-      // Paid extras come from the extraQty the client submitted per add-on.
-      const { rows: itemAddons } = await client.query(
-        `SELECT ia.id, ia.addon_item_id, ia.included_quantity, ia.extra_price,
-                mi.base_price AS addon_base_price
-           FROM item_addons ia
-           JOIN menu_items mi ON mi.id = ia.addon_item_id
-          WHERE ia.item_id = $1`,
-        [itemId]
-      );
-      const submittedAddons = Array.isArray(addons) ? addons : [];
-      const extraByAddonId = new Map();
-      for (const a of submittedAddons) {
-        if (!a || typeof a.addonId !== "string") continue;
-        const extraQty = Number(a.extraQty) || 0;
-        if (!Number.isInteger(extraQty) || extraQty < 0) {
-          throw new HttpError(400, `Line ${i + 1}: addon extraQty must be a non-negative integer`);
-        }
-        // Reject add-ons that don't belong to this item
-        if (!itemAddons.some((ia) => ia.id === a.addonId)) {
-          throw new HttpError(400, `Line ${i + 1}: addon does not belong to "${menuItem.name}"`);
-        }
-        extraByAddonId.set(a.addonId, extraQty);
-      }
-
-      const pricedAddons = [];
-      for (const ia of itemAddons) {
-        const extraUnitPrice =
-          ia.extra_price != null ? parseFloat(ia.extra_price) : parseFloat(ia.addon_base_price);
-        const includedQty = ia.included_quantity;
-        const extraQty = extraByAddonId.get(ia.id) || 0;
-
-        // Complimentary portion (free, recorded for the kitchen)
-        if (includedQty > 0) {
-          pricedAddons.push({
-            addonItemId: ia.addon_item_id,
-            quantity: includedQty,
-            unitPrice: 0,
-            isComplimentary: true,
-          });
-        }
-        // Paid extras beyond the included quantity
-        if (extraQty > 0) {
-          unitPrice += extraUnitPrice * extraQty;
-          pricedAddons.push({
-            addonItemId: ia.addon_item_id,
-            quantity: extraQty,
-            unitPrice: round2(extraUnitPrice),
-            isComplimentary: false,
-          });
-        }
-      }
-
-      unitPrice = round2(unitPrice);
-      subtotal += unitPrice * quantity;
-
-      pricedLines.push({
-        itemId: menuItem.id,
-        variantId: resolvedVariantId,
-        quantity,
-        unitPrice,
-        notes: typeof notes === "string" && notes.trim() ? notes.trim() : null,
-        modifiers: pricedModifiers,
-        addons: pricedAddons,
-      });
-    }
-
-    // ---- Totals ----
-    // subtotal here is the recomputed pre-discount list price. The discount
-    // dollar amount is ALWAYS derived server-side from (subtotal × percent)
-    // — the client only ever supplies the percent + reason, never a dollar
-    // figure. Tax is charged on the discounted amount (matches how HST is
-    // actually applied at point of sale when a % discount is given).
-    subtotal = round2(subtotal);
-    const discountAmount = discountPercent ? round2(subtotal * (discountPercent / 100)) : 0;
-    const discountedSubtotal = round2(subtotal - discountAmount);
-    const tax = round2(discountedSubtotal * taxRate);
-    const tip = 0;
-    const total = round2(discountedSubtotal + tax + tip);
+    // ---- Price + validate the whole cart (shared by Cash and Card) ----
+    const priced = await priceCart(client, {
+      staffId,
+      items,
+      discountPercent,
+      discountReason,
+    });
+    const { staff, location, pricedLines, subtotal, discountAmount, tax, tip, total } = priced;
 
     // ---- Insert order ----
     const { rows: orderRows } = await client.query(
