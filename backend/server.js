@@ -996,6 +996,229 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
   }
 }
 
+// ---------------- Reconciliation sweep (Slice 6) -----------------------------
+//
+// Webhooks are the PRIMARY mechanism; this is the safety net. If a delivery is
+// lost, or the process dies between Stripe capturing the money and the order
+// being written, the pending checkout sits at 'awaiting_payment' forever and a
+// customer has paid for food nobody is cooking. Nothing else in the system
+// notices — that is exactly the failure this exists to catch.
+//
+// It asks Stripe for the truth about each stale row and reconciles to it. Rows
+// younger than the threshold are left alone: a customer can legitimately take a
+// couple of minutes at the reader, and racing a live payment would be worse
+// than waiting.
+const RECONCILE_STALE_MINUTES = Number(process.env.RECONCILE_STALE_MINUTES || 20);
+// Opt-in background run. Unset (the default) means the sweep only ever runs
+// when someone asks for it, so this slice changes no runtime behaviour until
+// it is deliberately switched on.
+const RECONCILE_INTERVAL_MINUTES = Number(process.env.RECONCILE_INTERVAL_MINUTES || 0);
+
+// PaymentIntent statuses that mean the customer never completed. Stripe keeps
+// an unfinished intent in one of these indefinitely, so age is what makes them
+// abandoned rather than in-progress.
+const PI_ABANDONED_STATUSES = ["requires_payment_method", "requires_confirmation", "requires_action"];
+// Genuinely still in flight — leave these alone however old they look.
+const PI_IN_FLIGHT_STATUSES = ["processing", "requires_capture"];
+
+async function markPendingCheckoutOutcome(id, status, message) {
+  // Guarded on 'awaiting_payment' so a webhook that lands mid-sweep always
+  // wins. The sweep is a backstop; it must never overwrite a real outcome.
+  const { rowCount } = await pool.query(
+    `UPDATE pending_checkouts
+        SET status = $2, error_message = $3, updated_at = now()
+      WHERE id = $1 AND status = 'awaiting_payment'`,
+    [id, status, message]
+  );
+  return rowCount === 1;
+}
+
+async function reconcilePendingCheckouts({ staleMinutes = RECONCILE_STALE_MINUTES, limit = 200 } = {}) {
+  const summary = {
+    staleMinutes,
+    scanned: 0,
+    materialized: 0, // a missed webhook, recovered
+    alreadyResolved: 0, // the webhook had in fact landed
+    expired: 0, // customer walked away
+    cancelled: 0, // PaymentIntent was cancelled
+    orphaned: 0, // MONEY TAKEN, NO ORDER — the one that matters
+    stillOpen: 0, // genuinely mid-payment
+    errors: 0, // could not reach Stripe for this row
+    orphans: [],
+  };
+
+  if (!stripeClient) {
+    summary.skipped = "Stripe is not configured on this server";
+    return summary;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT id, stripe_payment_intent_id, total, created_at
+       FROM pending_checkouts
+      WHERE status = 'awaiting_payment'
+        AND created_at < now() - make_interval(mins => $1)
+      ORDER BY created_at
+      LIMIT $2`,
+    [staleMinutes, limit]
+  );
+  summary.scanned = rows.length;
+
+  for (const row of rows) {
+    // No PaymentIntent id: the process died between committing the pending row
+    // and calling Stripe. No money can have moved, so this is simply abandoned.
+    if (!row.stripe_payment_intent_id) {
+      if (await markPendingCheckoutOutcome(row.id, "expired", "No payment was ever started")) {
+        summary.expired++;
+      }
+      continue;
+    }
+
+    let paymentIntent;
+    try {
+      paymentIntent = await stripeClient.paymentIntents.retrieve(row.stripe_payment_intent_id);
+    } catch (err) {
+      // Cannot reach Stripe: leave the row exactly as it is and try again next
+      // sweep. Guessing here could strand a real payment.
+      summary.errors++;
+      console.error(`Reconcile: could not retrieve ${row.stripe_payment_intent_id}: ${err.message}`);
+      continue;
+    }
+
+    try {
+      if (paymentIntent.status === "succeeded") {
+        // Reuse the webhook's own path — same locking, same amount assertions,
+        // same orphan marking. A second implementation of order creation is the
+        // last thing this codebase needs.
+        const result = await handlePaymentIntentSucceeded(paymentIntent);
+        if (result.duplicate) {
+          summary.alreadyResolved++;
+        } else if (result.handled) {
+          summary.materialized++;
+          console.warn(
+            `Reconcile: recovered a MISSED WEBHOOK — order #${result.orderNumber} written from ` +
+              `${paymentIntent.id} (pending_checkout=${row.id})`
+          );
+        } else {
+          // handlePaymentIntentSucceeded already flagged the row orphaned.
+          summary.orphaned++;
+        }
+      } else if (paymentIntent.status === "canceled") {
+        if (await markPendingCheckoutOutcome(row.id, "cancelled", "PaymentIntent was cancelled")) {
+          summary.cancelled++;
+        }
+      } else if (PI_ABANDONED_STATUSES.includes(paymentIntent.status)) {
+        if (
+          await markPendingCheckoutOutcome(
+            row.id,
+            "expired",
+            `Abandoned at the reader (PaymentIntent ${paymentIntent.status})`
+          )
+        ) {
+          summary.expired++;
+        }
+      } else if (PI_IN_FLIGHT_STATUSES.includes(paymentIntent.status)) {
+        summary.stillOpen++;
+      } else {
+        summary.stillOpen++;
+        console.warn(`Reconcile: unhandled PaymentIntent status "${paymentIntent.status}" on ${paymentIntent.id}`);
+      }
+    } catch (err) {
+      // handlePaymentIntentSucceeded rethrows anything it considers transient,
+      // having already marked the row orphaned. Count it and keep going — one
+      // bad row must not abort the sweep.
+      summary.orphaned++;
+      console.error(`Reconcile: failed to resolve ${paymentIntent.id}: ${err.message}`);
+    }
+  }
+
+  // Every outstanding orphan, not just ones found this run: money is sitting at
+  // Stripe with no order behind it, and it stays visible until a human clears
+  // it. Deliberately reported on every sweep so it cannot quietly age out.
+  const { rows: orphanRows } = await pool.query(
+    `SELECT id, stripe_payment_intent_id, total, error_message, updated_at
+       FROM pending_checkouts
+      WHERE status = 'orphaned'
+      ORDER BY updated_at DESC
+      LIMIT 50`
+  );
+  summary.orphans = orphanRows.map((o) => ({
+    pendingCheckoutId: o.id,
+    paymentIntentId: o.stripe_payment_intent_id,
+    amount: parseFloat(o.total),
+    error: o.error_message,
+    since: o.updated_at,
+  }));
+  summary.outstandingOrphans = summary.orphans.length;
+
+  if (summary.orphans.length > 0) {
+    // Structured so a log drain can alert on it without parsing prose.
+    console.error(
+      JSON.stringify({
+        alert: "PAYMENTS_ORPHANED",
+        message: "Money captured at Stripe with no order written",
+        count: summary.orphans.length,
+        totalAmount: summary.orphans.reduce((t, o) => t + o.amount, 0),
+        orphans: summary.orphans,
+      })
+    );
+  }
+
+  return summary;
+}
+
+// POST /api/backoffice/payments/reconcile — run the sweep now. Owner/admin.
+// Deliberately manual-first: a scheduled run is opt-in via
+// RECONCILE_INTERVAL_MINUTES, so the sweep can be exercised and trusted before
+// it is left to run unattended.
+app.post("/api/backoffice/payments/reconcile", async (req, res) => {
+  try {
+    await requireBackofficeSession(req);
+    // Overridable for testing/triage. Floor of 0 is allowed so an operator can
+    // deliberately sweep everything, but the default stays conservative.
+    const raw = req.query.minutes ?? req.body?.minutes;
+    const staleMinutes = raw === undefined ? RECONCILE_STALE_MINUTES : Math.max(0, Number(raw) || 0);
+    const summary = await reconcilePendingCheckouts({ staleMinutes });
+    res.json(summary);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to reconcile payments");
+  }
+});
+
+// GET /api/backoffice/payments/reconcile/status — read-only snapshot. Answers
+// "is anything stuck right now?" without changing anything, so it is safe to
+// poll from a dashboard or a health check.
+app.get("/api/backoffice/payments/reconcile/status", async (req, res) => {
+  try {
+    await requireBackofficeSession(req);
+    const { rows } = await pool.query(
+      `SELECT status, count(*)::int AS n, COALESCE(SUM(total), 0) AS amount,
+              MIN(created_at) AS oldest
+         FROM pending_checkouts
+        WHERE status IN ('awaiting_payment', 'orphaned')
+        GROUP BY status`
+    );
+    const byStatus = Object.fromEntries(
+      rows.map((r) => [r.status, { count: r.n, amount: parseFloat(r.amount), oldest: r.oldest }])
+    );
+    const { rows: staleRows } = await pool.query(
+      `SELECT count(*)::int AS n FROM pending_checkouts
+        WHERE status = 'awaiting_payment' AND created_at < now() - make_interval(mins => $1)`,
+      [RECONCILE_STALE_MINUTES]
+    );
+    res.json({
+      staleMinutes: RECONCILE_STALE_MINUTES,
+      scheduledEveryMinutes: RECONCILE_INTERVAL_MINUTES || null,
+      awaitingPayment: byStatus.awaiting_payment || { count: 0, amount: 0, oldest: null },
+      // The number the sweep would act on right now.
+      staleAwaitingPayment: staleRows[0].n,
+      // Non-zero here always needs a human.
+      orphaned: byStatus.orphaned || { count: 0, amount: 0, oldest: null },
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to read reconciliation status");
+  }
+});
+
 // POST /api/stripe/webhook — Stripe's callback. NOT device-gated (Stripe has no
 // pairing cookie), and CORS does not apply: this is server-to-server. Its
 // authentication is the signature check below and nothing else, which is why
@@ -6625,12 +6848,44 @@ async function assertSchemaCurrent() {
   }
 }
 
+// Opt-in background reconciliation. Off unless RECONCILE_INTERVAL_MINUTES is
+// set, so nothing runs unattended until someone decides it should. Only starts
+// when this file IS the entry point — a test or tooling that requires server.js
+// must not silently acquire a timer that mutates payment state.
+function startReconciliationSchedule() {
+  if (!(RECONCILE_INTERVAL_MINUTES > 0)) return;
+  if (!stripeClient) {
+    console.log("Reconciliation schedule not started: Stripe is not configured");
+    return;
+  }
+  const everyMs = RECONCILE_INTERVAL_MINUTES * 60 * 1000;
+  console.log(
+    `Reconciliation scheduled every ${RECONCILE_INTERVAL_MINUTES}m ` +
+      `(sweeping payments older than ${RECONCILE_STALE_MINUTES}m)`
+  );
+  const timer = setInterval(() => {
+    reconcilePendingCheckouts().catch((err) =>
+      console.error("Scheduled reconciliation failed:", err.message)
+    );
+  }, everyMs);
+  // Don't hold the process open on shutdown.
+  if (typeof timer.unref === "function") timer.unref();
+}
+
 if (require.main === module) {
   assertSchemaCurrent().then(() => {
     app.listen(PORT, () => {
       console.log(`Narcos Tacos POS API running on http://localhost:${PORT}`);
+      startReconciliationSchedule();
     });
   });
 }
 
-module.exports = { app, pool, applyRefund, requireStaffIdParam, verifyStaffPin };
+module.exports = {
+  app,
+  pool,
+  applyRefund,
+  requireStaffIdParam,
+  verifyStaffPin,
+  reconcilePendingCheckouts,
+};
