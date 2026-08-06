@@ -182,7 +182,7 @@ async function run() {
          JOIN orders o ON o.id = r.order_id
         WHERE o.location_id = $1 AND o.status = 'ready'
           AND o.completed_at >= $2 AND o.completed_at < $3
-          AND r.status <> 'failed'`,
+          AND r.status = 'completed'`,
       [locationId, WINDOW_START, WINDOW_END]
     );
     const refundTotal = parseFloat(refRows[0].refund_total);
@@ -196,7 +196,7 @@ async function run() {
       `SELECT COUNT(*) AS void_count, COALESCE(SUM(r.amount), 0) AS void_total
          FROM order_refunds r
          JOIN orders o ON o.id = r.order_id
-        WHERE o.location_id = $1 AND r.type = 'void' AND r.status <> 'failed'
+        WHERE o.location_id = $1 AND r.type = 'void' AND r.status = 'completed'
           AND r.created_at >= $2 AND r.created_at < $3`,
       [locationId, WINDOW_START, WINDOW_END]
     );
@@ -241,7 +241,7 @@ async function run() {
     const { rows: txRows } = await client.query(
       `SELECT o.order_number, o.status,
               COALESCE((SELECT SUM(r.amount) FROM order_refunds r
-                          WHERE r.order_id = o.id AND r.status <> 'failed'), 0) AS refunded
+                          WHERE r.order_id = o.id AND r.status = 'completed'), 0) AS refunded
          FROM orders o
         WHERE o.location_id = $1
           AND ( (o.status = 'ready'     AND o.completed_at >= $2 AND o.completed_at < $3)
@@ -255,7 +255,7 @@ async function run() {
                           JOIN orders o3 ON o3.id = r.order_id
                          WHERE o3.location_id = $1 AND o3.status = 'ready'
                            AND o3.completed_at >= $2 AND o3.completed_at < $3
-                           AND r.status <> 'failed'), 0) AS refunded_total,
+                           AND r.status = 'completed'), 0) AS refunded_total,
               COALESCE((SELECT SUM(p.amount) FROM payments p
                           JOIN orders o2 ON o2.id = p.order_id
                          WHERE o2.location_id = $1 AND o2.status = 'ready'

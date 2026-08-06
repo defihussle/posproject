@@ -1205,6 +1205,21 @@ app.get("/api/backoffice/payments/reconcile/status", async (req, res) => {
         WHERE status = 'awaiting_payment' AND created_at < now() - make_interval(mins => $1)`,
       [RECONCILE_STALE_MINUTES]
     );
+    // Reversals stuck mid-flight. Overwhelmingly these are Interac refunds
+    // waiting on a card that never came back: they hold the order's refundable
+    // balance and are excluded from every settled total, so they need a human
+    // to close them out. This is where the id for
+    // POST /api/backoffice/orders/refunds/:id/cancel comes from — without it a
+    // stuck reversal is only findable in SQL.
+    const { rows: pendingRefundRows } = await pool.query(
+      `SELECT r.id, r.type, r.amount, r.processor_status, r.created_at, o.order_number
+         FROM order_refunds r
+         JOIN orders o ON o.id = r.order_id
+        WHERE r.status = 'pending'
+        ORDER BY r.created_at
+        LIMIT 50`
+    );
+
     res.json({
       staleMinutes: RECONCILE_STALE_MINUTES,
       scheduledEveryMinutes: RECONCILE_INTERVAL_MINUTES || null,
@@ -1213,6 +1228,19 @@ app.get("/api/backoffice/payments/reconcile/status", async (req, res) => {
       staleAwaitingPayment: staleRows[0].n,
       // Non-zero here always needs a human.
       orphaned: byStatus.orphaned || { count: 0, amount: 0, oldest: null },
+      pendingRefunds: {
+        count: pendingRefundRows.length,
+        amount: round2(pendingRefundRows.reduce((t, r) => t + parseFloat(r.amount), 0)),
+        oldest: pendingRefundRows[0]?.created_at || null,
+        items: pendingRefundRows.map((r) => ({
+          refundId: r.id,
+          orderNumber: r.order_number,
+          type: r.type,
+          amount: parseFloat(r.amount),
+          processorStatus: r.processor_status,
+          since: r.created_at,
+        })),
+      },
     });
   } catch (err) {
     sendHttpError(res, err, "Failed to read reconciliation status");
@@ -1292,14 +1320,41 @@ app.post("/api/stripe/webhook", async (req, res) => {
 
       case "terminal.reader.action_failed": {
         // The reader itself could not complete — customer cancelled at the
-        // reader, timed out, or the device errored. Same outcome as a decline:
-        // close the attempt, write nothing.
+        // reader, timed out, or the device errored.
         const reader = event.data.object;
         const action = reader.action || {};
-        const piId = action.process_payment_intent?.payment_intent || null;
         const reason = action.failure_message || action.failure_code || "Reader action failed";
+
+        // A reader drives TWO kinds of action in this system, and they fail to
+        // completely different places. Dispatching on payment only (as this
+        // originally did) left a declined Interac REFUND stuck at 'pending'
+        // forever: invisible to reports, blocking the order's remaining
+        // refundable balance, and clearable only by hand in SQL.
+        if (action.refund_payment) {
+          const rp = action.refund_payment;
+          const refundId = await resolveLocalRefundId({
+            stripeRefundId: typeof rp.refund === "string" ? rp.refund : rp.refund?.id,
+            paymentIntentId:
+              typeof rp.payment_intent === "string" ? rp.payment_intent : rp.payment_intent?.id,
+          });
+          if (!refundId) {
+            console.warn(`Reader refund failed on ${reader.id} with no matching pending reversal: ${reason}`);
+            outcome = { handled: false, reason: "no_matching_refund" };
+            break;
+          }
+          // The existing fail path: order_refunds -> 'failed', the negative
+          // payments row -> 'failed' (so it stays out of every settled total),
+          // and a voided order restored (see failStripeRefund).
+          const failed = await failStripeRefund(refundId, `At the reader: ${reason}`);
+          outcome = { handled: true, refundId, markedFailed: failed, kind: "refund_payment" };
+          break;
+        }
+
+        // Payment attempt: same outcome as a decline — close the attempt, write
+        // no order and no payments row (D7).
+        const piId = action.process_payment_intent?.payment_intent || null;
         const n = piId ? await markPendingCheckoutFailed(piId, reason) : 0;
-        outcome = { handled: true, markedFailed: n, paymentIntentId: piId };
+        outcome = { handled: true, markedFailed: n, paymentIntentId: piId, kind: "process_payment_intent" };
         break;
       }
 
@@ -2844,6 +2899,9 @@ async function promoteStripeRefund(refundId, stripeRefundId, processorStatus) {
 // Mark a reversal failed. The negative payments row goes to 'failed', which
 // settledPaymentsWhere() excludes — so a refund Stripe rejected is never
 // counted as money returned, and the order's refundable balance is restored.
+//
+// If the reversal was a VOID, the order is un-voided too — see
+// restoreVoidedOrderAfterFailedReversal below.
 async function failStripeRefund(refundId, message, stripeRefundId, processorStatus) {
   const { rowCount } = await pool.query(
     `UPDATE order_refunds
@@ -2861,20 +2919,84 @@ async function failStripeRefund(refundId, message, stripeRefundId, processorStat
       `UPDATE payments SET status = 'failed' WHERE refund_id = $1 AND status = 'pending'`,
       [refundId]
     );
+    await restoreVoidedOrderAfterFailedReversal(refundId);
   }
   return rowCount === 1;
 }
 
-// Resolve a Stripe Refund object onto our row. Matches on stripe_refund_id
-// first; failing that (a reader-initiated Interac refund has no id until the
-// customer taps) it falls back to the oldest pending reversal for the same
-// PaymentIntent and adopts the id.
-async function applyStripeRefundOutcome(refund) {
-  let refundId = null;
-  const { rows } = await pool.query("SELECT id, status FROM order_refunds WHERE stripe_refund_id = $1", [refund.id]);
-  if (rows[0]) {
-    refundId = rows[0].id;
-  } else if (refund.payment_intent) {
+// Un-voids an order whose void could not actually be paid back.
+//
+// applyRefund cancels the order INSIDE the reversal transaction, before Stripe
+// is called at all. That ordering is deliberate and is kept: a void's whole job
+// is to stop the kitchen immediately, and the KDS voided-ticket alert has to
+// fire the moment a cashier voids — waiting for a processor round-trip would
+// leave cooks working on food that is being cancelled. Of the two options in
+// the audit ("don't cancel until it settles" vs "cancel now, restore on
+// failure") this is the second, chosen because the first trades a rare
+// accounting problem for a guaranteed operational one on every void.
+//
+// The cost of that choice is exactly this function. Without it a failed void
+// left status='cancelled' permanently: the order dropped out of every
+// 'ready'-filtered rollup while its capture was never reversed, so the sale
+// vanished from the books with the customer's money still in the account.
+//
+// Restoring puts the order back in the state it was voided FROM, so it returns
+// to the reports, to the KDS if it was still live, and to being reversible
+// again (alreadyRefunded ignores 'failed' rows).
+async function restoreVoidedOrderAfterFailedReversal(refundId) {
+  const { rows } = await pool.query(
+    `UPDATE orders o
+        SET status = o.voided_from_status,
+            voided_from_status = NULL,
+            void_acknowledged_at = NULL
+       FROM order_refunds r
+      WHERE r.id = $1
+        AND r.type = 'void'
+        AND o.id = r.order_id
+        AND o.status = 'cancelled'
+        AND o.voided_from_status IS NOT NULL
+      RETURNING o.id, o.order_number, o.status, r.amount`,
+    [refundId]
+  );
+  const restored = rows[0];
+  if (!restored) return null;
+
+  // Staff have already been told this order was voided, and the kitchen may
+  // have acknowledged the ticket. It is now live again with money still
+  // collected, so this cannot be a quiet log line.
+  console.error(
+    JSON.stringify({
+      alert: "VOID_REVERSAL_FAILED",
+      message:
+        "A void could not be refunded — the order has been restored and is still paid for. " +
+        "Re-attempt the reversal or refund it another way.",
+      orderId: restored.id,
+      orderNumber: restored.order_number,
+      restoredToStatus: restored.status,
+      amount: parseFloat(restored.amount),
+      orderRefundId: refundId,
+    })
+  );
+  return restored;
+}
+
+// Which local order_refunds row does a Stripe-side refund event belong to?
+// Matches on stripe_refund_id first; failing that (a reader-initiated Interac
+// refund has no id until the customer taps) it falls back to the oldest pending
+// reversal for the same PaymentIntent.
+//
+// Shared by the refund.* success/failure path and by the reader
+// action_failed path, so a reader refund is resolved the same way whether it
+// lands or is declined.
+async function resolveLocalRefundId({ stripeRefundId, paymentIntentId }) {
+  if (stripeRefundId) {
+    const { rows } = await pool.query(
+      "SELECT id FROM order_refunds WHERE stripe_refund_id = $1",
+      [stripeRefundId]
+    );
+    if (rows[0]) return rows[0].id;
+  }
+  if (paymentIntentId) {
     // Matched through the ORIGINAL capture row, which is the only row that
     // carries the PaymentIntent (see the note on the negative row above).
     const { rows: byPi } = await pool.query(
@@ -2884,14 +3006,47 @@ async function applyStripeRefundOutcome(refund) {
         WHERE r.status = 'pending' AND cap.processor_txn_id = $1
         ORDER BY r.created_at
         LIMIT 1`,
-      [refund.payment_intent]
+      [paymentIntentId]
     );
-    if (byPi[0]) refundId = byPi[0].id;
+    if (byPi[0]) return byPi[0].id;
   }
+  return null;
+}
+
+// Resolve a Stripe Refund object onto our row.
+async function applyStripeRefundOutcome(refund) {
+  const refundId = await resolveLocalRefundId({
+    stripeRefundId: refund.id,
+    paymentIntentId: refund.payment_intent,
+  });
   if (!refundId) return { matched: false };
 
   if (refund.status === "succeeded") {
     const promoted = await promoteStripeRefund(refundId, refund.id, refund.status);
+    if (!promoted) {
+      // The row was not 'pending', so Stripe returned money against a reversal
+      // we had already closed out — the mirror image of an orphaned payment.
+      // The realistic cause is the cancel-pending-refund race: an owner
+      // cancelled an abandoned Interac refund at the same moment the customer
+      // finally tapped. Money left the account with nothing local counting it,
+      // so this has to be as loud as PAYMENTS_ORPHANED.
+      const { rows: cur } = await pool.query(
+        "SELECT status, order_id, amount FROM order_refunds WHERE id = $1",
+        [refundId]
+      );
+      if (cur[0] && cur[0].status !== "completed") {
+        console.error(
+          JSON.stringify({
+            alert: "REFUND_SETTLED_AFTER_CLOSE",
+            message: "Stripe returned money for a reversal already marked " + cur[0].status,
+            orderRefundId: refundId,
+            orderId: cur[0].order_id,
+            amount: parseFloat(cur[0].amount),
+            stripeRefundId: refund.id,
+          })
+        );
+      }
+    }
     return { matched: true, refundId, outcome: promoted ? "completed" : "already_resolved" };
   }
   if (refund.status === "failed" || refund.status === "canceled") {
@@ -3475,10 +3630,15 @@ async function buildReceipt(client, orderId) {
   );
   const pay = payRows[0] || null;
 
+  // SETTLED reversals only. A receipt is a statement about money that has
+  // actually moved, and it is handed to the customer: printing "REFUND −$18.49
+  // / NET PAID" for a reversal still sitting at 'pending' would tell them they
+  // have been given money back before the processor has returned a cent. An
+  // in-flight reversal simply isn't on the receipt yet — reprint once it lands.
   const { rows: refundRows } = await client.query(
     `SELECT id, type, amount, reason, created_at
        FROM order_refunds
-      WHERE order_id = $1 AND status <> 'failed'
+      WHERE order_id = $1 AND ${settledRefundsWhere("order_refunds")}
       ORDER BY created_at`,
     [orderId]
   );
@@ -3670,6 +3830,98 @@ app.post("/api/backoffice/orders/:id/refund", async (req, res) => {
     sendHttpError(res, err, "Failed to process refund");
   } finally {
     client.release();
+  }
+});
+
+// POST /api/backoffice/orders/refunds/:id/cancel   (Back Office — owner/admin)
+//
+// The escape hatch decision D5 assumes exists: "a pending Interac refund the
+// customer never returns to complete is left for manual owner/admin
+// cancellation." An Interac reversal sits at 'pending'/'awaiting_card' until
+// the card is presented, and if the customer walks out it stays there — holding
+// the order's refundable balance hostage with no way to reverse it any other
+// way.
+//
+// Only PENDING reversals can be cancelled. A completed one is money that has
+// already gone back; "cancelling" it here would just desynchronise us from
+// Stripe, so it is refused (409) and has to be handled as a fresh charge.
+app.post("/api/backoffice/orders/refunds/:id/cancel", async (req, res) => {
+  try {
+    const staff = await requireBackofficeSession(req); // owner/admin only
+
+    const { rows } = await pool.query(
+      `SELECT r.id, r.status, r.type, r.amount, r.order_id, r.processor_status,
+              r.stripe_refund_id, o.order_number,
+              (SELECT pc.stripe_reader_id FROM pending_checkouts pc
+                WHERE pc.order_id = r.order_id AND pc.stripe_reader_id IS NOT NULL
+                ORDER BY pc.created_at DESC LIMIT 1) AS reader_id
+         FROM order_refunds r
+         JOIN orders o ON o.id = r.order_id
+        WHERE r.id = $1`,
+      [req.params.id]
+    );
+    const refund = rows[0];
+    if (!refund) throw new HttpError(404, "Reversal not found");
+    if (refund.status !== "pending") {
+      throw new HttpError(
+        409,
+        refund.status === "completed"
+          ? "This reversal has already been paid back — it cannot be cancelled"
+          : "This reversal is already cancelled or failed"
+      );
+    }
+
+    // Stop the reader asking for the card FIRST. Skipping this would leave the
+    // prompt live: the customer could tap after we had closed the row, and
+    // Stripe would return money against a reversal nothing is counting. That
+    // race is still possible in the moment between the two calls, which is why
+    // applyStripeRefundOutcome alerts REFUND_SETTLED_AFTER_CLOSE if it happens.
+    //
+    // Best-effort, exactly like the checkout cancel path: "no action in
+    // progress" is the normal answer when the reader has already timed out.
+    // The reader is the one bound to the till that took the original payment,
+    // which is where the customer is standing.
+    let readerCancelled = false;
+    if (stripeClient && refund.reader_id) {
+      try {
+        await stripeClient.terminal.readers.cancelAction(
+          refund.reader_id,
+          {},
+          { idempotencyKey: `rfcancel_${refund.id}` }
+        );
+        readerCancelled = true;
+      } catch (err) {
+        console.warn(`cancelAction on ${refund.reader_id} did not apply: ${err.message}`);
+      }
+    }
+
+    // Reuse the ONE fail path — it moves the audit row and the negative
+    // payments row together, and un-voids the order if this was a void.
+    const cancelled = await failStripeRefund(
+      refund.id,
+      `Cancelled in Back Office by ${staff.name}`
+    );
+    if (!cancelled) {
+      // Lost a race with the webhook between the SELECT and here.
+      throw new HttpError(409, "This reversal resolved while you were cancelling it — reload to see its outcome");
+    }
+
+    console.warn(
+      `Reversal ${refund.id} (${refund.type} $${refund.amount} on order #${refund.order_number}) ` +
+        `cancelled by ${staff.name}`
+    );
+
+    res.json({
+      cancelled: true,
+      refundId: refund.id,
+      orderId: refund.order_id,
+      orderNumber: refund.order_number,
+      type: refund.type,
+      amount: parseFloat(refund.amount),
+      readerCancelled,
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to cancel the reversal");
   }
 });
 
@@ -6433,6 +6685,34 @@ function settledPaymentsWhere(alias = "p") {
   return `${alias}.status IN ('captured', 'refunded')`;
 }
 
+// The refunds-side twin of the predicate above, and it MUST be used wherever
+// that one is — the two halves of the reconciliation have to agree on what
+// "settled" means or the identity silently stops holding.
+//
+// Since Slice 7, a reversal going through Stripe is written 'pending' and is
+// only promoted to 'completed' by the webhook that confirms the processor
+// actually returned the money. `status <> 'failed'` therefore does NOT mean
+// settled — it means "not yet known to have failed", which includes every
+// in-flight reversal. Reporting on that predicate counts money as returned the
+// moment a cashier ASKS for it, which is wrong in two directions at once:
+// net sales drop before the customer is out of pocket, and taxCollected
+// (`tax − refundTax`) under-states HST owed to the CRA.
+//
+// The window is seconds for a credit refund, but an Interac reader refund sits
+// at 'pending'/'awaiting_card' until the customer taps — and if they walk away
+// it stays there. That turns a blip into a permanent mis-statement.
+//
+// order_refunds.status is CHECK-constrained to pending|completed|failed, so
+// 'completed' is exactly the settled set.
+//
+// DELIBERATELY NOT USED for over-refund protection (applyRefund's
+// alreadyRefunded / refunded_qty, and pos-recall's remaining_refundable).
+// There, an in-flight reversal MUST still count against the order or a second
+// refund could be approved for money that is already on its way back.
+function settledRefundsWhere(alias = "r") {
+  return `${alias}.status = 'completed'`;
+}
+
 // GET /api/backoffice/reports/sales-summary?start=YYYY-MM-DD&end=YYYY-MM-DD
 //   (also accepts range=today|week|month, but Reports drives it with custom
 //   start/end). A P&L-style single-period snapshot:
@@ -6487,7 +6767,7 @@ app.get("/api/backoffice/reports/sales-summary", async (req, res) => {
          JOIN orders o ON o.id = r.order_id
         WHERE o.location_id = $1 AND o.status = 'ready'
           AND o.completed_at >= $2 AND o.completed_at < $3
-          AND r.status <> 'failed'`,
+          AND ${settledRefundsWhere("r")}`,
       [b.location.id, b.startTs, b.endTs]
     );
     const refundTotal = parseFloat(refRows[0].refund_total);
@@ -6502,7 +6782,7 @@ app.get("/api/backoffice/reports/sales-summary", async (req, res) => {
       `SELECT COUNT(*) AS void_count, COALESCE(SUM(r.amount), 0) AS void_total
          FROM order_refunds r
          JOIN orders o ON o.id = r.order_id
-        WHERE o.location_id = $1 AND r.type = 'void' AND r.status <> 'failed'
+        WHERE o.location_id = $1 AND r.type = 'void' AND ${settledRefundsWhere("r")}
           AND r.created_at >= $2 AND r.created_at < $3`,
       [b.location.id, b.startTs, b.endTs]
     );
@@ -6580,18 +6860,24 @@ app.get("/api/backoffice/reports/sales-summary", async (req, res) => {
 // out of every 'ready'-filtered rollup while its capture and its reversal net
 // to zero. 'pending'/'failed' remain unreachable until Stripe lands.
 //
-// Every money rollup routes through settledPaymentsWhere() — now
-// status IN ('captured','refunded') — so SUM(payments.amount) over that set is
-// NET collected by construction, and the invariant is:
-//   SUM(orders.total) [ready] − SUM(refunds on those orders)
+// Every money rollup routes through the settled PAIR — settledPaymentsWhere()
+// on the payments side and settledRefundsWhere() on the refunds side — so
+// SUM(payments.amount) over that set is NET collected by construction, and the
+// invariant is:
+//   SUM(orders.total) [ready] − SUM(settled refunds on those orders)
 //     == SUM(payments.amount) [settled]
 //     == Transaction Log net == Sales Summary "Total collected".
 // Proven against seeded refund/void data (partial, full, and a void) in
 // tests/refund_reconciliation_acceptance.mjs. Voided orders appear here as
 // flagged rows contributing nothing to the totals, which also closes the
 // "cancelled orders are invisible" gap docs/architecture/reports-plan.md
-// raised. A future 'failed'/'pending' Stripe row stays excluded until it
-// settles, so an in-flight refund can never corrupt a total.
+// raised.
+//
+// BOTH halves must use the settled predicate or the identity quietly breaks.
+// It did: the refunds half used `status <> 'failed'` (which includes an
+// in-flight 'pending' reversal) while the payments half already excluded the
+// matching pending negative row, so the two sides disagreed by exactly the
+// value of any refund still on its way back. See settledRefundsWhere().
 //
 // The per-order row query is the row-grain source a future end-of-day report
 // aggregates; the totals query is the same summary grain as Sales Summary.
@@ -6611,7 +6897,7 @@ app.get("/api/backoffice/reports/transactions", async (req, res) => {
               o.subtotal, o.discount, o.discount_reason, o.tax, o.tip, o.total,
               o.status,
               COALESCE((SELECT SUM(r.amount) FROM order_refunds r
-                          WHERE r.order_id = o.id AND r.status <> 'failed'), 0) AS refunded,
+                          WHERE r.order_id = o.id AND ${settledRefundsWhere("r")}), 0) AS refunded,
               COALESCE(
                 (SELECT array_agg(DISTINCT p.method::text ORDER BY p.method::text)
                    FROM payments p
@@ -6639,7 +6925,7 @@ app.get("/api/backoffice/reports/transactions", async (req, res) => {
                           JOIN orders o3 ON o3.id = r.order_id
                          WHERE o3.location_id = $1 AND o3.status = 'ready'
                            AND o3.completed_at >= $2 AND o3.completed_at < $3
-                           AND r.status <> 'failed'), 0) AS refunded_total,
+                           AND ${settledRefundsWhere("r")}), 0) AS refunded_total,
               COALESCE((SELECT SUM(p.amount) FROM payments p
                           JOIN orders o2 ON o2.id = p.order_id
                          WHERE o2.location_id = $1 AND o2.status = 'ready'
@@ -6864,7 +7150,7 @@ app.get("/api/backoffice/reports/refunds", async (req, res) => {
          JOIN orders o ON o.id = r.order_id
          LEFT JOIN staff rq ON rq.id = r.requested_by
          LEFT JOIN staff ap ON ap.id = r.approved_by
-        WHERE o.location_id = $1 AND r.status <> 'failed'
+        WHERE o.location_id = $1 AND ${settledRefundsWhere("r")}
           AND r.created_at >= $2 AND r.created_at < $3
         ORDER BY r.created_at DESC`,
       [b.location.id, b.startTs, b.endTs]

@@ -77,7 +77,7 @@ async function run() {
            JOIN orders o ON o.id = r.order_id
           WHERE o.location_id = $1 AND o.status = 'ready'
             AND o.completed_at >= ${WIN_START} AND o.completed_at < ${WIN_END}
-            AND r.status <> 'failed'`,
+            AND r.status = 'completed'`,
         [locationId]
       );
       return parseFloat(rows[0].refund_total);
@@ -91,7 +91,7 @@ async function run() {
            JOIN orders o3 ON o3.id = r.order_id
           WHERE o3.location_id = $1 AND o3.status = 'ready'
             AND o3.completed_at >= ${WIN_START} AND o3.completed_at < ${WIN_END}
-            AND r.status <> 'failed'`,
+            AND r.status = 'completed'`,
         [locationId]
       );
       return parseFloat(rows[0].refunded);
@@ -104,7 +104,7 @@ async function run() {
         `SELECT r.type, r.amount
            FROM order_refunds r
            JOIN orders o ON o.id = r.order_id
-          WHERE o.location_id = $1 AND r.status <> 'failed'
+          WHERE o.location_id = $1 AND r.status = 'completed'
             AND r.created_at >= ${WIN_START} AND r.created_at < ${WIN_END}`,
         [locationId]
       );
