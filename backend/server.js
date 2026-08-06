@@ -40,6 +40,91 @@ const DEVICE_SECRET = process.env.DEVICE_SECRET;
 if (!DEVICE_SECRET) {
   throw new Error("DEVICE_SECRET env var is required (signs device-pairing cookies)");
 }
+
+// --------------- Stripe Terminal configuration (plan Slice 0.3) ---------------
+// Configuration and client ONLY. Nothing in the payment path reads any of this
+// yet: checkout still writes a mocked 'captured' payments row exactly as it did
+// before, and Cash is untouched. See docs/architecture/stripe-terminal-plan.md.
+//
+// PAYMENTS_PROVIDER is the kill-switch (decision D10) and defaults to 'mock',
+// so the safe state is the one you get by doing nothing — a missing, broken or
+// half-finished Stripe setup can never take card payments down, it just leaves
+// today's mocked path running. Flipping to 'stripe' is the deliberate act, and
+// that is when the Stripe vars become mandatory: a missing key then throws at
+// BOOT (Render's health check fails and the deploy rolls back) rather than at
+// the first customer standing at the counter.
+//
+// An unrecognised value is a hard error rather than a silent fall back to
+// 'mock'. A typo ("stipe", "Stripe " with a trailing space) that quietly
+// disabled real card payments would be invisible until someone reconciled the
+// day's takings — exactly the class of failure this app keeps getting bitten by.
+const PAYMENTS_PROVIDERS = ["mock", "stripe"];
+const PAYMENTS_PROVIDER = (process.env.PAYMENTS_PROVIDER || "mock").trim().toLowerCase();
+if (!PAYMENTS_PROVIDERS.includes(PAYMENTS_PROVIDER)) {
+  throw new Error(
+    `PAYMENTS_PROVIDER must be one of: ${PAYMENTS_PROVIDERS.join(", ")} — got "${process.env.PAYMENTS_PROVIDER}". ` +
+      `Refusing to guess: silently falling back to 'mock' would mean taking no real card payments with nothing to show for it.`
+  );
+}
+
+// The API version is pinned EXPLICITLY (decision D12). Terminal endpoints are
+// version-sensitive, and an unpinned version means an SDK bump or a redeploy
+// can change payment behaviour with no code change to review.
+//
+// The constant below is the version the installed SDK was generated against —
+// the one its request/response shapes actually match — and it is what mock mode
+// uses so the diagnostic endpoint can prove connectivity before anything goes
+// live. In 'stripe' mode STRIPE_API_VERSION must be set explicitly (see the
+// required-vars check below): once real money is moving, the pin belongs in the
+// environment where it is visible and reviewable, not defaulted in code.
+const STRIPE_SDK_API_VERSION = "2026-07-29.dahlia"; // stripe-node 22.x
+const STRIPE_API_VERSION = (process.env.STRIPE_API_VERSION || STRIPE_SDK_API_VERSION).trim();
+const STRIPE_SECRET_KEY = (process.env.STRIPE_SECRET_KEY || "").trim();
+const STRIPE_WEBHOOK_SECRET = (process.env.STRIPE_WEBHOOK_SECRET || "").trim();
+
+if (PAYMENTS_PROVIDER === "stripe") {
+  const missing = [
+    ["STRIPE_SECRET_KEY", STRIPE_SECRET_KEY],
+    ["STRIPE_WEBHOOK_SECRET", STRIPE_WEBHOOK_SECRET],
+    ["STRIPE_API_VERSION", (process.env.STRIPE_API_VERSION || "").trim()],
+  ]
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
+  if (missing.length > 0) {
+    throw new Error(
+      `PAYMENTS_PROVIDER=stripe requires: ${missing.join(", ")}. ` +
+        `Set them, or set PAYMENTS_PROVIDER=mock to keep running on the mocked payment path.`
+    );
+  }
+}
+
+// Constructed ONCE (D12), and only when a secret key is present. In mock mode
+// with no key the entire Stripe surface stays inert instead of throwing — that
+// is the whole point of the default. A key present while still in mock mode
+// DOES build the client on purpose: Slice 0.3's diagnostic has to be able to
+// prove the backend can reach Stripe BEFORE the kill-switch is flipped.
+const stripeClient = STRIPE_SECRET_KEY
+  ? new (require("stripe"))(STRIPE_SECRET_KEY, {
+      apiVersion: STRIPE_API_VERSION,
+      appInfo: { name: "Narcos Tacos POS", url: "https://pos.narcostacos.ca" },
+    })
+  : null;
+
+// test vs live, derived from the key PREFIX only. The key itself is never
+// logged, echoed in a response, or returned by the diagnostic below.
+function stripeKeyMode(key) {
+  if (/^(sk|rk)_live_/.test(key)) return "live";
+  if (/^(sk|rk)_test_/.test(key)) return "test";
+  return "unknown";
+}
+
+// One line at boot so the mode is never a mystery in the Render logs. Deliberately
+// says nothing about the key beyond test/live.
+console.log(
+  `Payments: provider=${PAYMENTS_PROVIDER}, stripeClient=${stripeClient ? "configured" : "not configured"}` +
+    (stripeClient ? `, keyMode=${stripeKeyMode(STRIPE_SECRET_KEY)}, apiVersion=${STRIPE_API_VERSION}` : "")
+);
+
 const FRONTEND_URL = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, "");
 
 // The frontend (pos.narcostacos.ca) and backend (api.narcostacos.ca) now
@@ -2377,6 +2462,106 @@ const sendHttpError = (res, err, fallbackMsg) => {
   console.error(fallbackMsg, err);
   return res.status(500).json({ error: fallbackMsg });
 };
+
+// --------------- Back Office: Stripe diagnostics (plan Slice 0.3) ---------------
+// GET /api/backoffice/stripe/diagnostics
+// Owner/admin only. Read-only: it creates nothing, charges nothing, and changes
+// no state — two GETs against Stripe plus one local lookup.
+//
+// This is the endpoint that proves the backend can actually reach Stripe and
+// see the reader BEFORE any payment code exists, and it stays useful afterwards
+// as the "is the reader online?" check.
+//
+// It answers with 200 and a structured report even when Stripe is unreachable
+// or unconfigured, rather than surfacing an HTTP error. A diagnostic's job is to
+// report state — including bad state — and "not configured" is a perfectly valid
+// answer while PAYMENTS_PROVIDER is still 'mock'. Callers read `reachable`, not
+// the status code. Auth failures are the exception and still 401/403.
+//
+// The secret key is NEVER returned; only the test/live mode derived from its
+// prefix, and whether a webhook secret exists at all.
+app.get("/api/backoffice/stripe/diagnostics", async (req, res) => {
+  try {
+    await requireBackofficeSession(req); // owner/admin only
+
+    const report = {
+      paymentsProvider: PAYMENTS_PROVIDER,
+      stripeConfigured: Boolean(stripeClient),
+      keyMode: stripeClient ? stripeKeyMode(STRIPE_SECRET_KEY) : null,
+      apiVersion: stripeClient ? STRIPE_API_VERSION : null,
+      apiVersionSource: process.env.STRIPE_API_VERSION ? "env" : "sdk-default",
+      webhookSecretConfigured: Boolean(STRIPE_WEBHOOK_SECRET),
+      reachable: false,
+      account: null,
+      location: null,
+      readers: [],
+      error: null,
+      checkedAt: new Date().toISOString(),
+    };
+
+    // Local half: is a Stripe Location actually wired to this store's row? The
+    // id lives on locations.stripe_location_id rather than an env var so a
+    // second store is configuration, not a code change (plan section 11).
+    const { rows: locRows } = await pool.query(
+      "SELECT id, name, stripe_location_id FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
+    );
+    if (locRows[0]) {
+      report.location = {
+        localId: locRows[0].id,
+        name: locRows[0].name,
+        stripeLocationId: locRows[0].stripe_location_id,
+        configured: Boolean(locRows[0].stripe_location_id),
+      };
+    }
+
+    if (!stripeClient) {
+      report.error =
+        "STRIPE_SECRET_KEY is not set, so no Stripe client was constructed. " +
+        "This is expected while PAYMENTS_PROVIDER=mock and nothing is broken.";
+      return res.json(report);
+    }
+
+    try {
+      const account = await stripeClient.accounts.retrieve();
+      report.account = {
+        id: account.id,
+        country: account.country,
+        defaultCurrency: account.default_currency,
+        chargesEnabled: account.charges_enabled,
+      };
+
+      // Readers are scoped to the Stripe Location when we know it; otherwise
+      // list everything on the account so a half-finished setup is still
+      // visible rather than silently returning an empty list.
+      const stripeLocationId = report.location && report.location.stripeLocationId;
+      const readers = await stripeClient.terminal.readers.list({
+        limit: 100,
+        ...(stripeLocationId ? { location: stripeLocationId } : {}),
+      });
+      report.readers = readers.data.map((r) => ({
+        id: r.id,
+        label: r.label,
+        status: r.status, // 'online' | 'offline'
+        deviceType: r.device_type,
+        serialNumber: r.serial_number,
+        locationId: r.location,
+        ipAddress: r.ip_address,
+      }));
+      report.reachable = true;
+    } catch (stripeErr) {
+      // A bad key, a network failure or a rejected API version all land here.
+      // Report it plainly — that IS the diagnostic working.
+      report.error = stripeErr.message;
+      report.errorType = stripeErr.type || null;
+      report.errorCode = stripeErr.code || null;
+      console.error("Stripe diagnostics failed:", stripeErr.message);
+    }
+
+    res.json(report);
+  } catch (err) {
+    sendHttpError(res, err, "Failed to run Stripe diagnostics");
+  }
+});
 
 // GET /api/backoffice/menu?staffId=...
 // Full menu tree INCLUDING inactive items/variants/modifier groups/options
