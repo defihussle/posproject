@@ -947,6 +947,58 @@
   color: var(--text-muted);
 }
 
+/* Checkout "waiting on the card reader" state — card under real Stripe only.
+   Shares the success panel's typography so the two read as one family. */
+.oe-checkout__waiting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px 12px;
+  text-align: center;
+}
+
+.oe-checkout__waiting-spinner {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 3px solid var(--border);
+  border-top-color: var(--red);
+  animation: oe-spin 0.9s linear infinite;
+}
+
+@keyframes oe-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Respect reduced-motion: the spinner is decorative, the text carries the
+   meaning, so drop the rotation rather than substituting another animation. */
+@media (prefers-reduced-motion: reduce) {
+  .oe-checkout__waiting-spinner {
+    animation: none;
+  }
+}
+
+.oe-checkout__waiting-dismiss {
+  margin-top: 6px;
+  padding: 8px 20px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.oe-checkout__waiting-dismiss:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
 /* ---------- Loading ---------- */
 .oe-loading {
   flex: 1;

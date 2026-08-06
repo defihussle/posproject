@@ -109,6 +109,9 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [submitting, setSubmitting] = useState(false);
   const [checkoutError, setCheckoutError] = useState(null);
   const [confirmation, setConfirmation] = useState(null); // { orderNumber }
+  // Card under real Stripe only: the payment is live on the reader and NO order
+  // exists yet. Null on the cash/mock path, which still completes synchronously.
+  const [awaitingReader, setAwaitingReader] = useState(null); // { total, pendingCheckoutId }
   const [upsellOpen, setUpsellOpen] = useState(false); // post-checkout guac prompt
 
   // Total cart items count
@@ -256,7 +259,18 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const openCheckout = useCallback(() => {
     setCheckoutError(null);
     setConfirmation(null);
+    setAwaitingReader(null);
     setCheckoutOpen(true);
+  }, []);
+
+  // Dismisses the "waiting on reader" panel. It closes the SCREEN only — it
+  // does not cancel the payment on the reader (cancel-on-reader arrives with
+  // the full payment states in a later slice), which is why the cart is kept
+  // intact rather than cleared.
+  const dismissWaiting = useCallback(() => {
+    setAwaitingReader(null);
+    setCheckoutOpen(false);
+    setSubmitting(false);
   }, []);
 
   const closeCheckout = useCallback(() => {
@@ -281,6 +295,18 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
         const data = await res.json();
         if (!res.ok) {
           throw new Error(data.error || "Something went wrong. Please try again.");
+        }
+        // Card under real Stripe (HTTP 202): the payment is now live on the
+        // reader and NOTHING has been created yet — no order, no payment row.
+        // The cart is deliberately KEPT so nothing is lost if the customer
+        // declines or walks away. `submitting` stays true so the payment
+        // buttons remain disabled while the reader is busy.
+        if (data.pending) {
+          setAwaitingReader({
+            total: data.total,
+            pendingCheckoutId: data.pendingCheckoutId,
+          });
+          return;
         }
         // Success — clear the cart + discount, show a brief confirmation, auto-dismiss
         setConfirmation({ orderNumber: data.order_number });
@@ -772,10 +798,23 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
       {checkoutOpen && (
         <div
           className="oe-checkout-overlay"
-          onClick={confirmation ? undefined : closeCheckout}
+          onClick={confirmation || awaitingReader ? undefined : closeCheckout}
         >
           <div className="oe-checkout" onClick={(e) => e.stopPropagation()}>
-            {confirmation ? (
+            {awaitingReader ? (
+              <div className="oe-checkout__waiting">
+                <div className="oe-checkout__waiting-spinner" aria-hidden="true" />
+                <div className="oe-checkout__success-title">
+                  Waiting for customer on reader…
+                </div>
+                <div className="oe-checkout__success-sub">
+                  ${awaitingReader.total.toFixed(2)} — follow the prompts on the card reader.
+                </div>
+                <button className="oe-checkout__waiting-dismiss" onClick={dismissWaiting}>
+                  Close
+                </button>
+              </div>
+            ) : confirmation ? (
               <div className="oe-checkout__success">
                 <div className="oe-checkout__success-check">
                   <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
