@@ -7405,7 +7405,7 @@ app.get("/api/backoffice/devices", async (req, res) => {
     await requireBackofficeSession(req);
     const { rows } = await pool.query(
       `SELECT dp.id, dp.device_id, dp.device_name, dp.paired_at, dp.last_seen_at, dp.revoked_at,
-              dp.last_order_entry_at, dp.last_kds_at,
+              dp.last_order_entry_at, dp.last_kds_at, dp.stripe_reader_id,
               creator.name AS created_by_name, revoker.name AS revoked_by_name
          FROM device_pairings dp
          JOIN staff creator ON creator.id = dp.created_by
@@ -7419,31 +7419,84 @@ app.get("/api/backoffice/devices", async (req, res) => {
   }
 });
 
-// PUT /api/backoffice/devices/:id — owner/admin. Rename only (device_name);
-// added for the Back Office Devices section's editable-name requirement —
-// there was no write route for this until now, everything else in this
-// section predates it. Works on revoked rows too (renaming a device
-// doesn't touch its trust status either way, and revoked rows staying
-// identifiable is part of why they're kept instead of hard-deleted).
+// Validates the Stripe reader id a till is being bound to, and normalises
+// "cleared" to a real NULL. `null`, `undefined`-as-a-value and an empty/
+// whitespace string all mean "unbind this till".
+//
+// The `tmr_` prefix check is the whole reason this is worth having a UI for.
+// The realistic mistakes are pasting the LOCATION id (`tml_…`) or the reader's
+// serial number off the back of the box — and both of those would otherwise be
+// stored happily and only surface as a baffling Stripe error with a customer
+// standing at the counter. Catching it here turns a service incident into a
+// form validation message.
+function normalizeStripeReaderId(raw) {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "string") {
+    throw new HttpError(400, "stripe_reader_id must be a string, or null to clear it");
+  }
+  const value = raw.trim();
+  if (!value) return null;
+  if (!/^tmr_[A-Za-z0-9_]{1,240}$/.test(value)) {
+    throw new HttpError(
+      400,
+      `"${value}" doesn't look like a Stripe reader id. Reader ids start with "tmr_" — find yours ` +
+        `in Stripe Dashboard → Terminal → Readers, or in the Stripe diagnostics. ` +
+        `(A Location id starts with "tml_" and won't work here.)`
+    );
+  }
+  return value;
+}
+
+// PUT /api/backoffice/devices/:id — owner/admin. Partial update of a paired
+// device: `device_name` (rename) and/or `stripe_reader_id` (which card reader
+// this till drives — see stripe-terminal-plan.md).
+//
+// Both fields are optional and only the ones PRESENT in the body are written,
+// so renaming can't accidentally unbind a reader and binding a reader can't
+// require re-sending the name. Sending `stripe_reader_id: null` (or "") is the
+// explicit way to clear a binding.
+//
+// Works on revoked rows too, exactly as the rename always has — a revoked
+// device can take no payments regardless, and revoked rows staying identifiable
+// and editable is part of why they're kept instead of hard-deleted.
 app.put("/api/backoffice/devices/:id", async (req, res) => {
   try {
     await requireBackofficeSession(req);
-    const { device_name } = req.body || {};
-    if (typeof device_name !== "string" || !device_name.trim()) {
-      throw new HttpError(400, "device_name is required");
+    const body = req.body || {};
+
+    const sets = [];
+    const params = [];
+
+    if (body.device_name !== undefined) {
+      if (typeof body.device_name !== "string" || !body.device_name.trim()) {
+        throw new HttpError(400, "device_name can't be empty");
+      }
+      params.push(body.device_name.trim().slice(0, 60));
+      sets.push(`device_name = $${params.length}`);
     }
+
+    if (body.stripe_reader_id !== undefined) {
+      params.push(normalizeStripeReaderId(body.stripe_reader_id));
+      sets.push(`stripe_reader_id = $${params.length}`);
+    }
+
+    if (sets.length === 0) {
+      throw new HttpError(400, "Nothing to update — send device_name and/or stripe_reader_id");
+    }
+
+    params.push(req.params.id);
     const { rows } = await pool.query(
-      `UPDATE device_pairings SET device_name = $1
-        WHERE id = $2 AND paired_at IS NOT NULL
-        RETURNING id, device_id, device_name, paired_at, last_seen_at, revoked_at`,
-      [device_name.trim().slice(0, 60), req.params.id]
+      `UPDATE device_pairings SET ${sets.join(", ")}
+        WHERE id = $${params.length} AND paired_at IS NOT NULL
+        RETURNING id, device_id, device_name, stripe_reader_id, paired_at, last_seen_at, revoked_at`,
+      params
     );
     if (rows.length === 0) {
       throw new HttpError(404, "Paired device not found");
     }
     res.json(rows[0]);
   } catch (err) {
-    sendHttpError(res, err, "Failed to rename device");
+    sendHttpError(res, err, "Failed to update device");
   }
 });
 
