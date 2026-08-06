@@ -2495,6 +2495,10 @@ app.get("/api/backoffice/stripe/diagnostics", async (req, res) => {
       account: null,
       location: null,
       readers: [],
+      readerSummary: null,
+      // Actionable, human-readable notes about anything that looks half-wired.
+      // Empty means nothing needed explaining.
+      hints: [],
       error: null,
       checkedAt: new Date().toISOString(),
     };
@@ -2530,14 +2534,18 @@ app.get("/api/backoffice/stripe/diagnostics", async (req, res) => {
         chargesEnabled: account.charges_enabled,
       };
 
-      // Readers are scoped to the Stripe Location when we know it; otherwise
-      // list everything on the account so a half-finished setup is still
-      // visible rather than silently returning an empty list.
-      const stripeLocationId = report.location && report.location.stripeLocationId;
-      const readers = await stripeClient.terminal.readers.list({
-        limit: 100,
-        ...(stripeLocationId ? { location: stripeLocationId } : {}),
-      });
+      // ALWAYS list every reader on the account — never filtered server-side by
+      // location. An earlier version passed `location: <configured id>`, which
+      // made a mismatch indistinguishable from "no readers exist": a reader
+      // registered to a different Location, or a stripe_location_id carrying
+      // stray whitespace from a copy-paste, both came back as an empty array
+      // with nothing to explain why. Hiding the evidence is the one thing a
+      // diagnostic must not do, so the match is computed here and REPORTED
+      // instead of applied as a filter.
+      const rawLocationId = report.location ? report.location.stripeLocationId : null;
+      const configuredLocationId = rawLocationId ? String(rawLocationId).trim() : null;
+
+      const readers = await stripeClient.terminal.readers.list({ limit: 100 });
       report.readers = readers.data.map((r) => ({
         id: r.id,
         label: r.label,
@@ -2546,7 +2554,42 @@ app.get("/api/backoffice/stripe/diagnostics", async (req, res) => {
         serialNumber: r.serial_number,
         locationId: r.location,
         ipAddress: r.ip_address,
+        // null = we have no configured Location to compare against yet.
+        matchesConfiguredLocation: configuredLocationId ? r.location === configuredLocationId : null,
       }));
+      report.readerSummary = {
+        total: report.readers.length,
+        matchingConfiguredLocation: configuredLocationId
+          ? report.readers.filter((r) => r.matchesConfiguredLocation).length
+          : null,
+      };
+
+      // Turn the two silent-empty cases into an explicit, actionable answer.
+      if (rawLocationId && rawLocationId !== configuredLocationId) {
+        report.hints.push(
+          `locations.stripe_location_id has leading/trailing whitespace ("${rawLocationId}"). ` +
+            `Readers are matched on the trimmed value; fix the stored value to avoid surprises elsewhere.`
+        );
+      }
+      if (report.readers.length === 0) {
+        report.hints.push(
+          "Stripe reports no registered readers on this account at all. If a reader is visible in the " +
+            "Dashboard, check that this key belongs to the same account/sandbox the reader was registered in."
+        );
+      } else if (configuredLocationId && report.readerSummary.matchingConfiguredLocation === 0) {
+        report.hints.push(
+          `${report.readers.length} reader(s) exist, but none are assigned to the configured Location ` +
+            `(${configuredLocationId}). Readers are on: ` +
+            `${[...new Set(report.readers.map((r) => r.locationId || "no location"))].join(", ")}. ` +
+            `Either re-register the reader to that Location, or point locations.stripe_location_id at the one it is on.`
+        );
+      }
+      if (!configuredLocationId) {
+        report.hints.push(
+          "locations.stripe_location_id is not set, so readers cannot be matched to this store yet."
+        );
+      }
+
       report.reachable = true;
     } catch (stripeErr) {
       // A bad key, a network failure or a rejected API version all land here.
