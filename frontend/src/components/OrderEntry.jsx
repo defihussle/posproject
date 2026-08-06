@@ -37,6 +37,33 @@ const DISCOUNT_REASONS = [
 ];
 const DISCOUNT_REASON_LABEL = Object.fromEntries(DISCOUNT_REASONS.map((r) => [r.key, r.label]));
 
+// Copy for every way a card payment can end without a sale. Kept in one place
+// so the wording stays consistent, and deliberately specific per case: at a
+// counter, "reader is busy" and "reader is offline" call for different actions,
+// so collapsing them into one generic error would waste the cashier's time.
+const CARD_RESULT_COPY = {
+  declined: {
+    title: "Payment declined",
+    body: "The card was not charged. Try again, or take another payment method.",
+  },
+  cancelled: {
+    title: "Payment cancelled",
+    body: "Nothing was charged. Your cart is still here.",
+  },
+  reader_busy: {
+    title: "Reader is busy",
+    body: "It is still finishing another payment. Wait a few seconds, then try again.",
+  },
+  reader_offline: {
+    title: "Reader is offline",
+    body: "The reader isn't responding. Check that it's powered on and connected to Wi-Fi, then try again.",
+  },
+  reader_error: {
+    title: "Reader problem",
+    body: "The payment could not be started on the reader.",
+  },
+};
+
 // Account dropdown's clock entry label, derived from GET /me/clock-status.
 // The card itself (ClockCard) re-fetches fresh status on open regardless —
 // this is just so the dropdown entry doesn't say a generic "Clock In/Out"
@@ -109,9 +136,18 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [submitting, setSubmitting] = useState(false);
   const [checkoutError, setCheckoutError] = useState(null);
   const [confirmation, setConfirmation] = useState(null); // { orderNumber }
-  // Card under real Stripe only: the payment is live on the reader and NO order
-  // exists yet. Null on the cash/mock path, which still completes synchronously.
-  const [awaitingReader, setAwaitingReader] = useState(null); // { total, pendingCheckoutId }
+  // Card under real Stripe only. Null on the cash/mock path, which still
+  // completes synchronously and renders exactly as it always has.
+  //   phase: waiting | cancelling            → payment live on the reader
+  //          declined | cancelled            → finished, no sale
+  //          reader_busy | reader_offline | reader_error
+  // Success is NOT a phase here: it reuses `confirmation` below, so a card sale
+  // and a cash sale confirm identically.
+  const [cardState, setCardState] = useState(null);
+  // Mirrors `submitting` for guard checks that must be correct synchronously —
+  // React state lags a tick, and "retry" needs to re-enter checkout immediately
+  // after clearing it.
+  const submittingRef = useRef(false);
   const [upsellOpen, setUpsellOpen] = useState(false); // post-checkout guac prompt
 
   // Total cart items count
@@ -259,18 +295,8 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const openCheckout = useCallback(() => {
     setCheckoutError(null);
     setConfirmation(null);
-    setAwaitingReader(null);
+    setCardState(null);
     setCheckoutOpen(true);
-  }, []);
-
-  // Dismisses the "waiting on reader" panel. It closes the SCREEN only — it
-  // does not cancel the payment on the reader (cancel-on-reader arrives with
-  // the full payment states in a later slice), which is why the cart is kept
-  // intact rather than cleared.
-  const dismissWaiting = useCallback(() => {
-    setAwaitingReader(null);
-    setCheckoutOpen(false);
-    setSubmitting(false);
   }, []);
 
   const closeCheckout = useCallback(() => {
@@ -279,12 +305,43 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
     setCheckoutError(null);
   }, [submitting]);
 
+  // Leaves a finished card attempt and returns to the payment choices with the
+  // cart intact. Only reachable from a terminal phase — never while the reader
+  // still has the payment.
+  const clearCardState = useCallback(() => {
+    setCardState(null);
+    submittingRef.current = false;
+    setSubmitting(false);
+  }, []);
+
+  const backToCart = useCallback(() => {
+    clearCardState();
+    setCheckoutOpen(false);
+  }, [clearCardState]);
+
+  // A completed sale — cash or card, identical from here on. The cart is only
+  // ever cleared at this point, once money is genuinely collected.
+  const completeSale = useCallback((orderNumber) => {
+    setCardState(null);
+    setConfirmation({ orderNumber });
+    setCart([]);
+    setDiscount(null);
+    setTimeout(() => {
+      setConfirmation(null);
+      setCheckoutOpen(false);
+      submittingRef.current = false;
+      setSubmitting(false);
+    }, 2000);
+  }, []);
+
   // Submit the order with the chosen payment method
   const handleCheckout = useCallback(
     async (method) => {
-      if (submitting) return;
+      if (submittingRef.current) return;
+      submittingRef.current = true;
       setSubmitting(true);
       setCheckoutError(null);
+      setCardState(null);
       try {
         const res = await fetch(`${API_URL}/api/orders`, {
           method: "POST",
@@ -294,37 +351,126 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
         });
         const data = await res.json();
         if (!res.ok) {
+          // A reader problem is not a generic failure: the backend tells us
+          // which one, so the cashier gets something they can act on.
+          if (data.code === "reader_busy" || data.code === "reader_offline" || data.code === "reader_error") {
+            submittingRef.current = false;
+            setSubmitting(false);
+            setCardState({ phase: data.code, message: data.detail || data.error });
+            return;
+          }
           throw new Error(data.error || "Something went wrong. Please try again.");
         }
         // Card under real Stripe (HTTP 202): the payment is now live on the
         // reader and NOTHING has been created yet — no order, no payment row.
         // The cart is deliberately KEPT so nothing is lost if the customer
         // declines or walks away. `submitting` stays true so the payment
-        // buttons remain disabled while the reader is busy.
+        // buttons remain disabled while the reader has the payment.
         if (data.pending) {
-          setAwaitingReader({
+          setCardState({
+            phase: "waiting",
             total: data.total,
             pendingCheckoutId: data.pendingCheckoutId,
           });
           return;
         }
-        // Success — clear the cart + discount, show a brief confirmation, auto-dismiss
-        setConfirmation({ orderNumber: data.order_number });
-        setCart([]);
-        setDiscount(null);
-        setTimeout(() => {
-          setConfirmation(null);
-          setCheckoutOpen(false);
-          setSubmitting(false);
-        }, 2000);
+        completeSale(data.order_number);
       } catch (err) {
         // Failure — keep the cart intact so nothing is lost, let staff retry
         setCheckoutError(err.message || "Network error. Please try again.");
+        submittingRef.current = false;
         setSubmitting(false);
       }
     },
-    [submitting, buildOrderPayload]
+    [buildOrderPayload, completeSale]
   );
+
+  // Retry after a decline or a reader problem: drop the finished attempt and
+  // start a completely new payment (new pending checkout, new PaymentIntent).
+  const retryCard = useCallback(() => {
+    clearCardState();
+    handleCheckout("card");
+  }, [clearCardState, handleCheckout]);
+
+  const switchToCash = useCallback(() => {
+    clearCardState();
+    handleCheckout("cash");
+  }, [clearCardState, handleCheckout]);
+
+  // Cashier aborts a live payment. The customer may be tapping at this exact
+  // moment, so the backend decides the outcome — this just reports it.
+  const cancelCardPayment = useCallback(async () => {
+    const pendingId = cardState?.pendingCheckoutId;
+    if (!pendingId) return;
+    setCardState((s) => (s ? { ...s, phase: "cancelling" } : s));
+    try {
+      const res = await fetch(`${API_URL}/api/orders/pending/${pendingId}/cancel`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not cancel the payment");
+
+      if (data.status === "succeeded") {
+        // Too late — they paid. Show it as the sale it is.
+        completeSale(data.orderNumber);
+      } else if (data.paymentAlreadyCompleted) {
+        // Stripe says the money landed; the order is moments away. Go back to
+        // waiting rather than claiming a cancellation that did not happen.
+        setCardState((s) => (s ? { ...s, phase: "waiting" } : s));
+      } else if (data.status === "failed") {
+        setCardState((s) => (s ? { ...s, phase: "declined", message: data.errorMessage } : s));
+      } else {
+        setCardState((s) => (s ? { ...s, phase: "cancelled" } : s));
+      }
+    } catch (err) {
+      // The cancel itself failed — the payment may still be live, so return to
+      // waiting rather than pretending it stopped.
+      setCardState((s) => (s ? { ...s, phase: "waiting", message: err.message } : s));
+    }
+  }, [cardState?.pendingCheckoutId, completeSale]);
+
+  // The payment result arrives at the backend as a webhook, not as a reply to
+  // the checkout request, so the till has to ask. Cheap indexed lookup, polled
+  // only while a payment is actually live.
+  const cardPhase = cardState?.phase;
+  const cardPendingId = cardState?.pendingCheckoutId;
+  useEffect(() => {
+    if (cardPhase !== "waiting" || !cardPendingId) return undefined;
+    let stopped = false;
+
+    const check = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/orders/pending/${cardPendingId}`, {
+          credentials: "include",
+        });
+        if (!res.ok || stopped) return;
+        const data = await res.json();
+        if (stopped) return;
+
+        if (data.status === "succeeded") {
+          completeSale(data.orderNumber);
+        } else if (data.status === "failed") {
+          setCardState((s) => (s ? { ...s, phase: "declined", message: data.errorMessage } : s));
+        } else if (data.status === "cancelled") {
+          setCardState((s) => (s ? { ...s, phase: "cancelled" } : s));
+        } else if (data.status === "orphaned" || data.status === "expired") {
+          setCardState((s) =>
+            s ? { ...s, phase: "reader_error", message: data.errorMessage } : s
+          );
+        }
+      } catch {
+        // Transient network blip — keep polling rather than declaring failure.
+      }
+    };
+
+    check();
+    const timer = setInterval(check, 1500);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [cardPhase, cardPendingId, completeSale]);
 
   // ---- Post-checkout upsell ----------------------------------------
   // Items flagged is_upsell in Menu Management (Guacamole by default) are
@@ -798,21 +944,75 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
       {checkoutOpen && (
         <div
           className="oe-checkout-overlay"
-          onClick={confirmation || awaitingReader ? undefined : closeCheckout}
+          onClick={confirmation || cardState ? undefined : closeCheckout}
         >
           <div className="oe-checkout" onClick={(e) => e.stopPropagation()}>
-            {awaitingReader ? (
+            {cardState && (cardState.phase === "waiting" || cardState.phase === "cancelling") ? (
               <div className="oe-checkout__waiting">
                 <div className="oe-checkout__waiting-spinner" aria-hidden="true" />
                 <div className="oe-checkout__success-title">
-                  Waiting for customer on reader…
+                  {cardState.phase === "cancelling"
+                    ? "Cancelling…"
+                    : "Waiting for customer on reader…"}
                 </div>
                 <div className="oe-checkout__success-sub">
-                  ${awaitingReader.total.toFixed(2)} — follow the prompts on the card reader.
+                  ${Number(cardState.total).toFixed(2)} — follow the prompts on the card reader.
                 </div>
-                <button className="oe-checkout__waiting-dismiss" onClick={dismissWaiting}>
-                  Close
+                <button
+                  className="oe-checkout__result-btn oe-checkout__result-btn--danger"
+                  onClick={cancelCardPayment}
+                  disabled={cardState.phase === "cancelling"}
+                >
+                  Cancel payment
                 </button>
+              </div>
+            ) : cardState ? (
+              <div className="oe-checkout__result">
+                <div
+                  className={
+                    cardState.phase === "cancelled"
+                      ? "oe-checkout__result-icon oe-checkout__result-icon--neutral"
+                      : "oe-checkout__result-icon oe-checkout__result-icon--fail"
+                  }
+                >
+                  {cardState.phase === "cancelled" ? (
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M6 12h12" />
+                    </svg>
+                  ) : (
+                    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </svg>
+                  )}
+                </div>
+                <div className="oe-checkout__success-title">
+                  {CARD_RESULT_COPY[cardState.phase]?.title || "Payment failed"}
+                </div>
+                <div className="oe-checkout__success-sub">
+                  {CARD_RESULT_COPY[cardState.phase]?.body}
+                </div>
+                {cardState.message && cardState.phase !== "cancelled" && (
+                  <div className="oe-checkout__result-reason">{cardState.message}</div>
+                )}
+                <div className="oe-checkout__result-actions">
+                  {cardState.phase !== "cancelled" && (
+                    <>
+                      <button
+                        className="oe-checkout__result-btn oe-checkout__result-btn--primary"
+                        onClick={retryCard}
+                      >
+                        Try card again
+                      </button>
+                      <button className="oe-checkout__result-btn" onClick={switchToCash}>
+                        Pay with cash
+                      </button>
+                    </>
+                  )}
+                  <button className="oe-checkout__result-btn" onClick={backToCart}>
+                    Back to cart
+                  </button>
+                </div>
               </div>
             ) : confirmation ? (
               <div className="oe-checkout__success">

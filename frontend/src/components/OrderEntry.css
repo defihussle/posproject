@@ -963,7 +963,7 @@
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  border: 3px solid var(--border);
+  border: 3px solid var(--border-color);
   border-top-color: var(--red);
   animation: oe-spin 0.9s linear infinite;
 }
@@ -982,10 +982,67 @@
   }
 }
 
-.oe-checkout__waiting-dismiss {
+/* Card payment outcome (declined / cancelled / reader problem). Same layout and
+   typography as the success panel so they read as one family — the ICON and its
+   colour are what tell them apart at a glance, not the wording alone. */
+.oe-checkout__result {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px 12px;
+  text-align: center;
+}
+
+.oe-checkout__result-icon {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  animation: fadeIn 0.25s ease-out;
+}
+
+/* Red X — mirrors the green check of a sale, so success and failure are
+   distinguishable across the counter without reading anything. */
+.oe-checkout__result-icon--fail {
+  background: var(--red);
+}
+
+/* Cancelled is not a failure — nobody did anything wrong, nothing was charged.
+   Muted grey keeps it from shouting like a decline. */
+.oe-checkout__result-icon--neutral {
+  background: var(--text-muted);
+}
+
+/* The processor's own words (e.g. "Your card was declined"), kept visually
+   secondary to our plain-language explanation above it. */
+.oe-checkout__result-reason {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 6px 10px;
+  max-width: 100%;
+  word-break: break-word;
+}
+
+.oe-checkout__result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
   margin-top: 6px;
-  padding: 8px 20px;
-  border: 1px solid var(--border);
+}
+
+.oe-checkout__result-btn {
+  padding: 9px 18px;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   background: transparent;
   color: var(--text-muted);
@@ -994,9 +1051,40 @@
   cursor: pointer;
 }
 
-.oe-checkout__waiting-dismiss:hover {
+.oe-checkout__result-btn:hover:not(:disabled) {
   color: var(--text-primary);
   border-color: var(--text-muted);
+}
+
+.oe-checkout__result-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.oe-checkout__result-btn--primary {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
+
+.oe-checkout__result-btn--primary:hover:not(:disabled) {
+  background: var(--red-hover);
+  border-color: var(--red-hover);
+  color: #fff;
+}
+
+/* Cancel sits under a live payment — outlined rather than filled, so it never
+   competes with the "Try card again" primary on the outcome screens. */
+.oe-checkout__result-btn--danger {
+  margin-top: 6px;
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.oe-checkout__result-btn--danger:hover:not(:disabled) {
+  background: var(--red-light);
+  color: var(--red);
+  border-color: var(--red);
 }
 
 /* ---------- Loading ---------- */
