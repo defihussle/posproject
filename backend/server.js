@@ -1358,13 +1358,73 @@ app.post("/api/stripe/webhook", async (req, res) => {
         break;
       }
 
-      case "terminal.reader.action_succeeded":
-        // Informational only. The reader finishing its action is not the same
-        // as money being captured — payment_intent.succeeded is the event that
-        // creates the order, and it is the only one that may. (A reader-driven
-        // Interac refund settles through the refund.* events below.)
+      case "terminal.reader.action_succeeded": {
+        const succeededAction = event.data.object.action || {};
+
+        // A reader-driven Interac REFUND finishes HERE, and this is the only
+        // event we can rely on to settle it.
+        //
+        // The comment that used to sit here said an Interac refund "settles
+        // through the refund.* events below". It does not, reliably. The reader
+        // path is the only money path with no synchronous settlement:
+        // settleStripeRefund() calls terminal.readers.refundPayment(), which
+        // returns a READER (action in_progress), not a Refund — so no
+        // stripe_refund_id is stored and nothing is promoted. Credit refunds
+        // never hit this because refunds.create() hands back the Refund and
+        // that same function promotes it on the spot.
+        //
+        // That left settlement depending entirely on refund.*/charge.refunded
+        // resolving, which has three documented ways to miss: Refund
+        // .payment_intent is nullable (so resolveLocalRefundId's fallback has
+        // nothing to match on when stripe_refund_id is also NULL), Charge
+        // .refunds has not been expanded by default since API version
+        // 2022-11-15 (so charge.refunded can iterate an empty list and report a
+        // successful no-op), and a refund.created carrying a non-succeeded
+        // status only settles if refund.updated also arrives. Net effect:
+        // Stripe showed the refund complete while the local row sat 'pending'
+        // forever, invisible to every report and blocking the order's balance.
+        //
+        // action.refund_payment.refund is the one field that links the reader
+        // action to the Refund it created, and it arrives on an event that
+        // fires whether or not refund.* is subscribed.
+        if (succeededAction.refund_payment) {
+          const rp = succeededAction.refund_payment;
+          const stripeRefundId = typeof rp.refund === "string" ? rp.refund : rp.refund?.id;
+          if (!stripeRefundId) {
+            // Optional field per the API. Nothing to look up, so leave it to
+            // refund.* rather than guess — but say so, because this is the
+            // exact silence that hid the bug.
+            console.warn(
+              `Reader refund succeeded on ${event.data.object.id} with no refund id on the action — ` +
+                `leaving settlement to the refund.* events`
+            );
+            outcome = { handled: false, reason: "no_refund_id_on_action" };
+            break;
+          }
+
+          // RETRIEVED, not assumed settled: the reader finishing its action is
+          // not the same statement as the processor having returned the money.
+          // Routing the real Refund through applyStripeRefundOutcome() reuses
+          // the one settlement path (promote / fail / record-and-wait) instead
+          // of adding a second way to mark money returned.
+          //
+          // Worth doing even when the refund is still pending at Stripe: it
+          // records stripe_refund_id, so a later refund.updated matches on the
+          // id directly instead of the nullable payment_intent fallback.
+          //
+          // A GET, so no idempotency key. If it throws, the webhook returns 500
+          // and Stripe redelivers — which is the behaviour we want.
+          const refund = await stripeClient.refunds.retrieve(stripeRefundId);
+          outcome = { ...(await applyStripeRefundOutcome(refund)), kind: "refund_payment" };
+          break;
+        }
+
+        // Payments: informational only, unchanged. The reader finishing is not
+        // the same as money being captured — payment_intent.succeeded is the
+        // event that creates the order, and it is still the only one that may.
         outcome = { handled: true, informational: true };
         break;
+      }
 
       // ---- Refund settlement (Slice 7) ----
       // These are what actually promote a reversal from 'pending' to money
