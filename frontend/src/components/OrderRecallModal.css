@@ -1,4 +1,6 @@
-/* Order Recall & Refund Modal — modern, mobile-first design matching Narcos Tacos POS */
+/* Order Recall & Refund Modal — matches the Order Entry / Back Office design
+   language. Every color, font and radius comes from the tokens in index.css so
+   the modal follows the light/dark theme instead of pinning itself to light. */
 
 .orm-backdrop {
   position: fixed;
@@ -11,20 +13,38 @@
   justify-content: center;
   padding: 1rem;
   animation: fadeIn 0.2s ease-out;
+
+  /* Local accents with no global token: the "money went back" warm amber and
+     the success green surface. Scoped here so the PIN/options overlays — which
+     render inside this backdrop — inherit them too. */
+  --orm-warm: #B06000;
+  --orm-warm-strong: #E08A2E;
+  --orm-warm-surface: #FFF8E1;
+  --orm-success-surface: #E6F4EA;
+  --orm-success-text: #137333;
+}
+
+[data-theme="dark"] .orm-backdrop {
+  --orm-warm: #E8A33D;
+  --orm-warm-strong: #C97B2A;
+  --orm-warm-surface: rgba(232, 163, 61, 0.12);
+  --orm-success-surface: rgba(52, 168, 83, 0.14);
+  --orm-success-text: #6FD48C;
 }
 
 .orm-modal {
-  background: var(--bg-surface, #ffffff);
-  color: var(--text-main, #111111);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-body);
   width: 100%;
   max-width: 840px;
   max-height: 90vh;
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-medium);
   overflow: hidden;
-  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.1));
+  border: 1px solid var(--border-color);
 }
 
 .orm-header {
@@ -32,8 +52,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 1.25rem 1.5rem;
-  border-bottom: 1px solid var(--border-color, #e5e5e5);
-  background: var(--bg-header, #f9f9fb);
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-surface-hover);
 }
 
 .orm-title-group {
@@ -43,31 +63,33 @@
 }
 
 .orm-title {
-  font-family: "Archivo Black", sans-serif;
+  font-family: var(--font-headline);
   font-size: 1.35rem;
   text-transform: uppercase;
   margin: 0;
   letter-spacing: -0.01em;
+  color: var(--text-primary);
 }
 
 .orm-close-btn {
   background: transparent;
   border: none;
   font-size: 1.5rem;
-  color: var(--text-muted, #666666);
+  line-height: 1;
+  color: var(--text-muted);
   cursor: pointer;
   width: 36px;
   height: 36px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .orm-close-btn:hover {
-  background: var(--bg-hover, #eee);
-  color: #000;
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
 }
 
 .orm-body {
@@ -80,31 +102,36 @@
 /* Left sidebar: order search & list */
 .orm-sidebar {
   width: 320px;
-  border-right: 1px solid var(--border-color, #e5e5e5);
+  border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
-  background: var(--bg-sidebar, #fafafa);
+  background: var(--bg-primary);
 }
 
 .orm-search-box {
   padding: 1rem;
-  border-bottom: 1px solid var(--border-color, #eee);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .orm-search-input {
   width: 100%;
   padding: 0.65rem 0.85rem;
-  border: 1.5px solid var(--border-color, #ccc);
-  border-radius: 8px;
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-body);
   font-size: 0.95rem;
-  background: var(--bg-surface, #fff);
-  color: var(--text-main, #111);
+  background: var(--bg-surface);
+  color: var(--text-primary);
   outline: none;
   transition: border-color 0.15s;
 }
 
+.orm-search-input::placeholder {
+  color: var(--text-muted);
+}
+
 .orm-search-input:focus {
-  border-color: var(--brand-red, #e8442e);
+  border-color: var(--red);
 }
 
 .orm-order-list {
@@ -113,24 +140,34 @@
   padding: 0.5rem;
 }
 
+/* Loading / "no orders found" — quiet muted status text, same feel as the
+   Order Entry and Reports empty states rather than a bespoke grey. */
+.orm-list-status {
+  padding: 1.5rem 1rem;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
 .orm-order-card {
   padding: 0.85rem 1rem;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   margin-bottom: 0.5rem;
-  background: var(--bg-surface, #ffffff);
-  border: 1px solid var(--border-color, #e5e5e5);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
 }
 
 .orm-order-card:hover {
-  border-color: #bbb;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+  border-color: var(--text-muted);
+  box-shadow: var(--shadow-soft);
 }
 
 .orm-order-card--active {
-  border-color: var(--brand-red, #e8442e);
-  background: rgba(232, 68, 46, 0.04);
+  border-color: var(--red);
+  background: var(--red-light);
 }
 
 .orm-order-card-header {
@@ -141,41 +178,44 @@
 }
 
 .orm-order-number {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   font-weight: 700;
   font-size: 1rem;
+  color: var(--text-primary);
 }
 
 .orm-order-total {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
   font-weight: 700;
   font-size: 1rem;
-  color: var(--brand-red, #e8442e);
+  color: var(--red);
 }
 
 .orm-order-card-meta {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 0.8rem;
-  color: var(--text-muted, #666);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 
 .orm-badge {
   display: inline-block;
   padding: 0.2rem 0.5rem;
   border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 600;
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.05em;
 }
 
-.orm-badge--ready { background: #e6f4ea; color: #137333; }
-.orm-badge--preparing { background: #fef7e0; color: #b06000; }
-.orm-badge--open { background: #e8f0fe; color: #1a73e8; }
-.orm-badge--cancelled { background: #fce8e6; color: #c5221f; }
-.orm-badge--refunded { background: #feefc3; color: #805b00; }
+.orm-badge--ready { background: #E6F4EA; color: #137333; }
+.orm-badge--preparing { background: #FEF7E0; color: #B06000; }
+.orm-badge--open { background: #E8F0FE; color: #1A73E8; }
+.orm-badge--cancelled { background: #FCE8E6; color: #C5221F; }
+.orm-badge--refunded { background: #FEEFC3; color: #805B00; }
 
 /* Right main pane: Order Details & Action controls */
 .orm-content {
@@ -192,7 +232,9 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--text-muted, #888);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-muted);
   text-align: center;
 }
 
@@ -200,22 +242,39 @@
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 1rem;
   padding-bottom: 1rem;
-  border-bottom: 1px solid var(--border-color, #eee);
+  border-bottom: 1px solid var(--border-color);
   margin-bottom: 1.25rem;
 }
 
 .orm-detail-title {
-  font-family: "Archivo Black", sans-serif;
+  font-family: var(--font-headline);
   font-size: 1.4rem;
-  margin: 0 0 0.25rem 0;
+  margin: 0 0 0.35rem 0;
+  color: var(--text-primary);
 }
 
 .orm-detail-meta {
-  font-size: 0.85rem;
-  color: var(--text-muted, #666);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
   display: flex;
+  flex-wrap: wrap;
   gap: 1rem;
+}
+
+.orm-detail-meta strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Payment method reads as a label, not prose — uppercase + mono, matching the
+   way the reports surface renders method columns. */
+.orm-payment-method {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
 /* Status badge + Receipt, stacked at the top-right of the detail panel. The
@@ -237,26 +296,54 @@
   width: 100%;
   border-collapse: collapse;
   margin-bottom: 1.25rem;
-  font-size: 0.9rem;
+  font-size: 0.88rem;
 }
 
+/* Same header treatment as the Reports tables: small, uppercase, tracked out
+   and muted, so the numbers below carry the weight. */
 .orm-items-table th {
   text-align: left;
   padding: 0.5rem 0.75rem;
-  border-bottom: 2px solid var(--border-color, #eee);
-  color: var(--text-muted, #666);
-  font-weight: 600;
+  border-bottom: 1px solid var(--border-color);
+  font-family: var(--font-body);
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
 }
 
 .orm-items-table td {
   padding: 0.65rem 0.75rem;
-  border-bottom: 1px solid var(--border-color, #f0f0f0);
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+/* Column alignment, applied to the th and td together so a header can never
+   drift out of line with its column. */
+.orm-col--center { text-align: center; }
+.orm-col--right { text-align: right; }
+
+/* Quantities and money are numeric — mono, like everywhere else in the app. */
+.orm-items-table td.orm-col--center,
+.orm-items-table td.orm-col--right {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.orm-item-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.orm-item-variant {
+  color: var(--text-secondary);
 }
 
 .orm-summary-box {
-  background: var(--bg-sidebar, #f9f9fb);
-  border: 1px solid var(--border-color, #eee);
-  border-radius: 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
   padding: 1rem 1.25rem;
   margin-bottom: 1.5rem;
 }
@@ -264,17 +351,47 @@
 .orm-summary-row {
   display: flex;
   justify-content: space-between;
-  font-size: 0.9rem;
+  gap: 1rem;
+  font-size: 0.88rem;
   margin-bottom: 0.4rem;
+  color: var(--text-secondary);
+}
+
+.orm-summary-row span:last-child {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.orm-summary-row--discount,
+.orm-summary-row--discount span:last-child {
+  color: var(--red);
 }
 
 .orm-summary-row--total {
   font-weight: 700;
-  font-size: 1.1rem;
-  border-top: 1px solid var(--border-color, #ddd);
+  font-size: 1.05rem;
+  border-top: 1px solid var(--border-color);
   padding-top: 0.5rem;
   margin-top: 0.5rem;
-  color: var(--brand-red, #e8442e);
+  color: var(--red);
+}
+
+.orm-summary-row--total span:last-child {
+  color: var(--red);
+  font-weight: 700;
+}
+
+/* Money that has already gone back — warm amber so it reads as a separate
+   fact from the red total that was collected, not as another charge. */
+.orm-summary-row--refunded,
+.orm-summary-row--refunded span:last-child {
+  color: var(--orm-warm);
+  font-weight: 600;
+}
+
+.orm-summary-row--refunded {
+  margin-top: 0.4rem;
 }
 
 .orm-actions-bar {
@@ -288,37 +405,51 @@
    explains why only Void is on offer rather than leaving a bare gap. */
 .orm-actions-note {
   align-self: center;
-  font-size: 0.9rem;
-  color: var(--text-secondary, #6B6B66);
-  line-height: 1.4;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
 }
 
 .orm-btn {
   padding: 0.75rem 1.25rem;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-body);
   font-weight: 700;
   font-size: 0.9rem;
   cursor: pointer;
-  border: none;
-  transition: transform 0.1s ease, filter 0.15s ease;
+  border: 1px solid transparent;
+  transition: transform 0.1s ease, filter 0.15s ease, background-color 0.15s ease;
+}
+
+.orm-btn:hover:not(:disabled) {
+  filter: brightness(0.96);
 }
 
 .orm-btn:active {
   transform: scale(0.98);
 }
 
-.orm-btn--danger { background: #d93025; color: #ffffff; }
-.orm-btn--warning { background: #f2994a; color: #ffffff; }
-.orm-btn--secondary { background: var(--bg-hover, #eeeeee); color: #333333; }
-.orm-btn--primary { background: #34a853; color: #ffffff; }
+.orm-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.orm-btn--danger { background: var(--red); color: #FFFFFF; }
+.orm-btn--warning { background: var(--orm-warm-strong); color: #FFFFFF; }
+.orm-btn--primary { background: var(--green); color: #FFFFFF; }
+.orm-btn--secondary {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-color);
+}
 
 /* Plain-language note under the action buttons explaining void vs refund —
    the distinction a new cashier gets wrong, and the one that can't be undone. */
 .orm-actions-help {
   margin: 0.6rem 0 0 0;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   line-height: 1.45;
-  color: var(--text-secondary, #6B6B66);
+  color: var(--text-muted);
   max-width: 46rem;
 }
 
@@ -326,29 +457,33 @@
    action and approving it read as one flow. Wider than the PIN card because
    it holds the line-item picker. */
 .orm-options-modal {
-  background: #ffffff;
-  border-radius: 16px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
   width: 100%;
   max-width: 440px;
   padding: 1.5rem;
   max-height: 85vh;
   overflow-y: auto;
-  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-medium);
 }
 
 .orm-options-order {
   margin: -0.5rem 0 1rem 0;
-  font-size: 0.85rem;
-  color: var(--text-secondary, #6B6B66);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
 }
 
 /* Reassurance on the no-approval path, so a blank space where the PIN step
    used to be doesn't read as "something is missing". */
 .orm-options-note {
   margin: 0.75rem 0 0 0;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   line-height: 1.45;
-  color: var(--text-secondary, #6B6B66);
+  color: var(--text-secondary);
 }
 
 .orm-options-actions {
@@ -361,8 +496,16 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 0.75rem;
   padding: 0.5rem 0;
-  border-bottom: 1px solid var(--border-subtle, #eeeeee);
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.orm-line-price {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
 }
 
 .orm-line-stepper {
@@ -379,7 +522,9 @@
   font-weight: 700;
   min-width: 44px;
   text-align: center;
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
 }
 
 /* Prior reversal log — an audit trail, so it's present but visually quiet. */
@@ -388,34 +533,48 @@
 }
 
 .orm-log-title {
-  font-size: 0.9rem;
+  font-family: var(--font-body);
+  font-size: 0.64rem;
+  font-weight: 700;
   text-transform: uppercase;
-  color: var(--text-secondary, #666666);
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
   margin-bottom: 0.5rem;
 }
 
 .orm-log-row {
-  font-size: 0.85rem;
-  padding: 0.4rem 0.6rem;
-  background: #fff8e1;
-  border-radius: 6px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  padding: 0.45rem 0.65rem;
+  background: var(--orm-warm-surface);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
   margin-bottom: 0.4rem;
 }
 
+.orm-log-row strong {
+  font-family: var(--font-mono);
+  letter-spacing: 0.03em;
+  color: var(--orm-warm);
+}
+
 .orm-success {
-  padding: 0.75rem;
-  background: #e6f4ea;
-  color: #137333;
-  border-radius: 8px;
+  padding: 0.75rem 0.9rem;
+  background: var(--orm-success-surface);
+  color: var(--orm-success-text);
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
   font-weight: 600;
+  line-height: 1.45;
   margin-bottom: 1rem;
 }
 
 .orm-form-title {
-  font-family: "Archivo Black", sans-serif;
-  font-size: 1.1rem;
+  font-family: var(--font-headline);
+  font-size: 1.05rem;
+  line-height: 1.3;
   margin: 0 0 1rem 0;
-  color: var(--brand-red, #e8442e);
+  color: var(--red);
   text-transform: uppercase;
 }
 
@@ -425,19 +584,36 @@
 
 .orm-label {
   display: block;
-  font-size: 0.85rem;
-  font-weight: 600;
-  margin-bottom: 0.35rem;
+  font-family: var(--font-body);
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.4rem;
 }
 
-.orm-select, .orm-input {
+.orm-select,
+.orm-input {
   width: 100%;
   padding: 0.6rem 0.75rem;
-  border-radius: 6px;
-  border: 1px solid var(--border-color, #ccc);
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border-color);
+  font-family: var(--font-body);
   font-size: 0.95rem;
-  background: #fff;
-  color: #111;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.orm-input {
+  font-family: var(--font-mono);
+}
+
+.orm-select:focus,
+.orm-input:focus {
+  border-color: var(--red);
 }
 
 /* Interac cash-out chooser — two deliberate options rather than a dropdown,
@@ -456,39 +632,39 @@
   gap: 0.15rem;
   padding: 0.65rem 0.75rem;
   text-align: left;
-  border-radius: 8px;
-  border: 1.5px solid var(--border-color, #ccc);
-  background: #fff;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border-color);
+  background: var(--bg-surface);
   cursor: pointer;
   transition: border-color 0.12s ease, background-color 0.12s ease;
 }
 
 .orm-method:hover {
-  background: var(--bg-hover, #f5f5f4);
+  background: var(--bg-surface-hover);
 }
 
 .orm-method--active {
-  border-color: var(--red, #e8442e);
-  background: var(--red-light, rgba(232, 68, 46, 0.1));
+  border-color: var(--red);
+  background: var(--red-light);
 }
 
 .orm-method__title {
   font-size: 0.85rem;
   font-weight: 700;
-  color: #111;
+  color: var(--text-primary);
 }
 
 .orm-method__sub {
   font-size: 0.7rem;
-  line-height: 1.3;
-  color: var(--text-secondary, #6b6b66);
+  line-height: 1.35;
+  color: var(--text-secondary);
 }
 
 .orm-method-note {
   margin: 0.45rem 0 0 0;
   font-size: 0.72rem;
   line-height: 1.4;
-  color: var(--text-secondary, #6b6b66);
+  color: var(--text-muted);
 }
 
 /* Inline PIN Modal */
@@ -505,26 +681,44 @@
 }
 
 .orm-pin-modal {
-  background: #ffffff;
-  border-radius: 20px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
   width: 100%;
   max-width: 360px;
   padding: 1.75rem 1.5rem;
   text-align: center;
-  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-medium);
 }
 
 .orm-pin-title {
-  font-family: "Archivo Black", sans-serif;
-  font-size: 1.25rem;
-  margin: 0 0 0.25rem 0;
+  font-family: var(--font-headline);
+  font-size: 1.2rem;
+  margin: 0 0 0.35rem 0;
   text-transform: uppercase;
+  color: var(--text-primary);
 }
 
 .orm-pin-subtitle {
   font-size: 0.85rem;
-  color: #666;
+  line-height: 1.5;
+  color: var(--text-secondary);
   margin-bottom: 1.25rem;
+}
+
+.orm-pin-subtitle strong {
+  color: var(--text-primary);
+}
+
+/* The $100 owner/admin rule — the one line in this flow that changes who is
+   allowed to approve, so it gets the brand red and full weight. */
+.orm-pin-required {
+  display: block;
+  margin-top: 0.3rem;
+  color: var(--red);
+  font-weight: 700;
 }
 
 .orm-pin-dots {
@@ -537,14 +731,14 @@
 .orm-pin-dot {
   width: 16px;
   height: 16px;
-  border-radius: 50%;
-  border: 2px solid #ccc;
-  transition: all 0.15s ease;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--border-color);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
 .orm-pin-dot--filled {
-  background: var(--brand-red, #e8442e);
-  border-color: var(--brand-red, #e8442e);
+  background: var(--red);
+  border-color: var(--red);
 }
 
 .orm-keypad {
@@ -556,10 +750,12 @@
 
 .orm-keypad-btn {
   height: 54px;
-  border-radius: 50%;
-  border: 1px solid #e0e0e0;
-  background: #fcfcfc;
-  font-family: "IBM Plex Mono", monospace;
+  width: 54px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-color);
+  background: var(--keypad-bg);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
   font-size: 1.4rem;
   font-weight: 600;
   cursor: pointer;
@@ -567,17 +763,35 @@
   align-items: center;
   justify-content: center;
   margin: 0 auto;
-  width: 54px;
-  transition: background 0.15s;
+  box-shadow: var(--shadow-key);
+  transition: background-color 0.15s, box-shadow 0.15s;
 }
 
 .orm-keypad-btn:active {
-  background: #e0e0e0;
+  background: var(--bg-surface-hover);
+  box-shadow: var(--shadow-key-active);
+}
+
+.orm-keypad-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Backing out of an approval is a red action, same as every other cancel in
+   the modal. Smaller type because the word doesn't fit at keypad-digit size. */
+.orm-keypad-btn--cancel {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--red);
 }
 
 .orm-error {
-  color: #d93025;
+  color: var(--red);
   font-size: 0.85rem;
+  line-height: 1.45;
   margin-top: 0.5rem;
   font-weight: 600;
 }
@@ -591,39 +805,60 @@
   overflow-y: auto;
 }
 
+.orm-approvers-empty {
+  padding: 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
 .orm-approver-btn {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 0.75rem;
   padding: 0.8rem 1rem;
-  border-radius: 10px;
-  border: 1.5px solid #e0e0e0;
-  background: #f9f9fb;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border-color);
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  font-family: var(--font-body);
   font-size: 0.95rem;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
   text-align: left;
 }
 
 .orm-approver-btn:hover {
-  border-color: var(--brand-red, #e8442e);
-  background: rgba(232, 68, 46, 0.04);
+  border-color: var(--red);
+  background: var(--red-light);
 }
 
 .orm-approver-role {
-  font-size: 0.75rem;
+  font-family: var(--font-body);
+  font-size: 0.64rem;
+  font-weight: 700;
   text-transform: uppercase;
-  background: #eee;
+  letter-spacing: 0.05em;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
   padding: 0.15rem 0.5rem;
   border-radius: 4px;
-  color: #555;
+  color: var(--text-muted);
+}
+
+/* Full-width cancel under the approver picker — the only way out of step 1. */
+.orm-pin-cancel-btn {
+  width: 100%;
+  margin-top: 0.5rem;
 }
 
 .orm-change-approver-btn {
   background: transparent;
   border: none;
-  color: var(--brand-red, #e8442e);
+  color: var(--red);
+  font-family: var(--font-body);
   font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
@@ -639,6 +874,6 @@
     width: 100%;
     max-height: 200px;
     border-right: none;
-    border-bottom: 1px solid var(--border-color, #eee);
+    border-bottom: 1px solid var(--border-color);
   }
 }

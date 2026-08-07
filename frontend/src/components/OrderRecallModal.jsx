@@ -398,9 +398,9 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
             </div>
             <div className="orm-order-list">
               {loading ? (
-                <div style={{ padding: "1rem", textAlign: "center", color: "#888" }}>Loading...</div>
+                <div className="orm-list-status">Loading…</div>
               ) : orders.length === 0 ? (
-                <div style={{ padding: "1rem", textAlign: "center", color: "#888" }}>No orders found</div>
+                <div className="orm-list-status">No orders found</div>
               ) : (
                 orders.map((o) => {
                   const isSel = selectedOrder?.id === o.id;
@@ -438,7 +438,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                     <h3 className="orm-detail-title">Order #{selectedOrder.order_number}</h3>
                     <div className="orm-detail-meta">
                       <span>Server: <strong>{selectedOrder.staff_name}</strong></span>
-                      <span>Payment: <strong style={{ textTransform: "uppercase" }}>{selectedOrder.payment_method}</strong></span>
+                      <span>Payment: <strong className="orm-payment-method">{selectedOrder.payment_method}</strong></span>
                       <span>Time: {new Date(selectedOrder.created_at).toLocaleString()}</span>
                     </div>
                   </div>
@@ -462,21 +462,21 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                   <thead>
                     <tr>
                       <th>Item</th>
-                      <th style={{ textAlign: "center" }}>Qty</th>
-                      <th style={{ textAlign: "right" }}>Price</th>
-                      <th style={{ textAlign: "right" }}>Total</th>
+                      <th className="orm-col--center">Qty</th>
+                      <th className="orm-col--right">Price</th>
+                      <th className="orm-col--right">Total</th>
                     </tr>
                   </thead>
                   <tbody>
                     {selectedOrder.items.map((item) => (
                       <tr key={item.order_item_id}>
                         <td>
-                          <strong>{item.name}</strong>
-                          {item.variant_name && <span style={{ color: "#666" }}> ({item.variant_name})</span>}
+                          <span className="orm-item-name">{item.name}</span>
+                          {item.variant_name && <span className="orm-item-variant"> ({item.variant_name})</span>}
                         </td>
-                        <td style={{ textAlign: "center" }}>{item.quantity}</td>
-                        <td style={{ textAlign: "right" }}>${item.unit_price.toFixed(2)}</td>
-                        <td style={{ textAlign: "right" }}>${item.line_total.toFixed(2)}</td>
+                        <td className="orm-col--center">{item.quantity}</td>
+                        <td className="orm-col--right">${item.unit_price.toFixed(2)}</td>
+                        <td className="orm-col--right">${item.line_total.toFixed(2)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -486,7 +486,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                 <div className="orm-summary-box">
                   <div className="orm-summary-row"><span>Subtotal:</span><span>${selectedOrder.subtotal.toFixed(2)}</span></div>
                   {selectedOrder.discount > 0 && (
-                    <div className="orm-summary-row" style={{ color: "#d93025" }}>
+                    <div className="orm-summary-row orm-summary-row--discount">
                       <span>Discount ({selectedOrder.discount_reason}):</span>
                       <span>-${selectedOrder.discount.toFixed(2)}</span>
                     </div>
@@ -496,7 +496,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                     <span>Total Paid:</span><span>${selectedOrder.total.toFixed(2)}</span>
                   </div>
                   {selectedOrder.refund_summary.total_refunded > 0 && (
-                    <div className="orm-summary-row" style={{ color: "#b06000", fontWeight: "600", marginTop: "0.4rem" }}>
+                    <div className="orm-summary-row orm-summary-row--refunded">
                       <span>Total Refunded:</span>
                       <span>-${selectedOrder.refund_summary.total_refunded.toFixed(2)}</span>
                     </div>
@@ -667,7 +667,8 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                   return (
                     <div key={item.order_item_id} className="orm-line-row">
                       <div>
-                        <span>{item.name}</span> (${item.unit_price.toFixed(2)})
+                        <span className="orm-item-name">{item.name}</span>{" "}
+                        <span className="orm-line-price">${item.unit_price.toFixed(2)}</span>
                       </div>
                       <div className="orm-line-stepper">
                         <button
@@ -736,12 +737,12 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
               <>
                 <p className="orm-pin-subtitle">
                   Reversal of ${calculatedReversalAmount.toFixed(2)} — Select who is approving
-                  {isOwnerRequired && <span style={{ color: "#d93025", display: "block", fontWeight: "600", marginTop: "0.2rem" }}>Owner/Admin approval required for $100+</span>}
+                  {isOwnerRequired && <span className="orm-pin-required">Owner/Admin approval required for $100+</span>}
                 </p>
 
                 <div className="orm-approvers-list">
                   {eligibleApprovers.length === 0 ? (
-                    <div style={{ color: "#888", padding: "1rem" }}>No eligible approver found</div>
+                    <div className="orm-approvers-empty">No eligible approver found</div>
                   ) : (
                     eligibleApprovers.map((appr) => (
                       <button
@@ -763,8 +764,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
 
                 <button
                   type="button"
-                  className="orm-btn orm-btn--secondary"
-                  style={{ width: "100%", marginTop: "0.5rem" }}
+                  className="orm-btn orm-btn--secondary orm-pin-cancel-btn"
                   onClick={() => setPinModalOpen(false)}
                 >
                   Cancel
@@ -785,7 +785,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                   ← Select Different Approver
                 </button>
 
-                <p className="orm-pin-subtitle" style={{ fontSize: "0.95rem" }}>
+                <p className="orm-pin-subtitle">
                   Enter 4-digit PIN for <strong>{selectedApprover.name}</strong> ({selectedApprover.role.toUpperCase()})
                 </p>
 
@@ -828,8 +828,7 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
                   </button>
                   <button
                     type="button"
-                    className="orm-keypad-btn"
-                    style={{ fontSize: "0.9rem", color: "#d93025" }}
+                    className="orm-keypad-btn orm-keypad-btn--cancel"
                     onClick={() => setPinModalOpen(false)}
                     disabled={submitting}
                   >
