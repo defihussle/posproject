@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 48 48">
+  <!-- Narcos Tacos chili pepper, redrawn as vector from the original 48x48
+       favicon so it stays sharp at any size. Every coordinate below is traced
+       off that bitmap's pixel grid, as are the two colours (#E13038 red,
+       #3C7A51 green). Authored at 1024 so downscaling to each icon size
+       resolves cleanly instead of being upscaled from 48px. -->
+
+  <!-- Fruit: rounded shoulder top-right, near-straight right flank, flat
+       belly, tapering to a sharp tip at bottom-left. -->
+  <path fill="#E13038" d="M10.2 41.9
+    C13.5 38.5 17.0 34.8 19.6 31.0
+    C21.0 28.0 21.2 23.5 22.4 20.4
+    C24.5 16.8 33.0 15.8 36.6 19.2
+    C38.6 21.5 38.0 25.5 36.0 29.5
+    C34.0 33.5 31.0 36.5 27.6 38.4
+    C22.5 40.2 15.5 41.5 10.2 41.9 Z"/>
+
+  <!-- Calyx: rounded diamond where the stem meets the fruit. -->
+  <path fill="#3C7A51" d="M30.5 13.2
+    C32.2 14.1 33.8 15.5 33.8 16.6
+    C33.8 17.7 32.3 18.6 30.6 18.9
+    C28.8 18.6 27.2 17.7 27.2 16.6
+    C27.2 15.5 28.8 14.1 30.5 13.2 Z"/>
+
+  <!-- Stem: near-vertical with a slight lean. Round cap so it reads as a stem
+       rather than a cut-off rectangle once it's only a couple of pixels wide. -->
+  <path fill="none" stroke="#3C7A51" stroke-width="1.7" stroke-linecap="round"
+        d="M30.4 13.8 C30.7 10.5 29.9 7.6 29.0 5.4"/>
+</svg>

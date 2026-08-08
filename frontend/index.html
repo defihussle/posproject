@@ -2,7 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Icons. .ico first as the legacy fallback, then the SVG which any
+         current browser prefers; apple-touch-icon is what iOS uses for
+         "Add to Home Screen", and the manifest covers Android/Chrome. -->
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <meta name="theme-color" content="#111111" />
+    <meta name="apple-mobile-web-app-title" content="Narcos POS" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Narcos Tacos POS — Staff Login & Order Management" />
     <title>Narcos Tacos POS</title>
