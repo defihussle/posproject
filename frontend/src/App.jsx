@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import PinLogin from "./components/PinLogin";
 import OrderEntry from "./components/OrderEntry";
 import KitchenDisplay from "./components/KitchenDisplay";
@@ -40,6 +40,42 @@ function roleToPath() {
   return "/order-entry";
 }
 
+// Which manifest each section advertises. A Home Screen shortcut does NOT
+// remember the URL it was created from — iOS (15.4+) and Android read the
+// manifest of the page you were on and then launch the shortcut at that
+// manifest's start_url. With one manifest for the whole SPA, every shortcut
+// inherited start_url "/", which the catch-all route below sends to Order
+// Entry — so a shortcut added from Back Office still opened Order Entry.
+// Pointing the tag at a per-section manifest is what gives the two shortcuts
+// different landing pages.
+const MANIFESTS = {
+  backoffice: { href: "/backoffice.webmanifest", title: "Back Office" },
+  pos: { href: "/site.webmanifest", title: "Narcos POS" },
+};
+
+function ManifestLink() {
+  const { pathname } = useLocation();
+
+  useEffect(() => {
+    const m = pathname.startsWith("/backoffice") ? MANIFESTS.backoffice : MANIFESTS.pos;
+
+    const link = document.querySelector('link[rel="manifest"]');
+    if (link && link.getAttribute("href") !== m.href) {
+      link.setAttribute("href", m.href);
+    }
+
+    // iOS below 15.4 ignores the manifest and names the shortcut from this
+    // meta tag instead, so it has to track the same split or the Back Office
+    // icon lands on the Home Screen labelled "Narcos POS".
+    const meta = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    if (meta && meta.getAttribute("content") !== m.title) {
+      meta.setAttribute("content", m.title);
+    }
+  }, [pathname]);
+
+  return null;
+}
+
 export default function App() {
   const [staff, setStaff] = useState(getStoredStaff);
   const [theme, setTheme] = useState(getStoredTheme);
@@ -66,6 +102,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      <ManifestLink />
       <Routes>
         {/* Login — device pairing gates the PIN pad itself, so an unpaired
             device (or one whose cookie was cleared) always sees the pairing
