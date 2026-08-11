@@ -1,1 +1,6 @@
+# Back Office is a second HTML entry (see backoffice.html) so that iOS reads a
+# static Back Office manifest when adding it to the Home Screen. These two rules
+# MUST stay above the SPA catch-all — first match wins.
+/backoffice        /backoffice.html   200
+/backoffice/*      /backoffice.html   200
 /*    /index.html   200

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      Second Vite entry point, and the reason it exists: iOS Safari reads the
+      manifest of the document that is loaded when you tap "Add to Home
+      Screen", and it does not reliably pick up a <link rel="manifest"> whose
+      href was swapped client-side after load. A Back Office shortcut added
+      from the shared index.html therefore inherited the POS manifest and
+      launched at "/" — which App.jsx's catch-all sends to Order Entry.
+
+      This file hard-codes the Back Office manifest, so there is nothing to
+      swap and nothing for Safari to miss. It is served for /backoffice* by
+      the rewrite rules in public/_redirects (and by the dev/preview
+      middleware in vite.config.js, so local behaviour matches production).
+    -->
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/backoffice.webmanifest" />
+    <meta name="theme-color" content="#111111" />
+    <meta name="apple-mobile-web-app-title" content="Back Office" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Narcos Tacos — Reports, Staff, Menu & Payroll" />
+    <title>Narcos Back Office</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
