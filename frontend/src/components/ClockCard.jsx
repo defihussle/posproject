@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { API_URL } from "../config";
 import "./StaffManager.css";
 import "./ClockCard.css";
+import useScrollLock from "../useScrollLock";
 
 function fmtDuration(totalSeconds) {
   const s = Math.max(0, Math.floor(totalSeconds));
@@ -40,6 +41,7 @@ const ACTION_ENDPOINTS = {
  * Start Shift, then immediately Take Break) can be chained in one visit.
  */
 export default function ClockCard({ staff, onClose }) {
+  useScrollLock();
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState(null); // 'not_clocked_in' | 'working' | 'on_break'
   const [clockIn, setClockIn] = useState(null);

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { API_URL } from "../config";
 import "./ReceiptModal.css";
+import useScrollLock from "../useScrollLock";
 
 // Customer receipt — print now, email optionally (plan Slice 8).
 //
@@ -39,6 +40,7 @@ const ENTRY_TYPE_LABEL = {
 const money = (n) => `$${Number(n).toFixed(2)}`;
 
 export default function ReceiptModal({ orderId, onClose }) {
+  useScrollLock();
   const [receipt, setReceipt] = useState(null);
   const [loadError, setLoadError] = useState(null);
 

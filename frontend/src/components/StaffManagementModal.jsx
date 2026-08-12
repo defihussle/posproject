@@ -4,6 +4,7 @@ import { canManageTarget, StaffAddForm } from "./StaffManager";
 import ConfirmDialog from "./ConfirmDialog";
 import "./StaffManager.css";
 import "./StaffManagementModal.css";
+import useScrollLock from "../useScrollLock";
 
 const LIVE_STATUS_POLL_MS = 5000; // same cadence as Back Office Home's Live Status card
 
@@ -42,6 +43,7 @@ function fmtSince(iso, nowMs) {
  * rather than a duplicate of full HR editing.
  */
 export default function StaffManagementModal({ staff, onClose }) {
+  useScrollLock();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -193,6 +195,7 @@ function ChevronIcon() {
 // exactly — an unmanageable row (e.g. an owner viewed by an admin) opens
 // the same sheet but with no write controls, view-only.
 function StaffDetailSheet({ row, me, onSaved, onRemoved, onError, onClose }) {
+  useScrollLock();
   const manageable = canManageTarget(me.role, row.role);
   const [busy, setBusy] = useState(false);
   const [pinPrompt, setPinPrompt] = useState(false);

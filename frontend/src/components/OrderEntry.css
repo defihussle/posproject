@@ -658,6 +658,10 @@
   flex-direction: column;
   gap: 18px;
   animation: fadeIn 0.18s ease-out;
+  /* Scroll-locked page behind: this must scroll itself when taller than
+     the viewport, or its actions become unreachable. */
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 .oe-checkout__header {
@@ -825,6 +829,10 @@
   gap: 14px;
   text-align: center;
   animation: fadeIn 0.18s ease-out;
+  /* Scroll-locked page behind: this must scroll itself when taller than
+     the viewport, or its actions become unreachable. */
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 .oe-upsell__close {

@@ -12,6 +12,7 @@ import logoImg from "../assets/narcos-tacos-logo.png";
 import { API_URL } from "../config";
 import "./OrderEntry.css";
 import "./StaffManager.css";
+import useScrollLock from "../useScrollLock";
 
 // Roles allowed to quick-add staff from the POS account dropdown
 const STAFF_QUICKADD_ROLES = ["owner", "admin", "manager"];
@@ -155,6 +156,11 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   // Receipt — order id, or null when closed.
   const [receiptOrderId, setReceiptOrderId] = useState(null);
   const [upsellOpen, setUpsellOpen] = useState(false); // post-checkout guac prompt
+
+  // The three full-screen modals on this screen. The account dropdown is
+  // deliberately not included — it's a menu, not a modal card. ItemModal,
+  // OrderRecallModal and ConfirmDialog each lock themselves.
+  useScrollLock(staffModalOpen || checkoutOpen || upsellOpen);
 
   // Total cart items count
   const cartItemsCount = useMemo(

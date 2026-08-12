@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { API_URL } from "../config";
 import "./StaffManager.css";
 import "./MyHoursModal.css";
+import useScrollLock from "../useScrollLock";
 
 const RANGES = [
   { key: "today", label: "Today" },
@@ -32,6 +33,7 @@ function fmtTime(iso) {
  * cashier/kitchen have no Back Office access at all.
  */
 export default function MyHoursModal({ staff, onClose }) {
+  useScrollLock();
   const [range, setRange] = useState("today");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);

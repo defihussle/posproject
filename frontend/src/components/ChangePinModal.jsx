@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { API_URL } from "../config";
 import "./StaffManager.css";
+import useScrollLock from "../useScrollLock";
 
 const digitsOnly = (v) => v.replace(/\D/g, "").slice(0, 4);
 
@@ -12,6 +13,7 @@ const digitsOnly = (v) => v.replace(/\D/g, "").slice(0, 4);
  * you actually know.
  */
 export default function ChangePinModal({ staff, onClose }) {
+  useScrollLock();
   const [currentPin, setCurrentPin] = useState("");
   const [newPin, setNewPin] = useState("");
   const [confirmPin, setConfirmPin] = useState("");

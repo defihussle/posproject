@@ -1,3 +1,4 @@
+import useScrollLock from "../useScrollLock";
 import "./ConfirmDialog.css";
 
 /**
@@ -23,6 +24,10 @@ export default function ConfirmDialog({
   onConfirm,
   onCancel,
 }) {
+  // Nested inside another modal in every current usage; the counter in the
+  // hook keeps the page locked when this closes and the outer one stays open.
+  useScrollLock();
+
   // Every current usage opens this from within an already-open modal —
   // stopPropagation here (not just on the inner modal) keeps a backdrop
   // click from also bubbling up and closing/dismissing whatever's behind

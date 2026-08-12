@@ -1,7 +1,9 @@
 import { useState, useMemo } from "react";
 import "./ItemModal.css";
+import useScrollLock from "../useScrollLock";
 
 export default function ItemModal({ item, initialVariant, onAdd, onClose }) {
+  useScrollLock();
   // --- Variant selection (radio — pick exactly one) ---
   const [selectedVariant, setSelectedVariant] = useState(initialVariant || null);
   const hasVariants = item.variants.length > 0;

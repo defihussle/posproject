@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { API_URL } from "../config";
 import ConfirmDialog from "./ConfirmDialog";
+import useScrollLock from "../useScrollLock";
 import "./MenuManager.css";
 
 const fmtPrice = (p) => `$${parseFloat(p).toFixed(2)}`;
@@ -76,6 +77,7 @@ export default function MenuManager({ staff, showTitle = true }) {
   // item so its always-visible detail panel wasn't blank). Browsing the
   // list is now the default, at-rest view; the modal is purely opt-in.
   const modalOpen = !!selectedItemId || creating;
+  useScrollLock(modalOpen);
   const closeModal = () => {
     setSelectedItemId(null);
     setCreating(false);

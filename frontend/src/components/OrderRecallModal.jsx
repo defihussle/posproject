@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { API_URL } from "../config";
 import ReceiptModal from "./ReceiptModal";
+import useScrollLock from "../useScrollLock";
 import "./OrderRecallModal.css";
 
 const REFUND_REASONS = [
@@ -57,6 +58,10 @@ const selfVoidAllowed = (order, actionType) =>
 const isInteracOrder = (order) => order?.processor_payment_type === "interac_present";
 
 export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
+  // The options/PIN overlays live inside this same component, so locking once
+  // at the root covers them too.
+  useScrollLock();
+
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");

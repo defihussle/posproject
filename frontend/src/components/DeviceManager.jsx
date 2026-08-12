@@ -4,6 +4,7 @@ import { formatDuration } from "../format";
 import ConfirmDialog from "./ConfirmDialog";
 import "./StaffManager.css";
 import "./DeviceManager.css";
+import useScrollLock from "../useScrollLock";
 
 function fmtDateTime(iso) {
   if (!iso) return "—";
@@ -199,6 +200,7 @@ function ChevronIcon() {
 // can manage every device equally, matching the plan's clarified scope
 // (owner + admin, same as every other Back Office capability).
 function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
+  useScrollLock();
   const [name, setName] = useState(row.device_name || "");
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -563,6 +565,7 @@ function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
 // parent's generateCode) rather than auto-closing out from under an
 // admin who's mid-read.
 function GenerateCodeModal({ modal, onGenerateAnother, onClose }) {
+  useScrollLock();
   const [secondsLeft, setSecondsLeft] = useState(() =>
     modal.state === "ready" ? Math.max(0, Math.round((new Date(modal.expiresAt).getTime() - Date.now()) / 1000)) : 0
   );

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { API_URL } from "../config";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import "./KitchenDisplay.css";
+import useScrollLock from "../useScrollLock";
 
 const POLL_MS = 5000;
 // 'cancelled' pulls VOIDED tickets onto the board. The backend narrows those to
@@ -1068,6 +1069,7 @@ function PastOrdersOverlay({ onClose, onReverted }) {
 }
 
 function PastOrderDetail({ order, onClose, onUndo, undoBusy, undoError }) {
+  useScrollLock();
   return (
     <div className="kds-detail-overlay" onClick={onClose}>
       <div className="kds-detail" onClick={(e) => e.stopPropagation()}>

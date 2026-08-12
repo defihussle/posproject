@@ -11,6 +11,7 @@ import { REPORTS, visibleReports } from "./reports/registry";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import { API_URL } from "../config";
 import "./BackOffice.css";
+import useScrollLock from "../useScrollLock";
 
 // Persistent nav config — add future Back Office sections here, each with the
 // roles allowed to see/use it and a URL path (sections are real routes under
@@ -118,6 +119,10 @@ export default function BackOffice() {
   const defaultPath = visibleNav.find((n) => !n.group)?.path ?? "home";
   const firstReportPath = visibleReports(staff.role)[0]?.path ?? "sales-summary";
   const closeDrawer = () => setSidebarOpen(false);
+
+  // The mobile nav drawer covers the page behind a full-screen backdrop, so
+  // it gets the same treatment as a modal card.
+  useScrollLock(sidebarOpen);
 
   return (
     <div className="backoffice">

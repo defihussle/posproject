@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { API_URL } from "../config";
 import ConfirmDialog from "./ConfirmDialog";
 import "./StaffManager.css";
+import useScrollLock from "../useScrollLock";
 
 const ALL_ROLES = ["owner", "admin", "manager", "cashier", "kitchen"];
 
@@ -58,6 +59,9 @@ export default function StaffManager({ staff, showLiveStatus = false }) {
   const [showAdd, setShowAdd] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [liveStatus, setLiveStatus] = useState({}); // staffId -> { status, since }
+
+  // Add Staff only. The detail modal is its own component and locks itself.
+  useScrollLock(showAdd);
 
   const load = useCallback(async () => {
     try {
@@ -216,6 +220,7 @@ function ChevronIcon() {
 // an unmanageable row (e.g. an owner viewed by an admin) opens the same
 // modal but read-only — view access always available, edit conditionally.
 function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
+  useScrollLock();
   const manageable = canManageTarget(me.role, row.role);
   const [role, setRole] = useState(row.role);
   const [rate, setRate] = useState(row.hourly_rate == null ? "" : String(row.hourly_rate));

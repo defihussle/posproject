@@ -26,6 +26,11 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* The page behind is scroll-locked while this is open, so a dialog taller
+     than the viewport has to scroll itself or its buttons become unreachable.
+     100% is the overlay minus its padding (border-box). */
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 .confirmdlg__title {
