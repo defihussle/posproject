@@ -24,8 +24,14 @@ import "../Reports.css";
 // See docs/architecture/reports-plan.md. Range resolution lives in
 // ../reportRange (pure + unit-tested).
 // ============================================================
+// Every report opens on the CURRENT period, not the last closed one. Opening a
+// report is nearly always "how are we doing right now"; a completed month is a
+// deliberate, occasional choice and is one tap away on the Last Month pill.
+// Keep this in step with the RangeSelector defaults below.
+const DEFAULT_PRESET = "this-month";
+
 export default function ReportsLayout({ staff }) {
-  const [range, setRange] = useState(() => resolvePreset("last-month"));
+  const [range, setRange] = useState(() => resolvePreset(DEFAULT_PRESET));
 
   return (
     <div className="reports">
@@ -65,13 +71,15 @@ export function ReportRoute({ report }) {
 // logic is needed server-side.
 function RangeSelector({ value, onChange }) {
   const now = new Date();
-  const [preset, setPreset] = useState("last-month"); // preset key or "custom"
+  const [preset, setPreset] = useState(DEFAULT_PRESET); // preset key or "custom"
   const [customMode, setCustomMode] = useState("month"); // month | quarter | range
-  const [month, setMonth] = useState(() => toYm(new Date(now.getFullYear(), now.getMonth() - 1, 1)));
+  // The custom pickers pre-fill with the CURRENT month/quarter too, so opening
+  // "Custom" doesn't silently jump the range backwards a month.
+  const [month, setMonth] = useState(() => toYm(new Date(now.getFullYear(), now.getMonth(), 1)));
   const [qYear, setQYear] = useState(now.getFullYear());
   const [quarter, setQuarter] = useState(Math.floor(now.getMonth() / 3) + 1 || 1);
-  const [rangeStart, setRangeStart] = useState(() => resolvePreset("last-month").start);
-  const [rangeEnd, setRangeEnd] = useState(() => resolvePreset("last-month").end);
+  const [rangeStart, setRangeStart] = useState(() => resolvePreset(DEFAULT_PRESET).start);
+  const [rangeEnd, setRangeEnd] = useState(() => resolvePreset(DEFAULT_PRESET).end);
 
   const resolved = useMemo(() => {
     if (preset !== "custom") return resolvePreset(preset);

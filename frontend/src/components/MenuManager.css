@@ -238,6 +238,49 @@
   flex-direction: column;
 }
 
+/* Category separator — a label plus a hairline where the category changes.
+   Deliberately NOT a collapsible section header: the list stays flat,
+   searchable and filterable, this only gives the eye somewhere to land while
+   scrolling. Quiet enough that item names still carry the page. */
+.menued__group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 16px 7px;
+  background: var(--bg-surface);
+}
+
+/* No leading gap when a category starts the list — the table's own top
+   padding already covers it. */
+.menued__group:first-child {
+  padding-top: 10px;
+}
+
+.menued__group-name {
+  font-family: var(--font-body);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.menued__group-count {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+
+.menued__group-rule {
+  flex: 1;
+  height: 1px;
+  min-width: 12px;
+  background: var(--border-color);
+}
+
 .menued__row {
   width: 100%;
   text-align: left;

@@ -89,9 +89,12 @@ export function resolveCustomRange(a, b) {
   return { start: lo, end: hi, label: fmtRange(lo, hi), kind: "range" };
 }
 
+// Ordered most-recent-first so the default period (This Month) is also the
+// leftmost pill — a selector whose active pill starts in the middle reads as
+// though something else was chosen for you.
 export const PRESETS = [
-  { key: "last-month", label: "Last Month" },
   { key: "this-month", label: "This Month" },
+  { key: "last-month", label: "Last Month" },
   { key: "this-quarter", label: "This Quarter" },
   { key: "this-year", label: "This Year" },
 ];

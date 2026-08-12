@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import { API_URL } from "../config";
 import ConfirmDialog from "./ConfirmDialog";
 import useScrollLock from "../useScrollLock";
@@ -141,6 +141,17 @@ export default function MenuManager({ staff, showTitle = true }) {
       );
     });
   }, [flatItems, search, catFilter, statusFilter]);
+
+  // How many of the CURRENTLY VISIBLE items each category holds — shown on the
+  // group separator, so the number tracks the active filters rather than the
+  // full menu.
+  const categoryCounts = useMemo(() => {
+    const counts = new Map();
+    for (const item of filteredItems) {
+      counts.set(item.categoryName, (counts.get(item.categoryName) || 0) + 1);
+    }
+    return counts;
+  }, [filteredItems]);
 
   const filtersActive = search.trim() !== "" || catFilter !== "all" || statusFilter !== "all";
   const clearFilters = () => {
@@ -458,11 +469,26 @@ export default function MenuManager({ staff, showTitle = true }) {
                 : "No items match these filters."}
             </div>
           ) : (
-            filteredItems.map((item) => {
+            filteredItems.map((item, idx) => {
               const opts = optionsSummary(item);
+              // The list stays flat and searchable — this is only a divider at
+              // the point the category changes, not a collapsible group. Items
+              // arrive already ordered by category, so comparing with the
+              // previous row is enough to find the boundaries.
+              const startsCategory =
+                idx === 0 || filteredItems[idx - 1].categoryName !== item.categoryName;
               return (
+                <Fragment key={item.id}>
+                  {startsCategory && (
+                    <div className="menued__group">
+                      <span className="menued__group-name">{item.categoryName}</span>
+                      <span className="menued__group-count">
+                        {categoryCounts.get(item.categoryName)}
+                      </span>
+                      <span className="menued__group-rule" />
+                    </div>
+                  )}
                 <button
-                  key={item.id}
                   className={`menued__row${item.active ? "" : " menued__row--inactive"}`}
                   onClick={() => setSelectedItemId(item.id)}
                 >
@@ -497,6 +523,7 @@ export default function MenuManager({ staff, showTitle = true }) {
 
                   <ChevronIcon />
                 </button>
+                </Fragment>
               );
             })
           )}
