@@ -9,10 +9,24 @@ const ALL_ROLES = ["owner", "admin", "manager", "cashier", "kitchen"];
 
 // Mirrors the backend rules so the UI never offers an action the server
 // would reject (the server still re-checks everything).
-export function assignableRoles(requesterRole) {
-  return requesterRole === "owner"
-    ? ALL_ROLES
-    : ALL_ROLES.filter((r) => r !== "owner" && r !== "admin");
+//
+// `owner` is deliberately absent for EVERY caller except the designated
+// super-owner — see assertRoleAssignable/isSuperOwner in server.js, which is
+// the actual enforcement. `me.is_super_owner` comes from the Back Office
+// session (GET /api/backoffice/auth/me), never from anything the client can
+// set. A plain owner still can't offer it, so nobody mints new owners through
+// this screen.
+//
+// Callers keep an existing owner's row rendering correctly via the
+// `options` fallback below — the role a person ALREADY has is always shown,
+// it just can't be selected for anyone else.
+export function assignableRoles(requester) {
+  const role = typeof requester === "string" ? requester : requester?.role;
+  const isSuperOwner = typeof requester === "object" && !!requester?.is_super_owner;
+  if (role !== "owner") {
+    return ALL_ROLES.filter((r) => r !== "owner" && r !== "admin");
+  }
+  return isSuperOwner ? ALL_ROLES : ALL_ROLES.filter((r) => r !== "owner");
 }
 
 export function canManageTarget(requesterRole, targetRole) {
@@ -236,7 +250,10 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
   const [pinPrompt, setPinPrompt] = useState(false);
   const [confirmingRole, setConfirmingRole] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
-  const roles = assignableRoles(me.role);
+  const roles = assignableRoles(me);
+  // An existing owner still renders with "owner" selected — it's prepended
+  // here and marked disabled below, so the row reads correctly and stays
+  // editable without the role being re-assignable to anyone else.
   const options = roles.includes(row.role) ? roles : [row.role, ...roles];
   const isBackofficeRole = role === "owner" || role === "admin";
 
@@ -589,7 +606,10 @@ function InlinePinReset({ staffId, staffName, me, onDone, onError }) {
  * logged-in role may assign (backend re-checks regardless).
  */
 export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/backoffice/staff" }) {
-  const roles = assignableRoles(staff.role);
+  // Passed the whole staff object (not just .role) so a super-owner still sees
+  // Owner here. The POS quick-add entry point passes its PIN-login staff, which
+  // carries no is_super_owner flag — so Owner is never offered from the POS.
+  const roles = assignableRoles(staff);
   const [name, setName] = useState("");
   const [role, setRole] = useState("cashier");
   const [rate, setRate] = useState("");

@@ -4327,8 +4327,11 @@ app.post("/api/backoffice/auth/login-step2", async (req, res) => {
       return res.status(429).json({ error: formatLockoutMessage(rateCheck.retryAfter), retryAfter: rateCheck.retryAfter });
     }
 
+    // email is selected so isSuperOwner() below can match a SUPER_OWNER_EMAIL
+    // designation — without it a fresh login would report is_super_owner:false
+    // while GET /auth/me reported true for the same account.
     const { rows } = await pool.query(
-      "SELECT id, name, role, totp_secret, totp_enabled FROM staff WHERE id = $1 AND active = true AND role IN ('owner','admin')",
+      "SELECT id, name, role, email, totp_secret, totp_enabled FROM staff WHERE id = $1 AND active = true AND role IN ('owner','admin')",
       [payload.staffId]
     );
     const staff = rows[0];
@@ -4347,7 +4350,15 @@ app.post("/api/backoffice/auth/login-step2", async (req, res) => {
     clearAttempts(payload.staffId, "bo-totp");
 
     issueSession(req, res, staff.id);
-    res.json({ id: staff.id, name: staff.name, role: staff.role });
+    // Same shape as GET /auth/me — the app keeps whichever it received as
+    // `me`, so both need is_super_owner or the Owner option would appear or
+    // vanish depending on whether the session was fresh or restored.
+    res.json({
+      id: staff.id,
+      name: staff.name,
+      role: staff.role,
+      is_super_owner: isSuperOwner(staff),
+    });
   } catch (err) {
     sendHttpError(res, err, "Failed to verify code");
   }
@@ -4456,7 +4467,15 @@ app.post("/api/backoffice/auth/logout", (req, res) => {
 app.get("/api/backoffice/auth/me", async (req, res) => {
   try {
     const staff = await requireBackofficeSession(req);
-    res.json({ id: staff.id, name: staff.name, role: staff.role });
+    // is_super_owner lets the UI hide the Owner option for everyone else. It's
+    // a convenience only — assertRoleAssignable re-checks server-side and is
+    // the actual enforcement.
+    res.json({
+      id: staff.id,
+      name: staff.name,
+      role: staff.role,
+      is_super_owner: isSuperOwner(staff),
+    });
   } catch (err) {
     sendHttpError(res, err, "Not authenticated");
   }
@@ -5317,11 +5336,63 @@ function canManageTarget(requesterRole, targetRole) {
   return true; // manager/cashier/kitchen rows
 }
 
+// ---- Super-owner (the Owner-role escape hatch) ----
+// The owner role can only be handed out by ONE designated account. Configured
+// by environment variable so no schema change is needed:
+//
+//   SUPER_OWNER_STAFF_ID  — staff.id (uuid). PREFERRED: a row's id can't be
+//                           edited through any API, so the designation can't
+//                           be moved by anyone.
+//   SUPER_OWNER_EMAIL     — matched case-insensitively against staff.email.
+//                           Easier to configure, but email IS editable, so
+//                           the guards in PUT /api/backoffice/staff/:id below
+//                           stop anyone other than the super-owner from
+//                           changing the super-owner's email out from under
+//                           this check.
+//
+// Unset = FAIL CLOSED: nobody can create or promote to owner. That's the safe
+// direction (the whole point of this feature is that owner is not routinely
+// assignable), and it's recoverable by setting the variable and redeploying —
+// whereas failing open would silently leave the role wide open.
+const SUPER_OWNER_STAFF_ID = (process.env.SUPER_OWNER_STAFF_ID || "").trim();
+const SUPER_OWNER_EMAIL = (process.env.SUPER_OWNER_EMAIL || "").trim().toLowerCase();
+const SUPER_OWNER_CONFIGURED = Boolean(SUPER_OWNER_STAFF_ID || SUPER_OWNER_EMAIL);
+
+// `staff` must be a row read from the DB in this request — never a role or id
+// taken from the request body.
+function isSuperOwner(staff) {
+  if (!staff || staff.role !== "owner") return false;
+  if (SUPER_OWNER_STAFF_ID && staff.id === SUPER_OWNER_STAFF_ID) return true;
+  if (
+    SUPER_OWNER_EMAIL &&
+    typeof staff.email === "string" &&
+    staff.email.trim().toLowerCase() === SUPER_OWNER_EMAIL
+  ) {
+    return true;
+  }
+  return false;
+}
+
 // Only owners may hand out the owner or admin role (create OR promote) —
-// prevents privilege escalation by admins/managers.
-function assertRoleAssignable(requesterRole, newRole) {
-  if ((newRole === "owner" || newRole === "admin") && requesterRole !== "owner") {
+// prevents privilege escalation by admins/managers. On top of that, `owner`
+// itself is reserved for the designated super-owner above.
+//
+// `currentRole` is the target's EXISTING role (null when creating). It matters
+// because an edit form resubmits the unchanged role alongside whatever field
+// actually changed — without this, saving an existing owner's hourly rate would
+// look like "assigning owner" and 403. Only a real transition INTO owner is
+// blocked.
+function assertRoleAssignable(requester, newRole, currentRole = null) {
+  if ((newRole === "owner" || newRole === "admin") && requester.role !== "owner") {
     throw new HttpError(403, "Only an owner can assign the owner or admin role");
+  }
+  if (newRole === "owner" && currentRole !== "owner" && !isSuperOwner(requester)) {
+    throw new HttpError(
+      403,
+      SUPER_OWNER_CONFIGURED
+        ? "The owner role can only be assigned by the primary owner account"
+        : "Assigning the owner role is disabled — no primary owner account is configured"
+    );
   }
 }
 
@@ -5466,7 +5537,9 @@ async function createStaffMember(req, res, requester) {
     if (!STAFF_ROLES.includes(role)) {
       throw new HttpError(400, "role must be one of owner/admin/manager/cashier/kitchen");
     }
-    assertRoleAssignable(requester.role, role);
+    // No currentRole — a brand-new row has no prior role, so any `owner` here
+    // is a real assignment and only the super-owner may make it.
+    assertRoleAssignable(requester, role);
     const rate = Number(hourly_rate);
     if (!Number.isFinite(rate) || rate <= 0) {
       throw new HttpError(400, "hourly_rate must be a positive number");
@@ -6027,8 +6100,10 @@ app.get("/api/staff/me/hours", async (req, res) => {
 async function requireManagedTarget(requester, targetId) {
   let rows;
   try {
+    // email is selected so callers can evaluate isSuperOwner() on the TARGET,
+    // not just the requester.
     ({ rows } = await pool.query(
-      "SELECT id, name, role, active FROM staff WHERE id = $1",
+      "SELECT id, name, role, active, email FROM staff WHERE id = $1",
       [targetId]
     ));
   } catch {
@@ -6057,6 +6132,20 @@ app.put("/api/backoffice/staff/:id", async (req, res) => {
     const requester = await requireBackofficeSession(req);
     const target = await requireManagedTarget(requester, req.params.id);
 
+    // The super-owner's own designation must not be movable by anyone else.
+    // Another owner could otherwise demote the super-owner, or (when matching
+    // by SUPER_OWNER_EMAIL) free up that address and claim it — either way
+    // taking over the escape hatch. Everything else about the row (name,
+    // hourly rate, PIN reset, activate/deactivate) stays editable as normal.
+    if (isSuperOwner(target) && !isSuperOwner(requester)) {
+      if (body.role !== undefined && body.role !== target.role) {
+        throw new HttpError(403, "The primary owner account's role can't be changed");
+      }
+      if (body.email !== undefined) {
+        throw new HttpError(403, "The primary owner account's email can't be changed here");
+      }
+    }
+
     const sets = [];
     const vals = [];
     let i = 1;
@@ -6072,7 +6161,7 @@ app.put("/api/backoffice/staff/:id", async (req, res) => {
       if (!STAFF_ROLES.includes(body.role)) {
         throw new HttpError(400, "role must be one of owner/admin/manager/cashier/kitchen");
       }
-      assertRoleAssignable(requester.role, body.role);
+      assertRoleAssignable(requester, body.role, target.role);
       sets.push(`role = $${i++}`);
       vals.push(body.role);
     }
@@ -7934,6 +8023,15 @@ if (require.main === module) {
   assertSchemaCurrent().then(() => {
     app.listen(PORT, () => {
       console.log(`Narcos Tacos POS API running on http://localhost:${PORT}`);
+      // Surfaced at boot because the failure mode is silent otherwise: the
+      // owner role simply can't be assigned by anyone, and the first person to
+      // hit it would only see a 403 from a screen that used to work.
+      if (!SUPER_OWNER_CONFIGURED) {
+        console.warn(
+          "No SUPER_OWNER_STAFF_ID / SUPER_OWNER_EMAIL set — assigning the owner role is disabled for everyone. " +
+            "Existing owners are unaffected."
+        );
+      }
       startReconciliationSchedule();
     });
   });
