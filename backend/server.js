@@ -4481,6 +4481,61 @@ app.get("/api/backoffice/auth/me", async (req, res) => {
   }
 });
 
+// GET /api/backoffice/super-owner-check — owner/admin only.
+// Answers "why am I not the super-owner?" without shell access to the running
+// service. Deliberately behind the Back Office session (not /api/health, which
+// is public) and it never echoes the configured email back in full — only a
+// masked form, which is enough to spot a typo, a stray quote or the wrong
+// address while staying useless to anyone who shouldn't see it.
+//
+// Its mere presence is also the test for "is the deployed backend actually
+// running this code?" — a 404 here means the service is on an older build,
+// which looks identical from the UI (auth/me returns no is_super_owner field,
+// so the frontend reads it as false and hides Owner).
+app.get("/api/backoffice/super-owner-check", async (req, res) => {
+  try {
+    const staff = await requireBackofficeSession(req);
+    const mask = (value) => {
+      if (!value) return null;
+      const at = value.indexOf("@");
+      if (at < 1) return `${value.slice(0, 1)}***`;
+      return `${value.slice(0, 1)}***${value.slice(at)}`;
+    };
+    const myEmail = typeof staff.email === "string" ? staff.email.trim().toLowerCase() : null;
+    const matchedById = Boolean(SUPER_OWNER_STAFF_ID && staff.id === SUPER_OWNER_STAFF_ID);
+    const matchedByEmail = Boolean(SUPER_OWNER_EMAIL && myEmail && myEmail === SUPER_OWNER_EMAIL);
+
+    const reasons = [];
+    if (!SUPER_OWNER_CONFIGURED) {
+      reasons.push("Neither SUPER_OWNER_STAFF_ID nor SUPER_OWNER_EMAIL is set on this service.");
+    }
+    if (staff.role !== "owner") {
+      reasons.push(`Your Back Office role is "${staff.role}" — the super-owner must be an owner.`);
+    }
+    if (SUPER_OWNER_EMAIL && !myEmail) {
+      reasons.push("Your staff row has no email address stored, so it can never match SUPER_OWNER_EMAIL.");
+    }
+    if (SUPER_OWNER_EMAIL && myEmail && !matchedByEmail) {
+      reasons.push("Your email does not equal SUPER_OWNER_EMAIL (compare the masked values below).");
+    }
+    if (SUPER_OWNER_STAFF_ID && !matchedById) {
+      reasons.push("Your staff id does not equal SUPER_OWNER_STAFF_ID.");
+    }
+
+    res.json({
+      isSuperOwner: isSuperOwner(staff),
+      configured: SUPER_OWNER_CONFIGURED,
+      matchedBy: matchedById ? "id" : matchedByEmail ? "email" : null,
+      you: { id: staff.id, role: staff.role, emailMasked: mask(myEmail) },
+      configuredEmailMasked: mask(SUPER_OWNER_EMAIL),
+      configuredStaffIdSet: Boolean(SUPER_OWNER_STAFF_ID),
+      reasons,
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to check super-owner configuration");
+  }
+});
+
 // --------------- Back Office: menu management ---------------
 // Every route here re-verifies ON THE SERVER that the caller is an active
 // owner/admin (403 otherwise) — same principle as checkout's server-side
@@ -5354,8 +5409,19 @@ function canManageTarget(requesterRole, targetRole) {
 // direction (the whole point of this feature is that owner is not routinely
 // assignable), and it's recoverable by setting the variable and redeploying —
 // whereas failing open would silently leave the role wide open.
-const SUPER_OWNER_STAFF_ID = (process.env.SUPER_OWNER_STAFF_ID || "").trim();
-const SUPER_OWNER_EMAIL = (process.env.SUPER_OWNER_EMAIL || "").trim().toLowerCase();
+// Dashboard env editors (Render included) happily store the surrounding quotes
+// when a value is pasted as "you@example.com" or 'you@example.com', and a
+// trailing newline survives a copy/paste out of a terminal. Either one makes an
+// otherwise-correct value never match, with no visible clue. Strip them rather
+// than let a quote silently disable the escape hatch.
+function readEnvValue(name) {
+  const raw = process.env[name];
+  if (typeof raw !== "string") return "";
+  return raw.trim().replace(/^['"]+|['"]+$/g, "").trim();
+}
+
+const SUPER_OWNER_STAFF_ID = readEnvValue("SUPER_OWNER_STAFF_ID");
+const SUPER_OWNER_EMAIL = readEnvValue("SUPER_OWNER_EMAIL").toLowerCase();
 const SUPER_OWNER_CONFIGURED = Boolean(SUPER_OWNER_STAFF_ID || SUPER_OWNER_EMAIL);
 
 // `staff` must be a row read from the DB in this request — never a role or id
