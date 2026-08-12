@@ -61,11 +61,19 @@
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 0;
+  gap: 12px;
+  padding: 11px 0;
   text-align: left;
-  border-bottom: 1px dashed var(--border-color);
+  border-bottom: 1px solid var(--border-color);
   transition: background-color 0.12s ease;
+}
+
+/* Keeps the header labels lined up with the columns now that every row starts
+   with a 34px icon tile plus the row gap. */
+.devices-header::before {
+  content: "";
+  flex-shrink: 0;
+  width: 34px;
 }
 
 .devices-row:last-child {
@@ -130,35 +138,8 @@
   text-align: center;
 }
 
-/* ---------- Floating "Generate Pairing Code" action ---------- */
-.devices__fab {
-  position: fixed;
-  right: 24px;
-  bottom: 24px;
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 22px;
-  border-radius: var(--radius-full);
-  background: var(--red);
-  color: #fff;
-  font-family: var(--font-body);
-  font-size: 0.85rem;
-  font-weight: 700;
-  white-space: nowrap;
-  box-shadow: var(--shadow-medium);
-  transition: background-color 0.12s ease, transform 0.12s ease;
-}
-
-.devices__fab:hover {
-  background: var(--red-hover);
-  transform: translateY(-1px);
-}
-
-.devices__fab:active {
-  transform: translateY(0);
-}
+/* The "Generate Code" action now uses the shared .bo-fab (BackOffice.css), so
+   every section's primary create button is the same control in the same place. */
 
 /* ---------- Detail modal — name (view by default, Edit toggles input) ---------- */
 .devices__name-block {

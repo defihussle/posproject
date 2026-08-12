@@ -10,6 +10,7 @@ import {
   resolveCustomRange,
 } from "../reportRange";
 import { visibleReports } from "./registry";
+import { IconCalendar, IconSliders } from "../icons";
 import "../Reports.css";
 
 // ============================================================
@@ -97,20 +98,31 @@ function RangeSelector({ value, onChange }) {
 
   return (
     <div className="reports__rangesel">
-      <div className="reports__presets">
+      {/* One horizontal segmented control rather than a row of loose pills:
+          the options are mutually exclusive, so they read better as a single
+          grouped track. Leading Calendar / trailing Sliders icons bookend the
+          period choices and the escape hatch into Custom. */}
+      <div className="reports__segmented" role="group" aria-label="Reporting period">
+        <span className="reports__seg-icon" aria-hidden="true">
+          <IconCalendar size={15} />
+        </span>
         {PRESETS.map((p) => (
           <button
             key={p.key}
-            className={`reports__pill${preset === p.key ? " reports__pill--active" : ""}`}
+            className={`reports__seg${preset === p.key ? " reports__seg--active" : ""}`}
             onClick={() => setPreset(p.key)}
+            aria-pressed={preset === p.key}
           >
             {p.label}
           </button>
         ))}
+        <span className="reports__seg-divider" aria-hidden="true" />
         <button
-          className={`reports__pill${isCustom ? " reports__pill--active" : ""}`}
+          className={`reports__seg reports__seg--custom${isCustom ? " reports__seg--active" : ""}`}
           onClick={() => setPreset("custom")}
+          aria-pressed={isCustom}
         >
+          <IconSliders size={14} />
           Custom
         </button>
       </div>

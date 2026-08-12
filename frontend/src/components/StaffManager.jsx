@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { API_URL } from "../config";
 import ConfirmDialog from "./ConfirmDialog";
+import { IconPlus, IconUser } from "./icons";
 import "./StaffManager.css";
 import useScrollLock from "../useScrollLock";
 
@@ -133,9 +134,6 @@ export default function StaffManager({ staff, showLiveStatus = false }) {
 
       <div className="staffmgr__toolbar">
         <h2 className="staffmgr__title">Staff</h2>
-        <button className="staffmgr__add-btn" onClick={() => setShowAdd(true)}>
-          + Add Staff
-        </button>
       </div>
 
       <div className="staffmgr__list">
@@ -145,6 +143,9 @@ export default function StaffManager({ staff, showLiveStatus = false }) {
             className={`staffmgr-row${row.active ? "" : " staffmgr-row--inactive"}`}
             onClick={() => setSelectedId(row.id)}
           >
+            <span className="bo-row__icon" aria-hidden="true">
+              <IconUser size={18} />
+            </span>
             <span className="staffmgr-row__name">
               {row.name}
               {row.id === staff.id && <span className="staffmgr-row__you">you</span>}
@@ -156,13 +157,18 @@ export default function StaffManager({ staff, showLiveStatus = false }) {
               )}
             </span>
             <span className={`staffmgr-row__role staffmgr-row__role--${row.role}`}>{row.role}</span>
-            <span className={`staffmgr-row__status${row.active ? "" : " staffmgr-row__status--off"}`}>
-              {row.active ? "ACTIVE" : "INACTIVE"}
+            <span className={`bo-pill ${row.active ? "bo-pill--positive" : "bo-pill--negative"}`}>
+              {row.active ? "Active" : "Deactivated"}
             </span>
             <ChevronIcon />
           </button>
         ))}
       </div>
+
+      <button className="bo-fab" onClick={() => setShowAdd(true)}>
+        <IconPlus size={17} />
+        Add Staff
+      </button>
 
       {selectedRow && (
         <StaffDetailModal

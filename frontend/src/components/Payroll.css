@@ -123,7 +123,7 @@
 }
 
 .payroll__table tbody tr {
-  border-bottom: 1px dashed var(--border-color);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .payroll__num {

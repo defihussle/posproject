@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { API_URL } from "../config";
 import { formatDuration } from "../format";
 import ConfirmDialog from "./ConfirmDialog";
+import { IconPlus, IconPhone, IconLaptop } from "./icons";
 import "./StaffManager.css";
 import "./DeviceManager.css";
 import useScrollLock from "../useScrollLock";
@@ -137,6 +138,12 @@ export default function DeviceManager() {
                 className={`devices-row${row.revoked_at ? " devices-row--revoked" : ""}`}
                 onClick={() => setSelectedId(row.id)}
               >
+                {/* A glyph per row so the list scans as devices rather than as
+                    a wall of names. Tills drive a card reader, so they get the
+                    laptop mark; everything else reads as a handheld. */}
+                <span className="bo-row__icon" aria-hidden="true">
+                  {row.stripe_reader_id ? <IconLaptop size={18} /> : <IconPhone size={18} />}
+                </span>
                 <span className="devices-row__name">
                   <span className="devices-row__name-text">{row.device_name}</span>
                   {/* Which card reader this till drives. Shown for every device
@@ -149,7 +156,9 @@ export default function DeviceManager() {
                   </span>
                 </span>
                 <span className="devices-row__date">{fmtRelative(row.last_seen_at)}</span>
-                <span className={`staffmgr__status-pill devices-row__pill${row.revoked_at ? " staffmgr__status-pill--off" : ""}`}>
+                <span
+                  className={`bo-pill devices-row__pill ${row.revoked_at ? "bo-pill--negative" : "bo-pill--positive"}`}
+                >
                   {row.revoked_at ? "Revoked" : "Paired"}
                 </span>
                 <ChevronIcon />
@@ -159,8 +168,9 @@ export default function DeviceManager() {
         </>
       )}
 
-      <button className="devices__fab" onClick={generateCode}>
-        + Generate Pairing Code
+      <button className="bo-fab" onClick={generateCode}>
+        <IconPlus size={17} />
+        Generate Code
       </button>
 
       {selectedRow && (

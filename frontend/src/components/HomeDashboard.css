@@ -103,9 +103,12 @@
 .homedash__range-btn:hover {
   color: var(--text-primary);
 }
+/* Same raised-chip selection as the Reports segmented control, so the two
+   period pickers read as one component used twice. */
 .homedash__range-btn--active {
-  background: var(--red);
-  color: #fff;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-soft);
 }
 
 /* Custom date pickers */
@@ -157,16 +160,25 @@
 .homedash-kpi {
   position: relative;
   flex: 0 0 auto;
-  min-width: 150px;
+  min-width: 190px;
   scroll-snap-align: start;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   padding: 16px 18px;
   background: var(--bg-surface);
   border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
+  border-radius: var(--card-radius, var(--radius-lg));
   box-shadow: var(--shadow-soft);
+}
+
+/* Primary figure + trend badge on one baseline; the badge is pushed to the
+   trailing edge so a row of cards lines its badges up down the right. */
+.homedash-kpi__main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .homedash-kpi__label {
@@ -199,19 +211,38 @@
 
 .homedash-kpi__delta {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   font-weight: 700;
+  white-space: nowrap;
 }
 .homedash-kpi__delta--pending {
   color: var(--text-muted);
   font-weight: 500;
+  font-size: 0.66rem;
+}
+
+/* Trend reads as a small tinted badge rather than loose coloured text —
+   direction still comes from the arrow, so it never relies on colour alone. */
+.homedash-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .homedash-delta--good {
-  color: var(--green);
+  background: var(--mint-surface, var(--green-light));
+  color: var(--mint-text, var(--green));
 }
 .homedash-delta--bad {
-  color: var(--red);
+  background: var(--rose-surface, var(--red-light));
+  color: var(--rose-text, var(--red));
 }
 
 /* ---------- Section grid ---------- */
@@ -507,7 +538,7 @@
   border-bottom: 1px solid var(--border-color);
 }
 .homedash-table__row {
-  border-bottom: 1px dashed var(--border-color);
+  border-bottom: 1px solid var(--border-color);
 }
 .homedash-table__row:last-of-type {
   border-bottom: none;
@@ -593,7 +624,7 @@
   align-items: center;
   gap: 10px;
   padding: 8px 0;
-  border-bottom: 1px dashed var(--border-color);
+  border-bottom: 1px solid var(--border-color);
 }
 .homedash-list__row:last-child {
   border-bottom: none;

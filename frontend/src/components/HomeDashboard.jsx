@@ -320,25 +320,28 @@ function KpiCard({ kpi, compare, loading, pending }) {
   return (
     <div className="homedash-kpi">
       <div className="homedash-kpi__label">{kpi.label}</div>
-      {showValue ? (
-        <div className="homedash-kpi__value">{kpi.value}</div>
-      ) : (
-        <div className={`homedash-kpi__value homedash-kpi__value--muted`}>
-          {pending ? "—" : loading ? "" : "—"}
-        </div>
-      )}
-      {kpi.hint && <div className="homedash-kpi__hint">{kpi.hint}</div>}
-      {/* Delta — arrow (direction) + status color (good/bad), never color
-          alone. Shown only with the comparison toggle on; "— vs last period"
-          when there's no prior baseline to compare against. */}
-      {compare &&
-        (kpi.delta == null ? (
-          <div className="homedash-kpi__delta homedash-kpi__delta--pending">— vs last period</div>
+      {/* Primary number and its trend badge share one row, so the eye lands on
+          the figure and picks up the direction beside it; the secondary label
+          sits underneath rather than competing for the same line. */}
+      <div className="homedash-kpi__main">
+        {showValue ? (
+          <div className="homedash-kpi__value">{kpi.value}</div>
         ) : (
-          <div className="homedash-kpi__delta">
-            <Delta value={kpi.delta} goodUp={kpi.goodUp} />
+          <div className="homedash-kpi__value homedash-kpi__value--muted">
+            {pending ? "—" : loading ? "" : "—"}
           </div>
-        ))}
+        )}
+        {/* Delta — arrow (direction) + status color (good/bad), never color
+            alone. Shown only with the comparison toggle on; "— vs last period"
+            when there's no prior baseline to compare against. */}
+        {compare &&
+          (kpi.delta == null ? (
+            <span className="homedash-kpi__delta homedash-kpi__delta--pending">— vs prior</span>
+          ) : (
+            <Delta value={kpi.delta} goodUp={kpi.goodUp} />
+          ))}
+      </div>
+      {kpi.hint && <div className="homedash-kpi__hint">{kpi.hint}</div>}
     </div>
   );
 }

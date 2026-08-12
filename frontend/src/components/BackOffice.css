@@ -7,10 +7,164 @@
      below can also read it — custom properties cascade down the DOM tree,
      not sideways between siblings. */
   --header-height: 62px;
+
+  /* ---- Back Office palette ----
+     Deliberately scoped to .backoffice rather than :root. Every admin surface
+     (Reports, Menu, Staff, Devices, Payroll and their modals) renders inside
+     this element, so re-declaring the global tokens here re-skins all of them
+     through the variables they already use — while Order Entry and the KDS,
+     which read the same names from :root, keep today's brand red. The POS the
+     counter and kitchen use under pressure does not shift underneath them.
+
+     MenuManager is shared with the POS-side /manage-menu page; there it sits
+     outside .backoffice and correctly keeps the original palette. */
+  --bg-primary: #FBF9F7;      /* warm off-white canvas */
+  --bg-surface: #FFFFFF;      /* cards sit above the canvas */
+  --bg-surface-hover: #F5F1EC;
+  --border-color: #E7E1D8;    /* warm hairline, replaces the cool grey */
+
+  --text-primary: #2A2724;    /* deep charcoal, not pure black */
+  --text-secondary: #6B6259;
+  --text-muted: #8A8078;
+
+  /* Terracotta in place of the high-contrast POS red. Same token names, so
+     every existing `var(--red)` becomes the softer accent automatically. */
+  --red: #C0563A;
+  --red-hover: #A8482E;
+  --red-light: rgba(192, 86, 58, 0.09);
+
+  /* Low-saturation status pastels. */
+  --green: #3F7D5C;
+  --green-light: rgba(63, 125, 92, 0.11);
+  --mint-surface: #E8F1EB;
+  --mint-text: #2F6349;
+  --rose-surface: #F8E9E6;
+  --rose-text: #A24A38;
+  --amber-surface: #F7EEDF;
+  --amber-text: #8A6224;
+
+  --shadow-soft: 0 1px 2px rgba(42, 39, 36, 0.04), 0 2px 8px rgba(42, 39, 36, 0.04);
+  --shadow-medium: 0 4px 16px rgba(42, 39, 36, 0.08);
+  --shadow-raised: 0 6px 20px rgba(42, 39, 36, 0.12);
+
+  /* Grouped-card geometry, used by every section card. */
+  --card-radius: 16px;
+
   min-height: 100vh;
   display: flex;
   flex-direction: column;
   background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* Dark mode keeps the same structure; only the surfaces darken. Owners can
+   still toggle it, and the terracotta accent is lifted so it stays legible. */
+[data-theme="dark"] .backoffice {
+  --bg-primary: #14120F;
+  --bg-surface: #1E1B17;
+  --bg-surface-hover: #272320;
+  --border-color: #322D27;
+
+  --text-primary: #F3EFE9;
+  --text-secondary: #B0A79C;
+  --text-muted: #8F857A;
+
+  --red: #D9714F;
+  --red-hover: #E8805D;
+  --red-light: rgba(217, 113, 79, 0.14);
+
+  --green: #6FB68C;
+  --green-light: rgba(111, 182, 140, 0.14);
+  --mint-surface: rgba(111, 182, 140, 0.14);
+  --mint-text: #8FD0A9;
+  --rose-surface: rgba(217, 113, 79, 0.15);
+  --rose-text: #E9977C;
+  --amber-surface: rgba(212, 165, 92, 0.14);
+  --amber-text: #D7B173;
+}
+
+/* ---- Shared Back Office primitives ----
+   The "grouped card" every section sits in. Applied by the section components
+   themselves so a page is a stack of cards on the warm canvas rather than one
+   flat sheet. */
+.bo-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--card-radius);
+  box-shadow: var(--shadow-soft);
+}
+
+/* Status pill — one shape for every state across Devices, Staff and Menu. */
+.bo-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.bo-pill--positive { background: var(--mint-surface); color: var(--mint-text); }
+.bo-pill--negative { background: var(--rose-surface); color: var(--rose-text); }
+.bo-pill--neutral  { background: var(--bg-surface-hover); color: var(--text-muted); }
+.bo-pill--warn     { background: var(--amber-surface); color: var(--amber-text); }
+
+/* Leading glyph on an "iconified list card" row (Devices, Staff). A soft
+   tinted tile rather than a bare icon, so the row has an anchor on the left
+   even when the label is short. */
+.bo-row__icon {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-hover);
+  color: var(--text-secondary);
+}
+
+/* Primary floating action — "Add item", "Generate code". Fixed bottom-right so
+   the main create action is in the same place on every section. */
+.bo-fab {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 90;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 20px;
+  border-radius: var(--radius-full);
+  background: var(--red);
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 700;
+  box-shadow: var(--shadow-raised);
+  transition: background-color 0.14s ease, transform 0.12s ease, box-shadow 0.14s ease;
+}
+
+.bo-fab:hover {
+  background: var(--red-hover);
+  box-shadow: var(--shadow-medium);
+}
+
+.bo-fab:active {
+  transform: scale(0.97);
+}
+
+/* Clear of the iOS home indicator on a phone. */
+@media (max-width: 900px) {
+  .bo-fab {
+    right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  }
 }
 
 /* Three-column grid keeps the logo the true visual center of the header
@@ -106,17 +260,19 @@
 }
 
 .backoffice__navitem {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 11px;
   width: 100%;
   text-align: left;
   text-decoration: none; /* NavLink renders an <a> */
   font-family: var(--font-body);
   font-size: 0.85rem;
   font-weight: 600;
-  padding: 12px 16px;
-  border-radius: var(--radius-sm);
+  padding: 11px 14px;
+  border-radius: var(--radius-md);
   color: var(--text-secondary);
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
   /* Second line of defense: labels stay on one line and truncate cleanly
      rather than wrapping — wrapped text was the actual source of the
      stray-glyph bug (a wrapped second line rendered wider than the button,
@@ -126,7 +282,23 @@
      for today's two labels. */
   white-space: nowrap;
   overflow: hidden;
+}
+
+/* The icon keeps its size while the label absorbs the truncation — the
+   ellipsis behaviour above now lives on the label, since a flex row can't
+   text-overflow its children. */
+.backoffice__navicon {
+  flex-shrink: 0;
+  opacity: 0.75;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.backoffice__navlabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .backoffice__navitem:hover {
@@ -134,9 +306,35 @@
   color: var(--text-primary);
 }
 
+.backoffice__navitem:hover .backoffice__navicon {
+  opacity: 1;
+}
+
+/* Soft-focus active state: a low-contrast warm wash and charcoal text rather
+   than the old saturated red-on-red, with the accent carried by the icon and a
+   slim rail instead of the whole row shouting. */
 .backoffice__navitem--active {
-  background: var(--red-light);
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  font-weight: 700;
+  position: relative;
+}
+
+.backoffice__navitem--active .backoffice__navicon {
   color: var(--red);
+  opacity: 1;
+}
+
+.backoffice__navitem--active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 18px;
+  border-radius: 0 3px 3px 0;
+  background: var(--red);
 }
 
 /* ---- Reports dropdown (expandable nav group) ---- */
@@ -167,10 +365,22 @@
   padding-left: 8px;
   border-left: 1px solid var(--border-color);
 }
+/* Sub-items carry no icon of their own, so the active rail would sit on the
+   guide line and the text would hang under the parent's icon. Slightly tighter
+   type + no rail keeps the hierarchy reading as "inside Reports". */
 .backoffice__navitem--sub {
   font-size: 0.8rem;
   font-weight: 500;
-  padding: 9px 14px;
+  padding: 9px 12px;
+}
+
+.backoffice__navitem--sub.backoffice__navitem--active::before {
+  content: none;
+}
+
+.backoffice__navitem--sub.backoffice__navitem--active {
+  color: var(--red);
+  font-weight: 700;
 }
 
 /* Log Out — bottom of the same nav list (desktop: bottom of the permanent
@@ -268,7 +478,9 @@
 .backoffice__body--top {
   align-items: flex-start;
   overflow-y: auto;
-  padding: 24px;
+  /* Extra bottom padding so the floating action button can never sit on top of
+     the last row of a list. */
+  padding: 24px 24px 92px;
 }
 
 .backoffice__placeholder {

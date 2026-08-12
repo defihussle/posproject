@@ -41,34 +41,77 @@
   box-shadow: var(--shadow-soft);
 }
 
-.reports__presets {
+/* ---- Segmented period control ----
+   One grouped track instead of separate pills. The whole bar is the control;
+   the active segment is a raised white chip inside it. Scrolls horizontally
+   on a phone rather than wrapping into a ragged second row. */
+.reports__segmented {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.reports__pill {
-  font-family: var(--font-body);
-  font-size: 0.78rem;
-  font-weight: 700;
-  padding: 8px 14px;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
   border-radius: var(--radius-full);
   background: var(--bg-surface-hover);
-  color: var(--text-secondary);
   border: 1px solid var(--border-color);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.reports__segmented::-webkit-scrollbar {
+  display: none;
+}
+
+.reports__seg-icon {
+  display: flex;
+  align-items: center;
+  padding: 0 7px 0 9px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.reports__seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-secondary);
   white-space: nowrap;
-  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  flex-shrink: 0;
+  transition: background-color 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
 }
-.reports__pill:hover {
+
+.reports__seg:hover {
+  color: var(--text-primary);
+}
+
+/* Raised chip, not a saturated fill — the selection reads by elevation and
+   weight rather than by shouting in accent colour. */
+.reports__seg--active {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-weight: 700;
+  box-shadow: var(--shadow-soft);
+}
+
+.reports__seg-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 3px 5px;
   background: var(--border-color);
+  flex-shrink: 0;
 }
-.reports__pill--active {
-  background: var(--red);
-  color: #fff;
-  border-color: transparent;
+
+.reports__seg--custom {
+  color: var(--text-muted);
 }
-.reports__pill--active:hover {
-  background: var(--red-hover);
+
+.reports__seg--custom.reports__seg--active {
+  color: var(--red);
 }
 
 /* Custom panel */
@@ -297,8 +340,13 @@
   color: var(--text-muted);
   border-bottom: 1px solid var(--border-color);
 }
+/* Solid hairlines — the dashed rules read as noise once rows get dense. */
 .reports__table tbody tr {
-  border-bottom: 1px dashed var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.reports__table tbody tr:last-child {
+  border-bottom: none;
 }
 /* Qualified with .reports__table so they beat the `.reports__table td`
    left-align rule (which is more specific than a bare `.reports__num`). */

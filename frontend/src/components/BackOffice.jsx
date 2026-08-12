@@ -12,6 +12,15 @@ import logoImg from "../assets/narcos-tacos-logo.png";
 import { API_URL } from "../config";
 import "./BackOffice.css";
 import useScrollLock from "../useScrollLock";
+import {
+  IconHome,
+  IconUsers,
+  IconMenu,
+  IconPayroll,
+  IconReports,
+  IconDevices,
+  IconLogOut,
+} from "./icons";
 
 // Persistent nav config — add future Back Office sections here, each with the
 // roles allowed to see/use it and a URL path (sections are real routes under
@@ -26,12 +35,12 @@ import useScrollLock from "../useScrollLock";
 //
 // Order: Home, Staff, Menu, Payroll, Reports (dropdown), Devices.
 const NAV_ITEMS = [
-  { key: "home", label: "Home", path: "home", roles: ["owner", "admin"], element: (staff) => <HomeDashboard staff={staff} /> },
-  { key: "staff", label: "Staff Management", path: "staff", roles: ["owner", "admin"], element: (staff) => <StaffManager staff={staff} /> },
-  { key: "menu", label: "Menu Management", path: "menu", roles: ["owner", "admin"], element: (staff) => <MenuManager staff={staff} /> },
-  { key: "payroll", label: "Payroll", path: "payroll", roles: ["owner", "admin"], element: (staff) => <Payroll staff={staff} /> },
-  { key: "reports", label: "Reports", path: "reports", roles: ["owner", "admin"], group: true },
-  { key: "devices", label: "Devices", path: "devices", roles: ["owner", "admin"], element: () => <DeviceManager /> },
+  { key: "home", label: "Home", path: "home", Icon: IconHome, roles: ["owner", "admin"], element: (staff) => <HomeDashboard staff={staff} /> },
+  { key: "staff", label: "Staff Management", path: "staff", Icon: IconUsers, roles: ["owner", "admin"], element: (staff) => <StaffManager staff={staff} /> },
+  { key: "menu", label: "Menu Management", path: "menu", Icon: IconMenu, roles: ["owner", "admin"], element: (staff) => <MenuManager staff={staff} /> },
+  { key: "payroll", label: "Payroll", path: "payroll", Icon: IconPayroll, roles: ["owner", "admin"], element: (staff) => <Payroll staff={staff} /> },
+  { key: "reports", label: "Reports", path: "reports", Icon: IconReports, roles: ["owner", "admin"], group: true },
+  { key: "devices", label: "Devices", path: "devices", Icon: IconDevices, roles: ["owner", "admin"], element: () => <DeviceManager /> },
 ];
 
 const ALLOWED_ROLES = [...new Set(NAV_ITEMS.flatMap((n) => n.roles))];
@@ -180,7 +189,8 @@ export default function BackOffice() {
                   }
                   onClick={closeDrawer}
                 >
-                  {item.label}
+                  <item.Icon size={17} className="backoffice__navicon" />
+                  <span className="backoffice__navlabel">{item.label}</span>
                 </NavLink>
               )
             )}
@@ -188,12 +198,8 @@ export default function BackOffice() {
 
           <div className="backoffice__navfoot">
             <button className="backoffice__navitem backoffice__navitem--logout" onClick={handleLogout}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                <polyline points="16 17 21 12 16 7"></polyline>
-                <line x1="21" y1="12" x2="9" y2="12"></line>
-              </svg>
-              Log Out
+              <IconLogOut size={17} className="backoffice__navicon" />
+              <span className="backoffice__navlabel">Log Out</span>
             </button>
           </div>
         </nav>
@@ -239,7 +245,8 @@ function ReportsNavGroup({ item, staff, onNavigate }) {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
-        <span>{item.label}</span>
+        <item.Icon size={17} className="backoffice__navicon" />
+        <span className="backoffice__navlabel">{item.label}</span>
         <svg
           className={`backoffice__caret${open ? " backoffice__caret--open" : ""}`}
           width="14" height="14" viewBox="0 0 24 24" fill="none"

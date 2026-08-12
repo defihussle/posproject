@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import { API_URL } from "../config";
 import ConfirmDialog from "./ConfirmDialog";
 import useScrollLock from "../useScrollLock";
+import { IconPlus, IconSearch } from "./icons";
 import "./MenuManager.css";
 
 const fmtPrice = (p) => `$${parseFloat(p).toFixed(2)}`;
@@ -353,15 +354,11 @@ export default function MenuManager({ staff, showTitle = true }) {
       {/* Always rendered even when the host page supplies its own heading —
           "Add item" lives here, so hiding the whole toolbar with the title
           would take the only create action with it. */}
-      <div className="menued__toolbar">
-        {showTitle ? <h2 className="menued__title">Menu</h2> : <span />}
-        <button className="menued__add-btn" onClick={() => setCreating(true)}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-          Add item
-        </button>
-      </div>
+      {showTitle && (
+        <div className="menued__toolbar">
+          <h2 className="menued__title">Menu</h2>
+        </div>
+      )}
 
       {error && <div className="menued__error">{error}</div>}
 
@@ -370,19 +367,7 @@ export default function MenuManager({ staff, showTitle = true }) {
           stay tappable rather than being squeezed onto one line. */}
       <div className="menued__filters">
         <div className="menued__search">
-          <svg
-            className="menued__search-icon"
-            width="15"
-            height="15"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-          >
-            <circle cx="11" cy="11" r="7" />
-            <path d="M20 20l-3.5-3.5" />
-          </svg>
+          <IconSearch size={15} className="menued__search-icon" />
           <input
             className="menued__search-input"
             value={search}
@@ -529,6 +514,16 @@ export default function MenuManager({ staff, showTitle = true }) {
           )}
         </div>
       </div>
+
+      {/* Primary create action — same bottom-right floating button as every
+          other Back Office section, so "add a thing" is always in one place.
+          Hidden while a modal is open so it can't float over the dialog. */}
+      {!modalOpen && (
+        <button className="bo-fab" onClick={() => setCreating(true)}>
+          <IconPlus size={17} />
+          Add item
+        </button>
+      )}
 
       {/* Tap-to-open modal — the ONE focused surface for everything about
           an item (or, for a new item, everything needed to create one):
