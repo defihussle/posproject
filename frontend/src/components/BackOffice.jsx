@@ -47,6 +47,15 @@ export default function BackOffice() {
   // Mobile-only drawer state — collapsed by default; irrelevant on desktop.
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // The mobile nav drawer covers the page behind a full-screen backdrop, so it
+  // gets the same treatment as a modal card.
+  //
+  // MUST stay above the checkingSession / not-logged-in / denied early returns
+  // below: those make the first render bail out before this line, so calling it
+  // further down changes the hook count between renders and React tears the
+  // whole tree down — which is exactly what turned Back Office white.
+  useScrollLock(sidebarOpen);
+
   const visibleNav = useMemo(
     () => (staff ? NAV_ITEMS.filter((n) => n.roles.includes(staff.role)) : []),
     [staff]
@@ -119,10 +128,6 @@ export default function BackOffice() {
   const defaultPath = visibleNav.find((n) => !n.group)?.path ?? "home";
   const firstReportPath = visibleReports(staff.role)[0]?.path ?? "sales-summary";
   const closeDrawer = () => setSidebarOpen(false);
-
-  // The mobile nav drawer covers the page behind a full-screen backdrop, so
-  // it gets the same treatment as a modal card.
-  useScrollLock(sidebarOpen);
 
   return (
     <div className="backoffice">
