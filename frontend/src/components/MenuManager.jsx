@@ -5,6 +5,31 @@ import "./MenuManager.css";
 
 const fmtPrice = (p) => `$${parseFloat(p).toFixed(2)}`;
 
+// What the Options column shows at a glance. Variants and modifier groups are
+// different things to an owner (sizes vs. toppings), so they're counted
+// separately rather than summed into one meaningless number.
+function optionsSummary(item) {
+  const parts = [];
+  if (item.variants.length > 0) {
+    parts.push(`${item.variants.length} variant${item.variants.length === 1 ? "" : "s"}`);
+  }
+  if (item.modifier_groups.length > 0) {
+    parts.push(`${item.modifier_groups.length} group${item.modifier_groups.length === 1 ? "" : "s"}`);
+  }
+  return parts.join(" · ");
+}
+
+// An item priced by variants has no single price to show, so the column shows
+// the range instead of a base_price that Order Entry never charges.
+function priceLabel(item) {
+  if (item.variants.length === 0) return fmtPrice(item.base_price);
+  const prices = item.variants.map((v) => parseFloat(v.price)).filter(Number.isFinite);
+  if (prices.length === 0) return fmtPrice(item.base_price);
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  return min === max ? fmtPrice(min) : `${fmtPrice(min)}–${fmtPrice(max)}`;
+}
+
 // Plain-ingredient-style groups (Ingredients, Toppings) are always free —
 // the price field is hidden entirely for options in these groups, both
 // editing existing ones and adding new ones. Mirrors PRICELESS_GROUP_NAMES
@@ -36,17 +61,24 @@ export default function MenuManager({ staff, showTitle = true }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedItemId, setSelectedItemId] = useState(null);
-  const [creatingInCat, setCreatingInCat] = useState(null); // category id, or null
+  const [creating, setCreating] = useState(false);
   const [togglingIds, setTogglingIds] = useState(() => new Set());
+
+  // Filter bar state. All three narrow the same flat list below; none of them
+  // touch the server — the whole menu is already in memory, so filtering is
+  // instant and works offline the same as browsing does.
+  const [search, setSearch] = useState("");
+  const [catFilter, setCatFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
 
   // The modal is open whenever either of these is set — nothing auto-opens
   // on load (unlike the old two-pane layout, which auto-selected the first
   // item so its always-visible detail panel wasn't blank). Browsing the
   // list is now the default, at-rest view; the modal is purely opt-in.
-  const modalOpen = !!selectedItemId || !!creatingInCat;
+  const modalOpen = !!selectedItemId || creating;
   const closeModal = () => {
     setSelectedItemId(null);
-    setCreatingInCat(null);
+    setCreating(false);
   };
 
   // GET /api/backoffice/menu is now the ONE authoritative source for
@@ -79,6 +111,41 @@ export default function MenuManager({ staff, showTitle = true }) {
     }
     return { selectedItem: null, selectedCat: null };
   }, [menu, selectedItemId]);
+
+  // One flat, sortable list instead of the old category-grouped sections.
+  // Category becomes a column and a filter, which is what makes search
+  // across the whole menu possible — grouping forced you to know which
+  // section a thing lived in before you could find it.
+  const flatItems = useMemo(
+    () =>
+      menu.flatMap((cat) =>
+        cat.items.map((item) => ({ ...item, categoryName: cat.name, categoryId: cat.id }))
+      ),
+    [menu]
+  );
+
+  const filteredItems = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return flatItems.filter((item) => {
+      if (catFilter !== "all" && item.categoryId !== catFilter) return false;
+      if (statusFilter === "active" && !item.active) return false;
+      if (statusFilter === "inactive" && item.active) return false;
+      if (statusFilter === "upsell" && !item.is_upsell) return false;
+      if (!q) return true;
+      return (
+        item.name.toLowerCase().includes(q) ||
+        (item.description || "").toLowerCase().includes(q) ||
+        item.categoryName.toLowerCase().includes(q)
+      );
+    });
+  }, [flatItems, search, catFilter, statusFilter]);
+
+  const filtersActive = search.trim() !== "" || catFilter !== "all" || statusFilter !== "all";
+  const clearFilters = () => {
+    setSearch("");
+    setCatFilter("all");
+    setStatusFilter("all");
+  };
 
   const applyItem = useCallback((updated) => {
     setMenu((prev) =>
@@ -270,40 +337,168 @@ export default function MenuManager({ staff, showTitle = true }) {
 
   return (
     <div className="menued">
-      {showTitle && (
-        <div className="menued__toolbar">
-          <h2 className="menued__title">Menu</h2>
-        </div>
-      )}
+      {/* Always rendered even when the host page supplies its own heading —
+          "Add item" lives here, so hiding the whole toolbar with the title
+          would take the only create action with it. */}
+      <div className="menued__toolbar">
+        {showTitle ? <h2 className="menued__title">Menu</h2> : <span />}
+        <button className="menued__add-btn" onClick={() => setCreating(true)}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          Add item
+        </button>
+      </div>
 
       {error && <div className="menued__error">{error}</div>}
 
-      <div className="menued__list">
-        {menu.map((cat) => (
-          <section key={cat.id} className="menued__cat">
-            <div className="menued__cat-head">
-              <span className="menued__cat-name">{cat.name}</span>
-              <span className="menued__cat-count">{cat.items.length}</span>
-            </div>
-            {cat.items.map((item) => (
-              <button
-                key={item.id}
-                className={`menued__list-item${item.active ? "" : " menued__list-item--inactive"}`}
-                onClick={() => setSelectedItemId(item.id)}
-              >
-                <span className="menued__list-item-name">{item.name}</span>
-                <span className="menued__list-item-meta">
-                  {item.variants.length > 0 ? `${item.variants.length} options` : fmtPrice(item.base_price)}
-                </span>
-                {!item.active && <span className="menued__list-item-dot" title="Inactive" />}
-                <ChevronIcon />
-              </button>
-            ))}
-            <button className="menued__add-item" onClick={() => setCreatingInCat(cat.id)}>
-              + Add item
+      {/* Filter bar. Search is the primary control and gets the full width on
+          a phone; the two selects sit beside each other underneath so both
+          stay tappable rather than being squeezed onto one line. */}
+      <div className="menued__filters">
+        <div className="menued__search">
+          <svg
+            className="menued__search-icon"
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path d="M20 20l-3.5-3.5" />
+          </svg>
+          <input
+            className="menued__search-input"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search menu items…"
+            aria-label="Search menu items"
+          />
+          {search && (
+            <button
+              className="menued__search-clear"
+              onClick={() => setSearch("")}
+              aria-label="Clear search"
+            >
+              ✕
             </button>
-          </section>
-        ))}
+          )}
+        </div>
+
+        <div className="menued__selects">
+          <select
+            className="menued__select"
+            value={catFilter}
+            onChange={(e) => setCatFilter(e.target.value)}
+            aria-label="Filter by category"
+          >
+            <option value="all">All categories</option>
+            {menu.map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {cat.name}
+              </option>
+            ))}
+          </select>
+
+          <select
+            className="menued__select"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            aria-label="Filter by status"
+          >
+            <option value="all">All statuses</option>
+            <option value="active">Active only</option>
+            <option value="inactive">Inactive only</option>
+            <option value="upsell">Upsell only</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="menued__resultbar">
+        <span className="menued__count">
+          {filteredItems.length} {filteredItems.length === 1 ? "item" : "items"}
+          {filtersActive && flatItems.length !== filteredItems.length && (
+            <span className="menued__count-total"> of {flatItems.length}</span>
+          )}
+        </span>
+        {filtersActive && (
+          <button className="menued__clear-filters" onClick={clearFilters}>
+            Clear filters
+          </button>
+        )}
+      </div>
+
+      {/* One markup for both breakpoints. On desktop the row is a 7-column
+          grid with a header above it; on a phone the same spans reflow into a
+          card (the two wrappers below collapse with `display: contents` on
+          desktop so their children become row columns directly). Rendering
+          one DOM rather than a table-plus-card-list keeps the two from
+          drifting apart as columns change. */}
+      <div className="menued__table">
+        <div className="menued__thead" aria-hidden="true">
+          <span>Item</span>
+          <span className="menued__th--num">Price</span>
+          <span>Category</span>
+          <span>Options</span>
+          <span>Status</span>
+          <span>Upsell</span>
+          <span />
+        </div>
+
+        <div className="menued__rows">
+          {filteredItems.length === 0 ? (
+            <div className="menued__empty">
+              {flatItems.length === 0
+                ? "No menu items yet — add your first one."
+                : "No items match these filters."}
+            </div>
+          ) : (
+            filteredItems.map((item) => {
+              const opts = optionsSummary(item);
+              return (
+                <button
+                  key={item.id}
+                  className={`menued__row${item.active ? "" : " menued__row--inactive"}`}
+                  onClick={() => setSelectedItemId(item.id)}
+                >
+                  <span className="menued__row-name">
+                    <span className="menued__row-title">{item.name}</span>
+                    {item.description && (
+                      <span className="menued__row-desc">{item.description}</span>
+                    )}
+                  </span>
+
+                  <span className="menued__row-price">{priceLabel(item)}</span>
+
+                  <span className="menued__row-meta">
+                    <span className="menued__row-cat">{item.categoryName}</span>
+                    <span className="menued__row-opts">{opts || "—"}</span>
+                  </span>
+
+                  <span className="menued__row-pills">
+                    <span
+                      className={`menued__pill${item.active ? " menued__pill--active" : " menued__pill--off"}`}
+                    >
+                      {item.active ? "Active" : "Inactive"}
+                    </span>
+                    <span className="menued__row-upsell">
+                      {item.is_upsell ? (
+                        <span className="menued__pill menued__pill--upsell">Upsell</span>
+                      ) : (
+                        <span className="menued__pill-none">—</span>
+                      )}
+                    </span>
+                  </span>
+
+                  <ChevronIcon />
+                </button>
+              );
+            })
+          )}
+        </div>
       </div>
 
       {/* Tap-to-open modal — the ONE focused surface for everything about
@@ -316,7 +511,7 @@ export default function MenuManager({ staff, showTitle = true }) {
           <div className="menued__modal" onClick={(e) => e.stopPropagation()}>
             <div className="menued__modal-head">
               <span className="menued__modal-eyebrow">
-                {creatingInCat ? `New item in ${menu.find((c) => c.id === creatingInCat)?.name || ""}` : selectedCat?.name}
+                {creating ? "New menu item" : selectedCat?.name}
               </span>
               <button className="menued__modal-close" onClick={closeModal} aria-label="Close">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -332,13 +527,14 @@ export default function MenuManager({ staff, showTitle = true }) {
                   used to look like nothing happened: the form stayed open
                   with Add/Cancel still showing and no visible reason why. */}
               {error && <div className="menued__error menued__error--modal">{error}</div>}
-              {creatingInCat ? (
+              {creating ? (
                 <NewItemDetail
                   staff={staff}
-                  categoryId={creatingInCat}
+                  categories={menu}
+                  defaultCategoryId={catFilter !== "all" ? catFilter : menu[0]?.id}
                   onCreated={(created) => {
                     applyItem(created);
-                    setCreatingInCat(null);
+                    setCreating(false);
                     setSelectedItemId(created.id);
                   }}
                   onCancel={closeModal}
@@ -349,6 +545,7 @@ export default function MenuManager({ staff, showTitle = true }) {
                   <ItemDetail
                     key={selectedItem.id}
                     item={selectedItem}
+                    categoryName={selectedCat?.name}
                     staff={staff}
                     busy={togglingIds.has(selectedItem.id)}
                     onToggle86={() => toggle86(selectedItem)}
@@ -383,6 +580,7 @@ function ChevronIcon() {
 // ---------- Modal body: existing item ----------
 function ItemDetail({
   item,
+  categoryName,
   staff,
   busy,
   onToggle86,
@@ -489,6 +687,16 @@ function ItemDetail({
             {busy ? "…" : item.active ? "86 It" : "Reactivate"}
           </button>
         </div>
+      </div>
+
+      {/* Read-only on purpose: PUT /api/backoffice/menu-items/:id takes no
+          category_id, so an existing item can't be moved between categories
+          without a backend change. Shown rather than hidden so the field
+          isn't silently missing from the editor. */}
+      <div className="menued__field-label">Category</div>
+      <div className="menued__readonly-field">
+        <span>{categoryName || "—"}</span>
+        <span className="menued__readonly-hint">Set when the item is created</span>
       </div>
 
       <label className="menued__field-label" htmlFor="menued-desc">
@@ -1305,16 +1513,24 @@ function NewModifierOptionForm({ staff, groupId, hidePrice, onCreated, onCancel,
 }
 
 // ---------- Modal body: creating a new item ----------
-function NewItemDetail({ staff, categoryId, onCreated, onCancel, onError }) {
+function NewItemDetail({ staff, categories, defaultCategoryId, onCreated, onCancel, onError }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState("");
+  // Create is the one moment category can be set — the update route doesn't
+  // accept category_id, so an item can't be moved afterwards.
+  const [categoryId, setCategoryId] = useState(defaultCategoryId || "");
+  const [isUpsell, setIsUpsell] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
     if (saving) return;
     if (!name.trim()) {
       onError("Item name is required");
+      return;
+    }
+    if (!categoryId) {
+      onError("Pick a category for this item");
       return;
     }
     const p = Number(price);
@@ -1334,6 +1550,7 @@ function NewItemDetail({ staff, categoryId, onCreated, onCancel, onError }) {
           name: name.trim(),
           description: description.trim() || null,
           base_price: p,
+          is_upsell: isUpsell,
         }),
       });
       const data = await res.json();
@@ -1357,6 +1574,22 @@ function NewItemDetail({ staff, categoryId, onCreated, onCancel, onError }) {
           autoFocus
         />
       </div>
+
+      <label className="menued__field-label" htmlFor="menued-new-cat">
+        Category
+      </label>
+      <select
+        id="menued-new-cat"
+        className="menued__select menued__select--field"
+        value={categoryId}
+        onChange={(e) => setCategoryId(e.target.value)}
+      >
+        {(categories || []).map((cat) => (
+          <option key={cat.id} value={cat.id}>
+            {cat.name}
+          </option>
+        ))}
+      </select>
 
       <label className="menued__field-label" htmlFor="menued-new-desc">
         Description
@@ -1384,6 +1617,20 @@ function NewItemDetail({ staff, categoryId, onCreated, onCancel, onError }) {
           inputMode="decimal"
         />
       </div>
+
+      <label className="menued__upsell-toggle">
+        <input
+          type="checkbox"
+          checked={isUpsell}
+          onChange={(e) => setIsUpsell(e.target.checked)}
+        />
+        <span className="menued__upsell-toggle-text">
+          <span className="menued__upsell-toggle-title">Upsell item</span>
+          <span className="menued__upsell-toggle-hint">
+            Offered once after Checkout, before payment (e.g. “Add guac?”)
+          </span>
+        </span>
+      </label>
 
       <div className="menued__savebar menued__savebar--create">
         <span>New items start active</span>
