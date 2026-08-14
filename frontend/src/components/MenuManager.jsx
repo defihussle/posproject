@@ -45,15 +45,15 @@ const isPricelessGroupName = (name) => /^(ingredients|toppings)$/i.test((name ||
  * POS-reachable "Manage Menu" page (see ManageMenu.jsx). Same component,
  * same backend routes, both places — Shopify-inspired: a single-column
  * browsable list (categories → items), tap/click an item to open a focused
- * MODAL with the full edit experience (name, description, price, 86
+ * MODAL with the full edit experience (name, description, price, sold-out
  * toggle, Variants, Modifier Groups). Universal pattern regardless of
  * viewport — the same list+modal on desktop and mobile, not a different
  * layout per device (the previous side-by-side two-pane layout broke on
  * narrow screens: the detail panel got cut off on mobile, confirmed via
  * real device testing — replaced entirely rather than patched).
  *
- * Shows ALL items including inactive ones (86'd items stay visible, greyed
- * out, so owners/admins can reactivate them). All writes go through the
+ * Shows ALL items including inactive ones (sold-out items stay visible,
+ * greyed out, so owners/admins can put them back). All writes go through the
  * /api/backoffice endpoints, which re-verify owner/admin role server-side —
  * this file has zero client-side role gating of its own to duplicate, and
  * zero new backend routes.
@@ -887,9 +887,15 @@ function ItemDetail({
         onError={onError}
       />
 
-      {/* 86 / Reactivate lives below the content as a secondary action rather
+      {/* Sold-out toggle. Lives below the content as a secondary action rather
           than in the header — it's something you come here to do, not an edit,
-          same placement as the Staff card's Deactivate. */}
+          same placement as the Staff card's Deactivate.
+
+          The wording is "sold out" rather than kitchen shorthand ("86"): the
+          people using this screen aren't always line cooks, and the two
+          directions have to be unambiguous at a glance. The underlying state is
+          unchanged — this still just flips menu_items.active, which is what
+          hides the item from Order Entry. */}
       {!editing && (
         <div className="menued__secondary">
           <button
@@ -897,16 +903,16 @@ function ItemDetail({
             onClick={() => (item.active ? setConfirming86(true) : onToggle86())}
             disabled={busy}
           >
-            {busy ? "…" : item.active ? "86 It" : "Reactivate"}
+            {busy ? "…" : item.active ? "Mark sold out" : "Mark available"}
           </button>
         </div>
       )}
 
       {confirming86 && (
         <ConfirmDialog
-          title="Remove menu item?"
-          message={`Are you sure you want to remove "${item.name}"? It'll be hidden from Order Entry until reactivated.`}
-          confirmLabel="86 It"
+          title="Mark item sold out?"
+          message={`Are you sure you want to mark "${item.name}" sold out? It'll be hidden from Order Entry until you mark it available again.`}
+          confirmLabel="Mark sold out"
           danger
           busy={busy}
           onConfirm={() => {

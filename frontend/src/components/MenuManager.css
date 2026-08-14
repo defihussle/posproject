@@ -697,7 +697,7 @@
   white-space: nowrap;
 }
 
-/* Secondary actions (86 / Reactivate) sit below the content in view mode. */
+/* Secondary actions (the sold-out toggle) sit below the content in view mode. */
 .menued__secondary {
   display: flex;
   flex-wrap: wrap;
@@ -895,8 +895,9 @@
   background: var(--bg-surface-hover);
 }
 
-/* 86/Reactivate — a routine operational action, not a destructive one:
-   calm neutral outline rather than red/alarming. */
+/* Sold-out toggle — a routine operational action, not a destructive one:
+   calm neutral outline rather than red/alarming. The __86- class name predates
+   the copy change to "Mark sold out"; it still styles that same button. */
 .menued__86-btn {
   font-family: var(--font-body);
   font-size: 0.75rem;
@@ -1363,8 +1364,8 @@
 /* Calm text-link actions (remove-from-item / deactivate) — not buttons with
    fills, so they read as lightweight, reversible actions. Only the actual
    "Delete group"/"Remove" (permanent) gets the red tint, and even then it's
-   plain text, not a filled danger button — consistent with 86/Reactivate's
-   non-alarming treatment elsewhere in this editor. */
+   plain text, not a filled danger button — consistent with the sold-out
+   toggle's non-alarming treatment elsewhere in this editor. */
 .menued__text-link {
   font-family: var(--font-body);
   font-size: 0.72rem;
