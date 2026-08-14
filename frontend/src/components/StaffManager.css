@@ -413,10 +413,124 @@
   border-bottom: 1px solid var(--border-color);
 }
 
+/* Name + status read as one unit on the left; Edit and Close pair on the
+   right, so the header answers "who is this and are they active" before any
+   action is offered. */
+.staffmgr__modal-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
 .staffmgr__modal-title {
   font-family: var(--font-headline);
-  font-size: 0.95rem;
+  font-size: 1.02rem;
   color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.staffmgr__modal-headactions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Deliberately quiet — Edit is the common action but shouldn't outweigh the
+   person's name. Sized as a comfortable tap target on a phone. */
+.staffmgr__edit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface-hover);
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.staffmgr__edit-btn:hover:not(:disabled) {
+  color: var(--red);
+  border-color: var(--red);
+  background: var(--red-light);
+}
+
+.staffmgr__edit-btn:disabled {
+  opacity: 0.5;
+}
+
+/* ---- Read-only facts ---- */
+.staffmgr__facts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+}
+
+.staffmgr__fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.staffmgr__fact:last-child {
+  border-bottom: none;
+}
+
+.staffmgr__fact-label {
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.staffmgr__fact-value {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  text-align: right;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.staffmgr__fact-value--role {
+  text-transform: capitalize;
+  font-weight: 600;
+}
+
+.staffmgr__fact-value--email {
+  font-size: 0.82rem;
+}
+
+.staffmgr__fact-empty {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Secondary actions sit in a row under the divider rather than stacked
+   full-width, so they read as available-but-not-the-point. */
+.staffmgr__modal-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .staffmgr__modal-close {

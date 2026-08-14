@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { API_URL } from "../config";
 import ConfirmDialog from "./ConfirmDialog";
-import { IconPlus, IconUser, IconSearch } from "./icons";
+import { IconPlus, IconUser, IconSearch, IconPencil } from "./icons";
 import "./StaffManager.css";
 import useScrollLock from "../useScrollLock";
 
@@ -286,12 +286,32 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
   const [pinPrompt, setPinPrompt] = useState(false);
   const [confirmingRole, setConfirmingRole] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
+  // The card opens read-only. Editing is deliberate — a row opened just to
+  // check someone's rate used to present every field as a live input, which
+  // made an accidental change indistinguishable from an intended one.
+  const [editing, setEditing] = useState(false);
   const roles = assignableRoles(me);
   // An existing owner still renders with "owner" selected — it's prepended
   // here and marked disabled below, so the row reads correctly and stays
   // editable without the role being re-assignable to anyone else.
   const options = roles.includes(row.role) ? roles : [row.role, ...roles];
+  // Draft role — drives the edit form and the PUT payload.
   const isBackofficeRole = role === "owner" || role === "admin";
+  // Saved role — drives whether the read-only view shows an email row at all.
+  // Kept separate so switching the select mid-edit doesn't retroactively
+  // change what the view mode claims is stored.
+  const savedIsBackofficeRole = row.role === "owner" || row.role === "admin";
+
+  const resetDraft = () => {
+    setRole(row.role);
+    setRate(row.hourly_rate == null ? "" : String(row.hourly_rate));
+    setEmail(row.email || "");
+  };
+
+  const cancelEdit = () => {
+    resetDraft();
+    setEditing(false);
+  };
 
   const dirty =
     role !== row.role ||
@@ -320,7 +340,12 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
       const data = await put(body);
       onError(null);
       onSaved(data);
+      // Back to the read-only view — a successful save is the end of the
+      // edit, and leaving the inputs open invites a second accidental one.
+      setEditing(false);
     } catch (err) {
+      // Stay in edit mode on failure so the rejected values are still there
+      // to correct rather than silently discarded.
       onError(err.message);
     } finally {
       setSaving(false);
@@ -388,19 +413,37 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
     <div className="staffmgr__overlay" onClick={onClose}>
       <div className="staffmgr__modal" onClick={(e) => e.stopPropagation()}>
         <div className="staffmgr__modal-head">
-          <h3 className="staffmgr__modal-title">{row.name}</h3>
-          <button className="staffmgr__modal-close" onClick={onClose} aria-label="Close">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 6L6 18M6 6l12 12" />
-            </svg>
-          </button>
+          <div className="staffmgr__modal-heading">
+            <h3 className="staffmgr__modal-title">{row.name}</h3>
+            <span className={`bo-pill ${row.active ? "bo-pill--positive" : "bo-pill--negative"}`}>
+              {row.active ? "Active" : "Deactivated"}
+            </span>
+          </div>
+          <div className="staffmgr__modal-headactions">
+            {/* Only rows this account may manage get an Edit affordance — an
+                owner opened by an admin stays permanently read-only, same
+                hierarchy rule as before, just expressed once now that view
+                mode is the shared default rather than a separate branch. */}
+            {manageable &&
+              (editing ? (
+                <button className="staffmgr__edit-btn" onClick={cancelEdit} disabled={saving}>
+                  Cancel
+                </button>
+              ) : (
+                <button className="staffmgr__edit-btn" onClick={() => setEditing(true)}>
+                  <IconPencil size={14} />
+                  Edit
+                </button>
+              ))}
+            <button className="staffmgr__modal-close" onClick={onClose} aria-label="Close">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
         <div className="staffmgr__modal-body">
-          <span className={`staffmgr__status-pill${row.active ? "" : " staffmgr__status-pill--off"}`}>
-            {row.active ? "Active" : "Inactive"}
-          </span>
-
-          {manageable ? (
+          {editing ? (
             <>
               <label className="staffmgr__label">
                 Role
@@ -434,76 +477,91 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
                   />
                 </label>
               )}
-              {dirty && (
-                <div className="staffmgr__modal-actions">
-                  <button
-                    className="staffmgr__btn"
-                    onClick={() => {
-                      setRole(row.role);
-                      setRate(row.hourly_rate == null ? "" : String(row.hourly_rate));
-                      setEmail(row.email || "");
-                    }}
-                    disabled={saving}
-                  >
-                    Discard
-                  </button>
-                  <button className="staffmgr__btn staffmgr__btn--save" onClick={requestSave} disabled={saving}>
-                    {saving ? "Saving…" : "Save"}
-                  </button>
-                </div>
-              )}
-
-              <div className="staffmgr__modal-divider" />
-
-              {pinPrompt ? (
-                <InlinePinReset
-                  staffId={row.id}
-                  staffName={row.name}
-                  me={me}
-                  onDone={() => setPinPrompt(false)}
-                  onError={onError}
-                />
-              ) : (
-                <button className="staffmgr__btn" onClick={() => setPinPrompt(true)}>
-                  Reset PIN
-                </button>
-              )}
-
-              {row.active ? (
+              {/* Save only — the header button is the mode toggle and already
+                  reads "Cancel", so a second one here was the same action
+                  offered twice. */}
+              <div className="staffmgr__modal-actions">
                 <button
-                  className="staffmgr__btn staffmgr__btn--danger"
-                  onClick={() => setConfirmingRemove(true)}
-                  disabled={busy}
+                  className="staffmgr__btn staffmgr__btn--save"
+                  onClick={requestSave}
+                  disabled={saving || !dirty}
                 >
-                  {busy ? "…" : row.has_history ? "Deactivate" : "Delete"}
+                  {saving ? "Saving…" : "Save changes"}
                 </button>
-              ) : (
-                <>
-                  <button className="staffmgr__btn staffmgr__btn--green" onClick={reactivate} disabled={busy}>
-                    {busy ? "…" : "Reactivate"}
-                  </button>
-                  {!row.has_history && (
-                    <button
-                      className="staffmgr__btn staffmgr__btn--danger"
-                      onClick={() => setConfirmingRemove(true)}
-                      disabled={busy}
-                    >
-                      {busy ? "…" : "Delete"}
-                    </button>
-                  )}
-                </>
-              )}
+              </div>
             </>
           ) : (
             <>
-              <label className="staffmgr__label">
-                Role
-                <div className={`staffmgr-row__role staffmgr-row__role--${row.role}`}>{row.role}</div>
-              </label>
-              <label className="staffmgr__label">
-                Hourly rate
-                <div className="staffmgr-row__rate">{fmtRate(row.hourly_rate)}</div>
-              </label>
+              {/* Read-only facts. Same three fields the edit form owns, so
+                  what you read is exactly what Edit will let you change. */}
+              <dl className="staffmgr__facts">
+                <div className="staffmgr__fact">
+                  <dt className="staffmgr__fact-label">Role</dt>
+                  <dd className="staffmgr__fact-value staffmgr__fact-value--role">{row.role}</dd>
+                </div>
+                <div className="staffmgr__fact">
+                  <dt className="staffmgr__fact-label">Hourly rate</dt>
+                  <dd className="staffmgr__fact-value">{fmtRate(row.hourly_rate)}</dd>
+                </div>
+                {savedIsBackofficeRole && (
+                  <div className="staffmgr__fact">
+                    <dt className="staffmgr__fact-label">Back Office email</dt>
+                    <dd className="staffmgr__fact-value staffmgr__fact-value--email">
+                      {row.email || <span className="staffmgr__fact-empty">Not set</span>}
+                    </dd>
+                  </div>
+                )}
+              </dl>
+
+              {/* Destructive actions stay on the read-only view rather than
+                  hiding behind Edit — they're things you come here to do, not
+                  edits — but sit below a divider in secondary styling. */}
+              {manageable && (
+                <>
+                  <div className="staffmgr__modal-divider" />
+
+                  <div className="staffmgr__modal-secondary">
+                    {pinPrompt ? (
+                      <InlinePinReset
+                        staffId={row.id}
+                        staffName={row.name}
+                        me={me}
+                        onDone={() => setPinPrompt(false)}
+                        onError={onError}
+                      />
+                    ) : (
+                      <button className="staffmgr__btn" onClick={() => setPinPrompt(true)}>
+                        Reset PIN
+                      </button>
+                    )}
+
+                    {row.active ? (
+                      <button
+                        className="staffmgr__btn staffmgr__btn--danger"
+                        onClick={() => setConfirmingRemove(true)}
+                        disabled={busy}
+                      >
+                        {busy ? "…" : row.has_history ? "Deactivate" : "Delete"}
+                      </button>
+                    ) : (
+                      <>
+                        <button className="staffmgr__btn staffmgr__btn--green" onClick={reactivate} disabled={busy}>
+                          {busy ? "…" : "Reactivate"}
+                        </button>
+                        {!row.has_history && (
+                          <button
+                            className="staffmgr__btn staffmgr__btn--danger"
+                            onClick={() => setConfirmingRemove(true)}
+                            disabled={busy}
+                          >
+                            {busy ? "…" : "Delete"}
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>

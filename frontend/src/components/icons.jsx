@@ -150,6 +150,13 @@ export const IconPlus = (p) => (
   </Svg>
 );
 
+export const IconPencil = (p) => (
+  <Svg {...p}>
+    <path d="M4 20h4l10.5-10.5a2.12 2.12 0 0 0-3-3L5 17v3Z" />
+    <path d="M13.5 6.5l4 4" />
+  </Svg>
+);
+
 export const IconSearch = (p) => (
   <Svg {...p}>
     <circle cx="11" cy="11" r="7" />
