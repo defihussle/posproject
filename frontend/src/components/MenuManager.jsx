@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import { API_URL } from "../config";
 import ConfirmDialog from "./ConfirmDialog";
 import useScrollLock from "../useScrollLock";
-import { IconPlus, IconSearch } from "./icons";
+import { IconPlus, IconSearch, IconPencil } from "./icons";
 import "./MenuManager.css";
 
 const fmtPrice = (p) => `$${parseFloat(p).toFixed(2)}`;
@@ -627,6 +627,9 @@ function ItemDetail({
   const [saving, setSaving] = useState(false);
   const [addingVariant, setAddingVariant] = useState(false);
   const [confirming86, setConfirming86] = useState(false);
+  // Opens read-only. Same reasoning as the Staff card: an item opened just to
+  // check a price shouldn't present every field as a live input.
+  const [editing, setEditing] = useState(false);
   const hasVariants = item.variants.length > 0;
 
   // New item selected — reset the draft to match it
@@ -652,6 +655,12 @@ function ItemDetail({
       base_price: String(item.base_price),
       is_upsell: !!item.is_upsell,
     });
+
+  const cancelEdit = () => {
+    discard();
+    setAddingVariant(false);
+    setEditing(false);
+  };
 
   const save = async () => {
     if (saving || !dirty) return;
@@ -683,6 +692,9 @@ function ItemDetail({
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       onSaved(data);
       onError(null);
+      // Back to the read-only view on success; a failure deliberately stays in
+      // edit mode so the rejected values are still there to correct.
+      setEditing(false);
     } catch (err) {
       onError(err.message || "Failed to save item");
     } finally {
@@ -692,130 +704,179 @@ function ItemDetail({
 
   return (
     <div className="menued__panel">
+      {/* Header — name + state, with the mode control on the right. Matches the
+          Staff card: reading an item is the common case, editing is deliberate. */}
       <div className="menued__panel-head">
-        <input
-          className="menued__name-input"
-          value={draft.name}
-          onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-          placeholder="Item name"
-        />
-        <div className="menued__status-cluster">
-          <span className={`menued__status-pill${item.active ? "" : " menued__status-pill--off"}`}>
-            {item.active ? "Active" : "Inactive"}
-          </span>
-          <button
-            className="menued__86-btn"
-            onClick={() => (item.active ? setConfirming86(true) : onToggle86())}
-            disabled={busy}
-          >
-            {busy ? "…" : item.active ? "86 It" : "Reactivate"}
+        {editing ? (
+          <input
+            className="menued__name-input"
+            value={draft.name}
+            onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+            placeholder="Item name"
+          />
+        ) : (
+          <div className="menued__view-heading">
+            <h3 className="menued__view-name">{item.name}</h3>
+            <div className="menued__view-pills">
+              <span className={`bo-pill ${item.active ? "bo-pill--positive" : "bo-pill--neutral"}`}>
+                {item.active ? "Active" : "Inactive"}
+              </span>
+              {item.is_upsell && <span className="bo-pill bo-pill--warn">Upsell</span>}
+            </div>
+          </div>
+        )}
+        {editing ? (
+          <button className="menued__edit-btn" onClick={cancelEdit} disabled={saving}>
+            Cancel
           </button>
-        </div>
+        ) : (
+          <button className="menued__edit-btn" onClick={() => setEditing(true)}>
+            <IconPencil size={14} />
+            Edit
+          </button>
+        )}
       </div>
 
-      {/* Read-only on purpose: PUT /api/backoffice/menu-items/:id takes no
-          category_id, so an existing item can't be moved between categories
-          without a backend change. Shown rather than hidden so the field
-          isn't silently missing from the editor. */}
-      <div className="menued__field-label">Category</div>
-      <div className="menued__readonly-field">
-        <span>{categoryName || "—"}</span>
-        <span className="menued__readonly-hint">Set when the item is created</span>
-      </div>
-
-      <label className="menued__field-label" htmlFor="menued-desc">
-        Description
-      </label>
-      <textarea
-        id="menued-desc"
-        className="menued__desc-input"
-        value={draft.description}
-        onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
-        placeholder="No description"
-        rows={2}
-      />
-
-      {hasVariants ? (
-        <div className="menued__price-note">Priced by variant — see below</div>
-      ) : (
+      {editing ? (
         <>
-          <label className="menued__field-label" htmlFor="menued-price">
-            Base price
+          {/* Category stays read-only in BOTH modes: PUT /api/backoffice/
+              menu-items/:id takes no category_id, so an item can't be moved
+              between categories without a backend change. Shown rather than
+              hidden so the field isn't silently missing from the editor. */}
+          <div className="menued__field-label">Category</div>
+          <div className="menued__readonly-field">
+            <span>{categoryName || "—"}</span>
+            <span className="menued__readonly-hint">Set when the item is created</span>
+          </div>
+
+          <label className="menued__field-label" htmlFor="menued-desc">
+            Description
           </label>
-          <div className="menued__price-input-wrap">
-            <span className="menued__price-prefix">$</span>
+          <textarea
+            id="menued-desc"
+            className="menued__desc-input"
+            value={draft.description}
+            onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
+            placeholder="No description"
+            rows={2}
+          />
+
+          {hasVariants ? (
+            <div className="menued__price-note">Priced by variant — see below</div>
+          ) : (
+            <>
+              <label className="menued__field-label" htmlFor="menued-price">
+                Base price
+              </label>
+              <div className="menued__price-input-wrap">
+                <span className="menued__price-prefix">$</span>
+                <input
+                  id="menued-price"
+                  className="menued__price-input"
+                  value={draft.base_price}
+                  onChange={(e) => setDraft((d) => ({ ...d, base_price: e.target.value }))}
+                  inputMode="decimal"
+                />
+              </div>
+            </>
+          )}
+
+          <label className="menued__upsell-toggle">
             <input
-              id="menued-price"
-              className="menued__price-input"
-              value={draft.base_price}
-              onChange={(e) => setDraft((d) => ({ ...d, base_price: e.target.value }))}
-              inputMode="decimal"
+              type="checkbox"
+              checked={draft.is_upsell}
+              onChange={(e) => setDraft((d) => ({ ...d, is_upsell: e.target.checked }))}
             />
+            <span className="menued__upsell-toggle-text">
+              <span className="menued__upsell-toggle-title">Upsell item</span>
+              <span className="menued__upsell-toggle-hint">
+                Offered once after Checkout, before payment (e.g. “Add guac?”)
+              </span>
+            </span>
+          </label>
+
+          {/* Covers the basics above only. Variants, groups and options each
+              hit their own endpoint and keep their own inline Save, unchanged
+              — one footer button can't represent four different writes. */}
+          <div className="menued__savebar">
+            <button className="menued__save" onClick={save} disabled={saving || !dirty}>
+              {saving ? "Saving…" : "Save changes"}
+            </button>
           </div>
         </>
-      )}
-
-      <label className="menued__upsell-toggle">
-        <input
-          type="checkbox"
-          checked={draft.is_upsell}
-          onChange={(e) => setDraft((d) => ({ ...d, is_upsell: e.target.checked }))}
-        />
-        <span className="menued__upsell-toggle-text">
-          <span className="menued__upsell-toggle-title">Upsell item</span>
-          <span className="menued__upsell-toggle-hint">
-            Offered once after Checkout, before payment (e.g. “Add guac?”)
-          </span>
-        </span>
-      </label>
-
-      {dirty && (
-        <div className="menued__savebar">
-          <span>Unsaved changes</span>
-          <div className="menued__savebar-actions">
-            <button className="menued__cancel" onClick={discard} disabled={saving}>
-              Discard
-            </button>
-            <button className="menued__save" onClick={save} disabled={saving}>
-              {saving ? "Saving…" : "Save"}
-            </button>
+      ) : (
+        <dl className="menued__facts">
+          <div className="menued__fact">
+            <dt className="menued__fact-label">Category</dt>
+            <dd className="menued__fact-value">{categoryName || "—"}</dd>
           </div>
-        </div>
+          <div className="menued__fact">
+            <dt className="menued__fact-label">Description</dt>
+            <dd className="menued__fact-value">
+              {item.description || <span className="menued__fact-empty">None</span>}
+            </dd>
+          </div>
+          <div className="menued__fact">
+            <dt className="menued__fact-label">Price</dt>
+            <dd className="menued__fact-value menued__fact-value--price">
+              {hasVariants ? "Priced by variant" : fmtPrice(item.base_price)}
+            </dd>
+          </div>
+          <div className="menued__fact">
+            <dt className="menued__fact-label">Upsell</dt>
+            <dd className="menued__fact-value">
+              {item.is_upsell ? "Offered after checkout" : <span className="menued__fact-empty">No</span>}
+            </dd>
+          </div>
+        </dl>
       )}
 
       <div className="menued__section">
         <div className="menued__section-title">Variants</div>
         {hasVariants ? (
-          <div className="menued__variant-table">
-            {item.variants.map((v) => (
-              <VariantRow key={v.id} variant={v} staff={staff} onSaved={onVariantSaved} onError={onError} />
-            ))}
-          </div>
+          editing ? (
+            <div className="menued__variant-table">
+              {item.variants.map((v) => (
+                <VariantRow key={v.id} variant={v} staff={staff} onSaved={onVariantSaved} onError={onError} />
+              ))}
+            </div>
+          ) : (
+            <dl className="menued__facts menued__facts--tight">
+              {item.variants.map((v) => (
+                <div key={v.id} className="menued__fact">
+                  <dt className="menued__fact-label menued__fact-label--plain">{v.name}</dt>
+                  <dd className="menued__fact-value menued__fact-value--price">{fmtPrice(v.price)}</dd>
+                </div>
+              ))}
+            </dl>
+          )
         ) : (
           <div className="menued__section-empty">No variants — this item has a single price</div>
         )}
-        {addingVariant ? (
-          <VariantRow
-            staff={staff}
-            itemId={item.id}
-            isNew
-            onSaved={(created) => {
-              onVariantSaved(created);
-              setAddingVariant(false);
-            }}
-            onCancel={() => setAddingVariant(false)}
-            onError={onError}
-          />
-        ) : (
-          <button className="menued__add-variant" onClick={() => setAddingVariant(true)}>
-            + Add variant
-          </button>
-        )}
+        {editing &&
+          (addingVariant ? (
+            <VariantRow
+              staff={staff}
+              itemId={item.id}
+              isNew
+              onSaved={(created) => {
+                onVariantSaved(created);
+                setAddingVariant(false);
+              }}
+              onCancel={() => setAddingVariant(false)}
+              onError={onError}
+            />
+          ) : (
+            <button className="menued__add-variant" onClick={() => setAddingVariant(true)}>
+              + Add variant
+            </button>
+          ))}
       </div>
 
       <ModifierGroupsSection
         item={item}
         staff={staff}
+        editing={editing}
         groups={item.modifier_groups}
         onGroupSaved={onGroupSaved}
         onGroupCreated={onGroupCreated}
@@ -825,6 +886,21 @@ function ItemDetail({
         onOptionDeleted={onOptionDeleted}
         onError={onError}
       />
+
+      {/* 86 / Reactivate lives below the content as a secondary action rather
+          than in the header — it's something you come here to do, not an edit,
+          same placement as the Staff card's Deactivate. */}
+      {!editing && (
+        <div className="menued__secondary">
+          <button
+            className={`menued__86-btn${item.active ? " menued__86-btn--danger" : ""}`}
+            onClick={() => (item.active ? setConfirming86(true) : onToggle86())}
+            disabled={busy}
+          >
+            {busy ? "…" : item.active ? "86 It" : "Reactivate"}
+          </button>
+        </div>
+      )}
 
       {confirming86 && (
         <ConfirmDialog
@@ -952,6 +1028,7 @@ function VariantRow({ variant, itemId, isNew, staff, onSaved, onCancel, onError 
 function ModifierGroupsSection({
   item,
   staff,
+  editing,
   groups,
   onGroupSaved,
   onGroupCreated,
@@ -972,23 +1049,28 @@ function ModifierGroupsSection({
       )}
 
       <div className="menued__modgroups">
-        {groups.map((g) => (
-          <ModifierGroupCard
-            key={g.id}
-            item={item}
-            group={g}
-            staff={staff}
-            onGroupSaved={onGroupSaved}
-            onGroupDeletedEverywhere={onGroupDeletedEverywhere}
-            onGroupUnlinked={onGroupUnlinked}
-            onOptionSaved={onOptionSaved}
-            onOptionDeleted={onOptionDeleted}
-            onError={onError}
-          />
-        ))}
+        {groups.map((g) =>
+          editing ? (
+            <ModifierGroupCard
+              key={g.id}
+              item={item}
+              group={g}
+              staff={staff}
+              onGroupSaved={onGroupSaved}
+              onGroupDeletedEverywhere={onGroupDeletedEverywhere}
+              onGroupUnlinked={onGroupUnlinked}
+              onOptionSaved={onOptionSaved}
+              onOptionDeleted={onOptionDeleted}
+              onError={onError}
+            />
+          ) : (
+            <ModifierGroupSummary key={g.id} group={g} />
+          )
+        )}
       </div>
 
-      {addingGroup ? (
+      {editing &&
+        (addingGroup ? (
         <NewModifierGroupForm
           staff={staff}
           itemId={item.id}
@@ -999,10 +1081,47 @@ function ModifierGroupsSection({
           onCancel={() => setAddingGroup(false)}
           onError={onError}
         />
+        ) : (
+          <button className="menued__add-variant" onClick={() => setAddingGroup(true)}>
+            + Add modifier group
+          </button>
+        ))}
+    </div>
+  );
+}
+
+// Read-only rendering of a group — what it's called, how many you may pick,
+// and its options with their prices. No inputs and no remove buttons: those
+// only exist in edit mode, so nothing destructive is one stray tap away while
+// you're just reading the item.
+function ModifierGroupSummary({ group }) {
+  const rule = group.required
+    ? `Required · pick ${group.min_select === group.max_select ? group.min_select : `${group.min_select}–${group.max_select}`}`
+    : `Optional · up to ${group.max_select}`;
+  const priceless = isPricelessGroupName(group.name);
+
+  return (
+    <div className="menued__modgroup menued__modgroup--summary">
+      <div className="menued__modgroup-summaryhead">
+        <span className="menued__modgroup-summaryname">{group.name}</span>
+        <span className="menued__modgroup-summaryrule">{rule}</span>
+      </div>
+      {group.options.length === 0 ? (
+        <div className="menued__section-empty">No options yet</div>
       ) : (
-        <button className="menued__add-variant" onClick={() => setAddingGroup(true)}>
-          + Add modifier group
-        </button>
+        <ul className="menued__optionsummary">
+          {group.options.map((o) => (
+            <li key={o.id} className="menued__optionsummary-row">
+              <span className="menued__optionsummary-name">
+                {o.name}
+                {o.default_selected && <span className="menued__optionsummary-default">Default</span>}
+              </span>
+              {!priceless && Number(o.price_delta) > 0 && (
+                <span className="menued__optionsummary-price">+{fmtPrice(o.price_delta)}</span>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

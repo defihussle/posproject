@@ -501,6 +501,221 @@
   }
 }
 
+/* ---- View mode (item card opens read-only) ----
+   These mirror the Staff card's fact rows. Defined here rather than shared
+   from StaffManager.css because MenuManager is also mounted on the POS-side
+   /manage-menu page, which never loads that stylesheet. */
+.menued__view-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+}
+
+.menued__view-name {
+  font-family: var(--font-headline);
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.25;
+}
+
+.menued__view-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.menued__edit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface-hover);
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  align-self: flex-start;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.menued__edit-btn:hover:not(:disabled) {
+  color: var(--red);
+  border-color: var(--red);
+  background: var(--red-light);
+}
+
+.menued__edit-btn:disabled {
+  opacity: 0.5;
+}
+
+.menued__facts {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 4px;
+}
+
+.menued__fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.menued__facts--tight .menued__fact {
+  padding: 9px 0;
+}
+
+.menued__fact:last-child {
+  border-bottom: none;
+}
+
+.menued__fact-label {
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* Variant rows reuse the fact row, but a variant NAME isn't a field label —
+   it keeps sentence case at body size. */
+.menued__fact-label--plain {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.menued__fact-value {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  text-align: right;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.menued__fact-value--price {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.menued__fact-empty {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Read-only modifier group card */
+.menued__modgroup--summary {
+  gap: 8px;
+}
+
+.menued__modgroup-summaryhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.menued__modgroup-summaryname {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.menued__modgroup-summaryrule {
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.menued__optionsummary {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.menued__optionsummary-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.menued__optionsummary-row:last-child {
+  border-bottom: none;
+}
+
+.menued__optionsummary-name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.menued__optionsummary-default {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--bg-surface-hover);
+  border-radius: var(--radius-full);
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.menued__optionsummary-price {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* Secondary actions (86 / Reactivate) sit below the content in view mode. */
+.menued__secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+/* Scoped to .menued__secondary for specificity: the base .menued__86-btn rule
+   is declared later in this file, so a bare single-class selector here would
+   lose to it. */
+.menued__secondary .menued__86-btn--danger {
+  color: var(--red);
+  border-color: var(--red-light);
+  background: var(--red-light);
+}
+
 /* Category on an existing item — displayed, not editable, because the update
    route takes no category_id. Styled as a flat field so it reads as "this is
    information" rather than a disabled input the owner keeps poking at. */
@@ -622,19 +837,27 @@
 }
 
 /* Inline-editable "heading" — looks like plain text until focused */
+/* Sized to match .menued__view-name so switching modes doesn't resize the
+   title, and so a full item name is actually readable on a phone — at the old
+   1.7rem it was clipped after about fifteen characters. Now that editing is an
+   explicit mode, it also gets a real border rather than reading as static text. */
 .menued__name-input {
   flex: 1;
   min-width: 0;
   font-family: var(--font-headline);
-  font-size: 1.7rem;
+  font-size: 1.05rem;
+  font-weight: 600;
   color: var(--text-primary);
-  background: transparent;
-  border: 1px solid transparent;
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border-color);
   border-radius: var(--radius-sm);
-  padding: 6px 8px;
-  margin: -6px 0 0 -8px;
+  padding: 9px 11px;
   outline: none;
   transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.menued__name-input:focus {
+  border-color: var(--red);
 }
 
 .menued__name-input:hover {
@@ -868,7 +1091,9 @@
 .menued__savebar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* Item detail's bar holds a single Save button, so it sits to the trailing
+     edge; the create variant below still has a label beside its actions. */
+  justify-content: flex-end;
   gap: 12px;
   padding: 12px 16px;
   margin-bottom: 24px;
@@ -884,6 +1109,8 @@
 
 .menued__savebar--create {
   background: var(--bg-surface);
+  /* Keeps the "New items start active" note opposite its buttons. */
+  justify-content: space-between;
 }
 
 .menued__savebar-actions {
