@@ -47,6 +47,29 @@
   --shadow-medium: 0 4px 16px rgba(42, 39, 36, 0.08);
   --shadow-raised: 0 6px 20px rgba(42, 39, 36, 0.12);
 
+  /* ---- Back Office typography ----
+     One family for the whole admin UI. Scoped here for the same reason as the
+     palette above: every admin surface renders inside this element and already
+     reads these token names, so repointing them re-faces all of them at once,
+     while Order Entry, the KDS and the pairing screen keep the :root values.
+     Inter 400/500/600/700 is already loaded by both HTML entries — no new
+     font request.
+
+     --font-mono is repointed too. It was carrying UI chrome (section labels,
+     meta lines, pills, table headers) as well as figures, and that mix of
+     IBM Plex Mono against Archivo Black against Inter is what read as uneven.
+     Numeric alignment doesn't depend on a monospace face — `font-variant-
+     numeric: tabular-nums` below gives Inter fixed-width digits, so money
+     columns still line up.
+
+     --font-code is the deliberate exception: strings a human transcribes
+     (pairing codes, Stripe reader ids) stay monospaced, where telling 0 from O
+     and 1 from l is functional rather than decorative. */
+  --font-headline: 'Inter', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-mono: 'Inter', system-ui, sans-serif;
+  --font-code: 'IBM Plex Mono', ui-monospace, monospace;
+
   /* Grouped-card geometry, used by every section card. */
   --card-radius: 16px;
 
@@ -55,6 +78,50 @@
   flex-direction: column;
   background: var(--bg-primary);
   color: var(--text-primary);
+  font-family: var(--font-body);
+  /* Inherited, so every figure in every table, KPI and money column gets
+     fixed-width digits — this is what makes dropping the monospace face safe. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Headline weights ----
+   Archivo Black is a single-weight display face, so the rules using
+   --font-headline never set font-weight — it came free. Inter has to be told,
+   or every page title would render at the inherited regular weight. Grouped
+   here rather than edited into a dozen component files so the type scale stays
+   readable in one place.
+
+   Scoped under .backoffice throughout: ConfirmDialog and MenuManager are shared
+   with POS surfaces, and outside this element they keep their original face. */
+.backoffice :is(
+  .backoffice__placeholder-title,
+  .backoffice__denied-title,
+  .homedash__title,
+  .homedash__errorstate-title,
+  .menued__title,
+  .staffmgr__title,
+  .payroll__title,
+  .reports__title,
+  .staffmgr__modal-title,
+  .confirmdlg__title
+) {
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+/* Item and section titles sit a step down from a page title. */
+.backoffice :is(.menued__name-input, .menued__section-title) {
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+/* True machine strings keep a monospaced face — see --font-code above. */
+.backoffice :is(
+  .devices__code-display,
+  .devices__reader-value,
+  .devices-row__reader
+) {
+  font-family: var(--font-code);
 }
 
 /* Dark mode keeps the same structure; only the surfaces darken. Owners can
