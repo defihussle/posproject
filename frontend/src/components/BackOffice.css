@@ -489,6 +489,28 @@
    hardware) are >=768px wide in portrait and never even reach this drawer
    at all — they get the permanent desktop sidebar above. */
 @media (max-width: 767px) {
+  /* Compact bar on a phone, and the drawer reads this same variable for its
+     own top offset, so both stay in step from one declaration. */
+  .backoffice {
+    --header-height: 54px;
+  }
+
+  /* Sticky rather than fixed: a sticky element keeps its box in normal flow,
+     so content starts below the bar and scrolls under it without needing a
+     compensating top offset that would have to be kept in sync with the
+     header height. Works because no ancestor scrolls — .backoffice is
+     min-height:100vh with no overflow, so the viewport is the scroll
+     container. z-index is inherited from the base rule (220), which already
+     keeps the hamburger above the drawer and its backdrop. */
+  .backoffice__header {
+    position: sticky;
+    top: 0;
+  }
+
+  .backoffice__logo {
+    height: 26px;
+  }
+
   .backoffice__hamburger {
     display: flex;
     align-items: center;

@@ -227,8 +227,8 @@
    scrolling. Quiet enough that item names still carry the page. */
 .menued__group {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: baseline;
+  gap: 7px;
   padding: 16px 16px 7px;
   background: var(--bg-surface);
 }
@@ -239,22 +239,30 @@
   padding-top: 10px;
 }
 
+/* Title case at readable size rather than tracked-out caps. Category names are
+   already stored title case ("Birria Tacos") — the shouting was purely a
+   text-transform, so dropping it is all that's needed. */
 .menued__group-name {
   font-family: var(--font-body);
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0;
   color: var(--text-secondary);
   white-space: nowrap;
 }
 
 .menued__group-count {
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  font-weight: 600;
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 500;
   color: var(--text-muted);
-  opacity: 0.75;
+}
+
+/* Reads as "Birria Tacos · 2". Decorative, so it lives in CSS rather than
+   being read out as content. */
+.menued__group-count::before {
+  content: "·";
+  margin-right: 7px;
 }
 
 .menued__group-rule {
