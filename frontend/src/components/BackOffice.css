@@ -181,6 +181,26 @@
 .bo-pill--neutral  { background: var(--bg-surface-hover); color: var(--text-muted); }
 .bo-pill--warn     { background: var(--amber-surface); color: var(--amber-text); }
 
+/* ---- Back Office stacking order, decided in one place ----
+      90  .bo-fab
+     200  drawer backdrop
+     210  drawer
+     220  header (sticky) — above the drawer, so the hamburger stays tappable
+          while the nav is open
+     250  modal overlays — ABOVE the header. A modal is a focused surface and
+          must not be clipped by it: at their original 200 the sticky header
+          painted over the top of the menu item card on a phone, cutting off
+          the item name and the Edit/close controls.
+     300  ConfirmDialog — above whichever modal opened it
+
+   Scoped to .backoffice on purpose. Both classes are shared with POS screens
+   (Order Entry's staff popup, Clock Card, My Hours), which have no sticky
+   header and run their own 999–1200 range — they keep their current values. */
+.backoffice .menued__modal-overlay,
+.backoffice .staffmgr__overlay {
+  z-index: 250;
+}
+
 /* Leading glyph on an "iconified list card" row (Devices, Staff). A soft
    tinted tile rather than a bare icon, so the row has an anchor on the left
    even when the label is short. */
