@@ -533,16 +533,11 @@ export default function MenuManager({ staff, showTitle = true }) {
       {modalOpen && (
         <div className="menued__modal-overlay" onClick={closeModal}>
           <div className="menued__modal" onClick={(e) => e.stopPropagation()}>
-            <div className="menued__modal-head">
-              <span className="menued__modal-eyebrow">
-                {creating ? "New menu item" : selectedCat?.name}
-              </span>
-              <button className="menued__modal-close" onClick={closeModal} aria-label="Close">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 6L6 18M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
+            {/* No separate title strip. The category it named is already a row
+                in the card's own basics, and the item name is the real title —
+                the bar was a second header competing with the first. Close now
+                lives in the card header beside Edit, the way the Staff card
+                does it. */}
             <div className="menued__modal-body">
               {/* Duplicated from the outer banner above — everything that can
                   fail (Add Option, Save, Remove, etc.) happens inside this
@@ -562,6 +557,7 @@ export default function MenuManager({ staff, showTitle = true }) {
                     setSelectedItemId(created.id);
                   }}
                   onCancel={closeModal}
+                  onClose={closeModal}
                   onError={setError}
                 />
               ) : (
@@ -570,6 +566,7 @@ export default function MenuManager({ staff, showTitle = true }) {
                     key={selectedItem.id}
                     item={selectedItem}
                     categoryName={selectedCat?.name}
+                    onClose={closeModal}
                     staff={staff}
                     busy={togglingIds.has(selectedItem.id)}
                     onToggle86={() => toggle86(selectedItem)}
@@ -605,6 +602,7 @@ function ChevronIcon() {
 function ItemDetail({
   item,
   categoryName,
+  onClose,
   staff,
   busy,
   onToggle86,
@@ -725,16 +723,23 @@ function ItemDetail({
             </div>
           </div>
         )}
-        {editing ? (
-          <button className="menued__edit-btn" onClick={cancelEdit} disabled={saving}>
-            Cancel
+        <div className="menued__head-actions">
+          {editing ? (
+            <button className="menued__edit-btn" onClick={cancelEdit} disabled={saving}>
+              Cancel
+            </button>
+          ) : (
+            <button className="menued__edit-btn" onClick={() => setEditing(true)}>
+              <IconPencil size={14} />
+              Edit
+            </button>
+          )}
+          <button className="menued__close-btn" onClick={onClose} aria-label="Close">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
           </button>
-        ) : (
-          <button className="menued__edit-btn" onClick={() => setEditing(true)}>
-            <IconPencil size={14} />
-            Edit
-          </button>
-        )}
+        </div>
       </div>
 
       {editing ? (
@@ -1662,7 +1667,7 @@ function NewModifierOptionForm({ staff, groupId, hidePrice, onCreated, onCancel,
 }
 
 // ---------- Modal body: creating a new item ----------
-function NewItemDetail({ staff, categories, defaultCategoryId, onCreated, onCancel, onError }) {
+function NewItemDetail({ staff, categories, defaultCategoryId, onCreated, onCancel, onClose, onError }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState("");
@@ -1714,6 +1719,8 @@ function NewItemDetail({ staff, categories, defaultCategoryId, onCreated, onCanc
 
   return (
     <div className="menued__panel">
+      {/* Carries its own close now that the modal's title strip is gone —
+          without it the create form would have no way out but Cancel. */}
       <div className="menued__panel-head">
         <input
           className="menued__name-input"
@@ -1722,6 +1729,13 @@ function NewItemDetail({ staff, categories, defaultCategoryId, onCreated, onCanc
           placeholder="Item name"
           autoFocus
         />
+        <div className="menued__head-actions">
+          <button className="menued__close-btn" onClick={onClose || onCancel} aria-label="Close">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       <label className="menued__field-label" htmlFor="menued-new-cat">

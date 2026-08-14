@@ -60,7 +60,15 @@
    instead of relying on ancestor padding keeps it flush with the modal's
    edges. */
 .menued__error--modal {
-  margin: 16px 24px 0;
+  /* Horizontal margin tracks .menued__panel's padding so the banner lines up
+     with the card content beneath it. */
+  margin: 18px 22px 0;
+}
+
+@media (max-width: 640px) {
+  .menued__error--modal {
+    margin: 16px 18px 0;
+  }
 }
 
 /* ---------- Filter bar ----------
@@ -527,6 +535,32 @@
   gap: 6px;
 }
 
+/* Edit/Cancel and Close pair at the trailing edge of the card header, the
+   only header the card has now. */
+.menued__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.menued__close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+  flex-shrink: 0;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.menued__close-btn:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+
 .menued__edit-btn {
   display: inline-flex;
   align-items: center;
@@ -770,38 +804,9 @@
   overflow: hidden;
 }
 
-.menued__modal-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border-color);
-  flex-shrink: 0;
-}
-
-.menued__modal-eyebrow {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.menued__modal-close {
-  color: var(--text-muted);
-  display: flex;
-  padding: 4px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  transition: all 0.12s ease;
-}
-
-.menued__modal-close:hover {
-  background: var(--bg-surface-hover);
-  color: var(--text-primary);
-}
+/* The modal's own title strip is gone — the card supplies its own header
+   (name + Edit + Close), so .menued__modal-head/-eyebrow/-close were removed
+   with it rather than left as dead rules. */
 
 .menued__modal-body {
   flex: 1;
@@ -814,10 +819,19 @@
   }
 }
 
+/* Top padding does the work the removed title strip used to: it's what keeps
+   the item name off the card's rounded top edge. Slightly generous on purpose
+   — this is the first thing you see on a phone. */
 .menued__panel {
-  padding: 24px 24px 40px;
+  padding: 26px 22px 40px;
   display: flex;
   flex-direction: column;
+}
+
+@media (max-width: 640px) {
+  .menued__panel {
+    padding: 22px 18px 36px;
+  }
 }
 
 .menued__panel-head {
