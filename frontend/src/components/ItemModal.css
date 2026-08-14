@@ -151,9 +151,18 @@
   background: var(--bg-surface-hover);
 }
 
+/* Selection is carried by the checkmark indicator alone. A tinted row behind
+   every default-included ingredient meant a standard taco opened as a block of
+   solid pink, which read as a warning rather than as "these are on it". */
 .item-modal__option--selected {
-  background: var(--red-light);
-  border-color: var(--red);
+  background: transparent;
+  border-color: transparent;
+}
+
+/* Hover still needs to respond on a selected row — the rule above would
+   otherwise beat :hover on specificity and leave selected rows feeling dead. */
+.item-modal__option--selected:hover {
+  background: var(--bg-surface-hover);
 }
 
 /* Radio / Checkbox indicator */
@@ -213,8 +222,10 @@
   white-space: nowrap;
 }
 
+/* Muted, not green: "Included" is a statement of fact, not a success state,
+   and in green it competed with the checkmark for attention on every row. */
 .item-modal__option-price--free {
-  color: var(--green);
+  color: var(--text-muted);
 }
 
 .item-modal__option-price--removed {

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { API_URL } from "../config";
 import ConfirmDialog from "./ConfirmDialog";
-import { IconPlus, IconUser } from "./icons";
+import { IconPlus, IconUser, IconSearch } from "./icons";
 import "./StaffManager.css";
 import useScrollLock from "../useScrollLock";
 
@@ -74,6 +74,10 @@ export default function StaffManager({ staff, showLiveStatus = false }) {
   const [showAdd, setShowAdd] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [liveStatus, setLiveStatus] = useState({}); // staffId -> { status, since }
+  // Purely a client-side narrowing of the already-loaded roster — no refetch,
+  // and `rows` itself is never mutated, so every existing action still works
+  // on the real record.
+  const [search, setSearch] = useState("");
 
   // Add Staff only. The detail modal is its own component and locks itself.
   useScrollLock(showAdd);
@@ -140,7 +144,14 @@ export default function StaffManager({ staff, showLiveStatus = false }) {
 
   if (loading) return <div className="staffmgr__notice">Loading staff…</div>;
 
+  // Looked up against `rows`, not the filtered list — an open detail modal
+  // must survive the search box being typed into behind it.
   const selectedRow = rows.find((r) => r.id === selectedId) || null;
+
+  const query = search.trim().toLowerCase();
+  const visibleRows = query
+    ? rows.filter((r) => r.name.toLowerCase().includes(query))
+    : rows;
 
   return (
     <div className="staffmgr">
@@ -150,8 +161,33 @@ export default function StaffManager({ staff, showLiveStatus = false }) {
         <h2 className="staffmgr__title">Staff</h2>
       </div>
 
+      {/* Same search affordance as Menu Management, so the two roster screens
+          behave identically. */}
+      <div className="staffmgr__search">
+        <IconSearch size={15} className="staffmgr__search-icon" />
+        <input
+          className="staffmgr__search-input"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search staff by name…"
+          aria-label="Search staff by name"
+        />
+        {search && (
+          <button
+            className="staffmgr__search-clear"
+            onClick={() => setSearch("")}
+            aria-label="Clear search"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+
       <div className="staffmgr__list">
-        {rows.map((row) => (
+        {visibleRows.length === 0 && (
+          <div className="staffmgr__empty">No staff match “{search.trim()}”</div>
+        )}
+        {visibleRows.map((row) => (
           <button
             key={row.id}
             className={`staffmgr-row${row.active ? "" : " staffmgr-row--inactive"}`}

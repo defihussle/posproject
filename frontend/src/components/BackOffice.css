@@ -440,9 +440,12 @@
     bottom: 0;
     z-index: 210; /* below the header (220), above the backdrop (200) */
     /* A real drawer width — enough for labels to sit comfortably on one
-       line at any phone size, never a full-screen takeover. */
-    width: 78vw;
-    max-width: 320px;
+       line at any phone size, never a full-screen takeover. Trimmed from
+       78vw/320px: "Menu Management" is the longest label and still fits on
+       one line here with room to spare, so the extra width was only making
+       the drawer feel like it was taking over the screen. */
+    width: 70vw;
+    max-width: 280px;
     border-right: 1px solid var(--border-color);
     box-shadow: var(--shadow-medium);
     transform: translateX(-100%);

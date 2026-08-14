@@ -53,6 +53,72 @@
   color: var(--text-primary);
 }
 
+/* ---- Roster search ----
+   Deliberately the same shape, sizing and focus treatment as Menu
+   Management's search (.menued__search*), so the two list screens don't
+   drift apart. */
+.staffmgr__search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.staffmgr__search-icon {
+  position: absolute;
+  left: 11px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.staffmgr__search-input {
+  width: 100%;
+  padding: 10px 34px;
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.staffmgr__search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.staffmgr__search-input:focus {
+  border-color: var(--red);
+}
+
+.staffmgr__search-clear {
+  position: absolute;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.staffmgr__search-clear:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+
+.staffmgr__empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
 .staffmgr__add-btn {
   font-family: var(--font-body);
   font-size: 0.78rem;
