@@ -21,7 +21,38 @@
     <link rel="manifest" href="/backoffice.webmanifest" />
     <meta name="theme-color" content="#111111" />
     <meta name="apple-mobile-web-app-title" content="Back Office" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Locked at 1× so Back Office behaves like an app rather than a web page:
+      no pinch zoom, no double-tap zoom, no accidental half-zoomed state to get
+      stuck in one-handed mid-shift.
+
+      Only this entry is touched. Order Entry and the KDS load index.html, which
+      keeps its own zoomable viewport — the two have been separate documents
+      since backoffice.html was added, so there's nothing shared to break.
+
+      Scope of what this actually achieves: honoured in the Home Screen
+      (standalone) app and on Android. In-browser iOS Safari has ignored
+      user-scalable=no since iOS 10 as an accessibility guarantee, so pinch may
+      still work there; the touch-action rule below is what reliably kills
+      double-tap zoom on every iOS surface. Desktop zoom (Ctrl +/-) is
+      unaffected by any of this.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <style>
+      /* Kills double-tap-to-zoom (and its 300ms tap delay) for everything this
+         document renders — including the Back Office login screen, which mounts
+         outside the .backoffice wrapper, so a class-scoped rule would miss it.
+         Lives here rather than in index.css because that stylesheet is shared
+         with Order Entry and the KDS. */
+      html {
+        touch-action: manipulation;
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
+      }
+    </style>
     <meta name="description" content="Narcos Tacos — Reports, Staff, Menu & Payroll" />
     <title>Narcos Back Office</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
