@@ -4884,12 +4884,13 @@ function validateItemFields({ name, base_price }) {
 }
 
 // PUT /api/backoffice/menu-items/:id
-// Body: { staffId, name, description, base_price, active, is_upsell? }
-// is_upsell is optional: callers that don't manage it (e.g. the 86 toggle)
-// omit it, and COALESCE below preserves whatever is already stored.
+// Body: { staffId, name, description, base_price, active, is_upsell?, category_id? }
+// is_upsell and category_id are optional: callers that don't manage them (e.g.
+// the sold-out toggle) omit them, and COALESCE below preserves whatever is
+// already stored.
 app.put("/api/backoffice/menu-items/:id", async (req, res) => {
   try {
-    const { description, active, is_upsell } = req.body || {};
+    const { description, active, is_upsell, category_id } = req.body || {};
     await requireBackofficeSession(req);
     const { name, price } = validateItemFields(req.body || {});
     if (typeof active !== "boolean") {
@@ -4899,13 +4900,30 @@ app.put("/api/backoffice/menu-items/:id", async (req, res) => {
       throw new HttpError(400, "is_upsell must be a boolean");
     }
 
+    // category_id is OPTIONAL: callers that don't manage it (the sold-out
+    // toggle, older clients) omit it and COALESCE below leaves the item where
+    // it is. When present it's validated exactly as POST does — the category
+    // must exist and be active — so an item can't be parked in a stale or
+    // made-up category.
+    if (category_id !== undefined) {
+      if (!category_id || typeof category_id !== "string") {
+        throw new HttpError(400, "category_id must be a category id");
+      }
+      const { rows: catRows } = await pool.query(
+        "SELECT id FROM menu_categories WHERE id = $1 AND active = true",
+        [category_id]
+      );
+      if (catRows.length === 0) throw new HttpError(400, "Unknown category");
+    }
+
     const { rows } = await pool.query(
       `UPDATE menu_items
           SET name = $1, description = $2, base_price = $3, active = $4,
-              is_upsell = COALESCE($5, is_upsell)
+              is_upsell = COALESCE($5, is_upsell),
+              category_id = COALESCE($7, category_id)
         WHERE id = $6
         RETURNING id, category_id, name, description, base_price, active, sort_order, is_upsell`,
-      [name, description || null, price, active, is_upsell ?? null, req.params.id]
+      [name, description || null, price, active, is_upsell ?? null, req.params.id, category_id ?? null]
     );
     if (rows.length === 0) throw new HttpError(404, "Menu item not found");
     res.json(rows[0]);

@@ -161,19 +161,36 @@ export default function MenuManager({ staff, showTitle = true }) {
     setStatusFilter("all");
   };
 
+  // Handles a category MOVE, not just an in-place edit: the item is dropped
+  // from whichever category currently holds it and re-inserted under
+  // updated.category_id. Its variants and modifier groups are carried across —
+  // the PUT response doesn't include them, so taking `updated` wholesale would
+  // blank them out on every move.
   const applyItem = useCallback((updated) => {
-    setMenu((prev) =>
-      prev.map((cat) =>
-        cat.id !== updated.category_id
-          ? cat
-          : {
-              ...cat,
-              items: cat.items.some((i) => i.id === updated.id)
-                ? cat.items.map((i) => (i.id === updated.id ? { ...i, ...updated } : i))
-                : [...cat.items, { ...updated, variants: [], modifier_groups: [] }],
-            }
-      )
-    );
+    setMenu((prev) => {
+      const existing = prev
+        .flatMap((cat) => cat.items)
+        .find((i) => i.id === updated.id);
+      const merged = {
+        variants: existing?.variants ?? [],
+        modifier_groups: existing?.modifier_groups ?? [],
+        ...existing,
+        ...updated,
+      };
+      return prev.map((cat) => {
+        if (cat.id === updated.category_id) {
+          return {
+            ...cat,
+            items: cat.items.some((i) => i.id === updated.id)
+              ? cat.items.map((i) => (i.id === updated.id ? merged : i))
+              : [...cat.items, merged],
+          };
+        }
+        // Any other category must not keep a copy of an item that just moved.
+        if (!cat.items.some((i) => i.id === updated.id)) return cat;
+        return { ...cat, items: cat.items.filter((i) => i.id !== updated.id) };
+      });
+    });
   }, []);
 
   const applyVariant = useCallback((updated) => {
@@ -566,6 +583,7 @@ export default function MenuManager({ staff, showTitle = true }) {
                     key={selectedItem.id}
                     item={selectedItem}
                     categoryName={selectedCat?.name}
+                    categories={menu}
                     onClose={closeModal}
                     staff={staff}
                     busy={togglingIds.has(selectedItem.id)}
@@ -602,6 +620,7 @@ function ChevronIcon() {
 function ItemDetail({
   item,
   categoryName,
+  categories,
   onClose,
   staff,
   busy,
@@ -621,6 +640,7 @@ function ItemDetail({
     description: item.description || "",
     base_price: String(item.base_price),
     is_upsell: !!item.is_upsell,
+    category_id: item.category_id,
   }));
   const [saving, setSaving] = useState(false);
   const [addingVariant, setAddingVariant] = useState(false);
@@ -637,13 +657,15 @@ function ItemDetail({
       description: item.description || "",
       base_price: String(item.base_price),
       is_upsell: !!item.is_upsell,
+      category_id: item.category_id,
     });
-  }, [item.id, item.name, item.description, item.base_price, item.is_upsell]);
+  }, [item.id, item.name, item.description, item.base_price, item.is_upsell, item.category_id]);
 
   const dirty =
     draft.name !== item.name ||
     draft.description !== (item.description || "") ||
     draft.is_upsell !== !!item.is_upsell ||
+    draft.category_id !== item.category_id ||
     (!hasVariants && draft.base_price !== String(item.base_price));
 
   const discard = () =>
@@ -652,6 +674,7 @@ function ItemDetail({
       description: item.description || "",
       base_price: String(item.base_price),
       is_upsell: !!item.is_upsell,
+      category_id: item.category_id,
     });
 
   const cancelEdit = () => {
@@ -684,6 +707,7 @@ function ItemDetail({
           base_price: price,
           active: item.active,
           is_upsell: draft.is_upsell,
+          category_id: draft.category_id,
         }),
       });
       const data = await res.json();
@@ -744,15 +768,24 @@ function ItemDetail({
 
       {editing ? (
         <>
-          {/* Category stays read-only in BOTH modes: PUT /api/backoffice/
-              menu-items/:id takes no category_id, so an item can't be moved
-              between categories without a backend change. Shown rather than
-              hidden so the field isn't silently missing from the editor. */}
-          <div className="menued__field-label">Category</div>
-          <div className="menued__readonly-field">
-            <span>{categoryName || "—"}</span>
-            <span className="menued__readonly-hint">Set when the item is created</span>
-          </div>
+          {/* Editable now that PUT accepts category_id (validated server-side
+              against menu_categories, same as create). Moving an item here is
+              what fixes a mis-filed dish without recreating it. */}
+          <label className="menued__field-label" htmlFor="menued-cat">
+            Category
+          </label>
+          <select
+            id="menued-cat"
+            className="menued__select menued__select--field"
+            value={draft.category_id}
+            onChange={(e) => setDraft((d) => ({ ...d, category_id: e.target.value }))}
+          >
+            {(categories || []).map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {cat.name}
+              </option>
+            ))}
+          </select>
 
           <label className="menued__field-label" htmlFor="menued-desc">
             Description
@@ -1005,25 +1038,29 @@ function VariantRow({ variant, itemId, isNew, staff, onSaved, onCancel, onError 
           inputMode="decimal"
         />
       </div>
+      {/* Actions get their OWN grid line rather than sitting inline. Inline,
+          they appeared only once the row was dirty and stole width from the
+          name input, so starting to edit a price retitled "Fish" to "Fisl"
+          mid-keystroke. On their own line the name and price never move. */}
       {isNew ? (
-        <>
+        <div className="menued__variant-actions">
           <button className="menued__save menued__save--sm" onClick={save} disabled={saving}>
             {saving ? "…" : "Add"}
           </button>
           <button className="menued__cancel menued__cancel--sm" onClick={onCancel} disabled={saving}>
             Cancel
           </button>
-        </>
+        </div>
       ) : (
         dirty && (
-          <>
+          <div className="menued__variant-actions">
             <button className="menued__save menued__save--sm" onClick={save} disabled={saving}>
               {saving ? "…" : "Save"}
             </button>
             <button className="menued__cancel menued__cancel--sm" onClick={discard} disabled={saving}>
               Discard
             </button>
-          </>
+          </div>
         )
       )}
     </div>

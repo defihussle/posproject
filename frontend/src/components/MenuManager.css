@@ -750,29 +750,8 @@
   background: var(--red-light);
 }
 
-/* Category on an existing item — displayed, not editable, because the update
-   route takes no category_id. Styled as a flat field so it reads as "this is
-   information" rather than a disabled input the owner keeps poking at. */
-.menued__readonly-field {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 9px 12px;
-  margin-bottom: 4px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface-hover);
-  font-family: var(--font-body);
-  font-size: 0.88rem;
-  color: var(--text-primary);
-}
-
-.menued__readonly-hint {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  color: var(--text-muted);
-}
+/* .menued__readonly-field / -hint removed with the locked Category field —
+   category is a real select in edit mode now. */
 
 /* ---------- Modal (item detail / new item) ----------
    Mobile-first: the base size is already compact enough to read as
@@ -1221,13 +1200,25 @@
   margin-bottom: 10px;
 }
 
+/* Two fixed columns — name and price — with any action buttons dropping to a
+   full-width line beneath. A flex row let the buttons appear on edit and
+   squeeze the name input, which truncated the variant name mid-typing. */
 .menued__variant-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 10px;
+  row-gap: 8px;
   align-items: center;
-  gap: 10px;
   padding: 8px;
   border-radius: var(--radius-sm);
   transition: background-color 0.12s ease;
+}
+
+.menued__variant-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .menued__variant-row:hover {
@@ -1239,23 +1230,25 @@
   border: 1px dashed var(--border-color);
 }
 
+/* These rows only render in edit mode now, so the field reads as a field
+   rather than as text with an invisible border waiting to be discovered. */
 .menued__variant-name {
-  flex: 1;
   min-width: 0;
+  width: 100%;
   font-family: var(--font-body);
   font-size: 0.85rem;
   font-weight: 500;
   color: var(--text-primary);
-  background: transparent;
-  border: 1px solid transparent;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  padding: 6px 8px;
+  padding: 7px 9px;
   outline: none;
   transition: border-color 0.12s ease, background-color 0.12s ease;
 }
 
 .menued__variant-name:hover {
-  background: var(--bg-surface);
+  border-color: var(--text-muted);
 }
 
 .menued__variant-name:focus {
