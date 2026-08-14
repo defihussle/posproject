@@ -160,6 +160,40 @@ function playVoidAlert() {
  * order. Tapping a card advances its status; once an order hits `ready` it
  * leaves the open,preparing filter and drops off the board.
  */
+
+// ---- Rush Hour make-line priority ----
+// Highest-value / longest-lead work first, so the line fires in the order the
+// kitchen actually wants during a rush.
+//
+// Matched on the item NAME because the KDS payload carries `name` and
+// `variant` but no category (see fetchKdsOrders in server.js) — adding a
+// category to that query would mean changing an endpoint the board depends on,
+// for a distinction the names already make. The live menu names are
+// unambiguous here: every taco says "taco", every burrito "burrito", every
+// bowl "bowl", and so on (see database/menu_restructure.sql, which renamed
+// these to "<Protein> Burrito", "<Protein> Bowl", "<Protein> Quesadilla").
+//
+// Order matters: the birria test runs first, otherwise "Birria Tacos (3pc)"
+// would match the generic taco rule. It requires BOTH words so a hypothetical
+// "Birria Bowl" still sorts as a bowl rather than jumping to the front.
+const RUSH_PRIORITY_TESTS = [
+  (n) => n.includes("birria") && n.includes("taco"), // 1 — best seller, leads the tacos
+  (n) => n.includes("taco"), // 2 — every other taco
+  (n) => n.includes("burrito"), // 3
+  (n) => n.includes("bowl"), // 4
+  (n) => n.includes("quesadilla"), // 5
+  (n) => n.includes("fries"), // 6 — "Fries Supreme" and "Seasoned Fries" alike
+];
+// Sides, desserts, drinks, nachos, elotes — keep their existing relative order,
+// which the count/age tiebreakers below already decide.
+const RUSH_PRIORITY_OTHER = RUSH_PRIORITY_TESTS.length + 1;
+
+function rushPriority(itemName) {
+  const n = (itemName || "").toLowerCase();
+  const i = RUSH_PRIORITY_TESTS.findIndex((test) => test(n));
+  return i === -1 ? RUSH_PRIORITY_OTHER : i + 1;
+}
+
 export default function KitchenDisplay({ deviceName }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -503,9 +537,14 @@ export default function KitchenDisplay({ deviceName }) {
         }
       }
     }
-    // Busiest first; ties broken by oldest order so urgent work floats up
+    // Station priority first, then busiest, then oldest. Priority is the outer
+    // key on purpose: during a rush the point of this view is to fire the
+    // highest-value work first, and a big pile of drinks shouldn't outrank a
+    // single birria order just because it aggregated to a larger count. The
+    // two previous keys are unchanged and still break ties within a tier.
     return [...map.values()].sort(
       (a, b) =>
+        rushPriority(a.sample.name) - rushPriority(b.sample.name) ||
         b.count - a.count ||
         new Date(a.oldestCreatedAt) - new Date(b.oldestCreatedAt)
     );
