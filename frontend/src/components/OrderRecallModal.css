@@ -32,12 +32,16 @@
   --orm-success-text: #6FD48C;
 }
 
+/* The base modal is now the browse surface only — search + list. The order
+   detail opens as its own card on top (.orm-detail-overlay), so this stays
+   narrow like the Menu/Staff list modals rather than reserving half its width
+   for a detail pane that is usually empty. */
 .orm-modal {
   background: var(--bg-surface);
   color: var(--text-primary);
   font-family: var(--font-body);
   width: 100%;
-  max-width: 840px;
+  max-width: 560px;
   max-height: 90vh;
   border-radius: var(--radius-lg);
   display: flex;
@@ -95,14 +99,14 @@
 .orm-body {
   display: flex;
   flex: 1;
+  min-height: min(480px, 55vh);
   overflow: hidden;
-  min-height: 480px;
 }
 
-/* Left sidebar: order search & list */
+/* Search + list. Full width now that the detail is a separate card. */
 .orm-sidebar {
-  width: 320px;
-  border-right: 1px solid var(--border-color);
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg-primary);
@@ -134,9 +138,13 @@
   border-color: var(--red);
 }
 
+/* The one scroller in the browse view — never capped by a sibling detail
+   pane, so a long recall list scrolls the whole height of the modal. */
 .orm-order-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 0.5rem;
 }
 
@@ -217,25 +225,60 @@
 .orm-badge--cancelled { background: #FCE8E6; color: #C5221F; }
 .orm-badge--refunded { background: #FEEFC3; color: #805B00; }
 
-/* Right main pane: Order Details & Action controls */
+/* ── Order detail card ─────────────────────────────────────────────────────
+   A floating card over the list rather than a column beside it. Sits above
+   the browse modal but below the options/PIN overlays (1100) and the receipt
+   (1200), so a reversal flow started here always renders on top of it. */
+.orm-detail-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  z-index: 1050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  animation: fadeIn 0.18s ease-out;
+}
+
+.orm-detail-modal {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  width: 100%;
+  max-width: 640px;
+  max-height: 88vh;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-medium);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Same header treatment as the browse modal's — title left, ✕ right — so the
+   two read as one surface stacked, not two unrelated dialogs. */
+.orm-detail-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-shrink: 0;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-surface-hover);
+}
+
+/* Scrolling body of the detail card. */
 .orm-content {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 1.5rem;
-}
-
-.orm-empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
-  color: var(--text-muted);
-  text-align: center;
 }
 
 .orm-detail-header {
@@ -250,17 +293,19 @@
 
 .orm-detail-title {
   font-family: var(--font-headline);
-  font-size: 1.4rem;
-  margin: 0 0 0.35rem 0;
+  font-size: 1.25rem;
+  margin: 0;
   color: var(--text-primary);
 }
 
 .orm-detail-meta {
+  flex: 1;
+  min-width: 0;
   font-size: 0.82rem;
   color: var(--text-secondary);
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
+  gap: 0.35rem 1rem;
 }
 
 .orm-detail-meta strong {
@@ -870,14 +915,62 @@
   text-decoration: underline;
 }
 
+/* Phone / small tablet. The browse list is no longer squeezed into a 200px
+   strip above a detail pane — it owns the modal, and the detail is a card on
+   top of it that still reads as floating (kept off the screen edges). */
 @media (max-width: 640px) {
-  .orm-body {
-    flex-direction: column;
+  .orm-backdrop {
+    padding: 0.75rem;
   }
-  .orm-sidebar {
+
+  .orm-body {
+    min-height: min(420px, 60vh);
+  }
+
+  .orm-detail-overlay {
+    padding: 0.75rem;
+  }
+
+  .orm-detail-modal {
+    max-height: 92vh;
+  }
+
+  .orm-detail-topbar {
+    padding: 0.85rem 1rem;
+  }
+
+  .orm-content {
+    padding: 1rem;
+  }
+
+  /* Status badge and Receipt sit on one line under the meta rather than
+     stacking into a tall right-hand column on a narrow screen. */
+  .orm-detail-header {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .orm-detail-aside {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
     width: 100%;
-    max-height: 200px;
-    border-right: none;
-    border-bottom: 1px solid var(--border-color);
+  }
+
+  .orm-items-table {
+    font-size: 0.82rem;
+  }
+
+  .orm-items-table th,
+  .orm-items-table td {
+    padding-left: 0.4rem;
+    padding-right: 0.4rem;
+  }
+
+  /* Full-width reversal buttons — each one is a distinct, irreversible
+     choice, so they get their own row and a full tap target. */
+  .orm-actions-bar {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

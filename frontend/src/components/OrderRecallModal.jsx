@@ -104,16 +104,17 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to fetch orders");
       setOrders(data.orders || []);
-      if (data.orders?.length > 0 && !selectedOrderId) {
-        setSelectedOrderId(data.orders[0].id);
-      }
+      // Deliberately no auto-select: the detail is a modal card over the list,
+      // so pre-selecting the newest order would pop that card open on every
+      // fetch — including the refresh after a reversal — instead of returning
+      // the cashier to a browsable list.
     } catch (err) {
       console.error("Order recall fetch failed:", err.message);
       setOrders([]);
     } finally {
       setLoading(false);
     }
-  }, [selectedOrderId]);
+  }, []);
 
   // Fetch eligible approvers
   const fetchApprovers = useCallback(async () => {
@@ -133,10 +134,25 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
     fetchApprovers();
   }, [search, fetchOrders, fetchApprovers]);
 
+  // Strictly what the cashier tapped — no fallback to orders[0], or closing the
+  // detail card would immediately re-open it on the newest order.
   const selectedOrder = useMemo(
-    () => orders.find((o) => o.id === selectedOrderId) || orders[0] || null,
+    () => orders.find((o) => o.id === selectedOrderId) || null,
     [orders, selectedOrderId]
   );
+
+  const closeDetail = useCallback(() => setSelectedOrderId(null), []);
+
+  // Escape closes the detail card, but only when it is the topmost surface —
+  // the options / PIN / receipt overlays sit above it and own the key first.
+  useEffect(() => {
+    if (!selectedOrderId || actionType || pinModalOpen || receiptOrderId) return;
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") closeDetail();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedOrderId, actionType, pinModalOpen, receiptOrderId, closeDetail]);
 
   // Reset form when switching selected order
   useEffect(() => {
@@ -431,152 +447,175 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
               )}
             </div>
           </div>
-
-          {/* Right Main Pane: Details & Actions */}
-          <div className="orm-content">
-            {!selectedOrder ? (
-              <div className="orm-empty-state">Select an order on the left to view details</div>
-            ) : (
-              <>
-                <div className="orm-detail-header">
-                  <div>
-                    <h3 className="orm-detail-title">Order #{selectedOrder.order_number}</h3>
-                    <div className="orm-detail-meta">
-                      <span>Server: <strong>{selectedOrder.staff_name}</strong></span>
-                      <span>Payment: <strong className="orm-payment-method">{selectedOrder.payment_method}</strong></span>
-                      <span>Time: {new Date(selectedOrder.created_at).toLocaleString()}</span>
-                    </div>
-                  </div>
-                  <div className="orm-detail-aside">
-                    <span className={`orm-badge ${orderStateBadge(selectedOrder).cls}`}>
-                      {orderStateBadge(selectedOrder).text}
-                    </span>
-                    <button
-                      className="orm-btn orm-btn--secondary orm-receipt-btn"
-                      onClick={() => setReceiptOrderId(selectedOrder.id)}
-                    >
-                      Receipt
-                    </button>
-                  </div>
-                </div>
-
-                {successMsg && <div className="orm-success">✓ {successMsg}</div>}
-
-                {/* Items Table */}
-                <table className="orm-items-table">
-                  <thead>
-                    <tr>
-                      <th>Item</th>
-                      <th className="orm-col--center">Qty</th>
-                      <th className="orm-col--right">Price</th>
-                      <th className="orm-col--right">Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedOrder.items.map((item) => (
-                      <tr key={item.order_item_id}>
-                        <td>
-                          <span className="orm-item-name">{item.name}</span>
-                          {item.variant_name && <span className="orm-item-variant"> ({item.variant_name})</span>}
-                        </td>
-                        <td className="orm-col--center">{item.quantity}</td>
-                        <td className="orm-col--right">${item.unit_price.toFixed(2)}</td>
-                        <td className="orm-col--right">${item.line_total.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-
-                {/* Order Summary */}
-                <div className="orm-summary-box">
-                  <div className="orm-summary-row"><span>Subtotal:</span><span>${selectedOrder.subtotal.toFixed(2)}</span></div>
-                  {selectedOrder.discount > 0 && (
-                    <div className="orm-summary-row orm-summary-row--discount">
-                      <span>Discount ({selectedOrder.discount_reason}):</span>
-                      <span>-${selectedOrder.discount.toFixed(2)}</span>
-                    </div>
-                  )}
-                  <div className="orm-summary-row"><span>Tax (HST 13%):</span><span>${selectedOrder.tax.toFixed(2)}</span></div>
-                  <div className="orm-summary-row orm-summary-row--total">
-                    <span>Total Paid:</span><span>${selectedOrder.total.toFixed(2)}</span>
-                  </div>
-                  {selectedOrder.refund_summary.total_refunded > 0 && (
-                    <div className="orm-summary-row orm-summary-row--refunded">
-                      <span>Total Refunded:</span>
-                      <span>-${selectedOrder.refund_summary.total_refunded.toFixed(2)}</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Prior Refunds Log */}
-                {selectedOrder.refunds?.length > 0 && (
-                  <div className="orm-log">
-                    <h4 className="orm-log-title">Prior Reversal Log</h4>
-                    {selectedOrder.refunds.map((r) => {
-                      // A line-item refund names what went back, which is the
-                      // detail a cashier actually needs when deciding what's
-                      // left to reverse. Full refunds and voids cover the whole
-                      // order, so naming lines would just be noise — they keep
-                      // the original reason/approver format.
-                      const lines = (r.items || [])
-                        .map((i) => (i.quantity > 1 ? `${i.name} ×${i.quantity}` : i.name))
-                        .join(", ");
-                      return (
-                        <div key={r.id} className="orm-log-row">
-                          <strong>{r.type.toUpperCase()}</strong> ${r.amount.toFixed(2)} —{" "}
-                          {lines
-                            ? `${lines} (${r.reason})`
-                            : `${r.reason} (${r.approved_by_name})`}{" "}
-                          on {fmtLogTime(r.created_at)}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* Reversal Action Buttons */}
-                {/* Refunds apply only to a standing COMPLETED sale — the
-                    server rejects one on an open/preparing order (reverse
-                    those with a void instead), so offering the buttons there
-                    would just produce a guaranteed 409. Void stays available
-                    on any live order, subject to its own no-prior-refund rule. */}
-                {selectedOrder.status !== "cancelled" && selectedOrder.refund_summary.remaining_refundable > 0 && (
-                  <>
-                  <div className="orm-actions-bar">
-                    {selectedOrder.refund_summary.total_refunded === 0 && (
-                      <button className="orm-btn orm-btn--danger" onClick={() => startAction("void")}>
-                        Void &amp; Refund Full Amount
-                      </button>
-                    )}
-                    {selectedOrder.status === "ready" ? (
-                      <>
-                        <button className="orm-btn orm-btn--warning" onClick={() => startAction("full")}>
-                          Full Refund (${selectedOrder.refund_summary.remaining_refundable.toFixed(2)})
-                        </button>
-                        <button className="orm-btn orm-btn--secondary" onClick={() => startAction("partial")}>
-                          Partial Amount Refund
-                        </button>
-                        <button className="orm-btn orm-btn--secondary" onClick={() => startAction("line_item")}>
-                          Line-Item Refund
-                        </button>
-                      </>
-                    ) : (
-                      <span className="orm-actions-note">
-                        Not yet completed — reverse this order with a void.
-                      </span>
-                    )}
-                  </div>
-                  <p className="orm-actions-help">
-                    Void cancels the entire order and returns the full payment.
-                    Refund keeps the order and returns money.
-                  </p>
-                  </>
-                )}
-              </>
-            )}
-          </div>
         </div>
       </div>
+
+      {/* Order detail — a floating card OVER the list, not a second column
+          inside it. The list keeps its own scroll position underneath and is
+          untouched when this closes, which is the same view-first pattern the
+          Menu and Staff managers use: browse a list, tap a row, read a card. */}
+      {selectedOrder && (
+        <div
+          className="orm-detail-overlay"
+          onClick={(e) => {
+            // Backdrop only — a click that started inside the card bubbles up
+            // here too, and must not dismiss it.
+            if (e.target === e.currentTarget) closeDetail();
+          }}
+        >
+          <div
+            className="orm-detail-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Order ${selectedOrder.order_number} details`}
+          >
+            <div className="orm-detail-topbar">
+              <h3 className="orm-detail-title">Order #{selectedOrder.order_number}</h3>
+              <button
+                className="orm-close-btn"
+                onClick={closeDetail}
+                aria-label="Close order details"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="orm-content">
+              <div className="orm-detail-header">
+                <div className="orm-detail-meta">
+                  <span>Server: <strong>{selectedOrder.staff_name}</strong></span>
+                  <span>Payment: <strong className="orm-payment-method">{selectedOrder.payment_method}</strong></span>
+                  <span>Time: {new Date(selectedOrder.created_at).toLocaleString()}</span>
+                </div>
+                <div className="orm-detail-aside">
+                  <span className={`orm-badge ${orderStateBadge(selectedOrder).cls}`}>
+                    {orderStateBadge(selectedOrder).text}
+                  </span>
+                  <button
+                    className="orm-btn orm-btn--secondary orm-receipt-btn"
+                    onClick={() => setReceiptOrderId(selectedOrder.id)}
+                  >
+                    Receipt
+                  </button>
+                </div>
+              </div>
+
+              {successMsg && <div className="orm-success">✓ {successMsg}</div>}
+
+              {/* Items Table */}
+              <table className="orm-items-table">
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th className="orm-col--center">Qty</th>
+                    <th className="orm-col--right">Price</th>
+                    <th className="orm-col--right">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedOrder.items.map((item) => (
+                    <tr key={item.order_item_id}>
+                      <td>
+                        <span className="orm-item-name">{item.name}</span>
+                        {item.variant_name && <span className="orm-item-variant"> ({item.variant_name})</span>}
+                      </td>
+                      <td className="orm-col--center">{item.quantity}</td>
+                      <td className="orm-col--right">${item.unit_price.toFixed(2)}</td>
+                      <td className="orm-col--right">${item.line_total.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {/* Order Summary */}
+              <div className="orm-summary-box">
+                <div className="orm-summary-row"><span>Subtotal:</span><span>${selectedOrder.subtotal.toFixed(2)}</span></div>
+                {selectedOrder.discount > 0 && (
+                  <div className="orm-summary-row orm-summary-row--discount">
+                    <span>Discount ({selectedOrder.discount_reason}):</span>
+                    <span>-${selectedOrder.discount.toFixed(2)}</span>
+                  </div>
+                )}
+                <div className="orm-summary-row"><span>Tax (HST 13%):</span><span>${selectedOrder.tax.toFixed(2)}</span></div>
+                <div className="orm-summary-row orm-summary-row--total">
+                  <span>Total Paid:</span><span>${selectedOrder.total.toFixed(2)}</span>
+                </div>
+                {selectedOrder.refund_summary.total_refunded > 0 && (
+                  <div className="orm-summary-row orm-summary-row--refunded">
+                    <span>Total Refunded:</span>
+                    <span>-${selectedOrder.refund_summary.total_refunded.toFixed(2)}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Prior Refunds Log */}
+              {selectedOrder.refunds?.length > 0 && (
+                <div className="orm-log">
+                  <h4 className="orm-log-title">Prior Reversal Log</h4>
+                  {selectedOrder.refunds.map((r) => {
+                    // A line-item refund names what went back, which is the
+                    // detail a cashier actually needs when deciding what's
+                    // left to reverse. Full refunds and voids cover the whole
+                    // order, so naming lines would just be noise — they keep
+                    // the original reason/approver format.
+                    const lines = (r.items || [])
+                      .map((i) => (i.quantity > 1 ? `${i.name} ×${i.quantity}` : i.name))
+                      .join(", ");
+                    return (
+                      <div key={r.id} className="orm-log-row">
+                        <strong>{r.type.toUpperCase()}</strong> ${r.amount.toFixed(2)} —{" "}
+                        {lines
+                          ? `${lines} (${r.reason})`
+                          : `${r.reason} (${r.approved_by_name})`}{" "}
+                        on {fmtLogTime(r.created_at)}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Reversal Action Buttons */}
+              {/* Refunds apply only to a standing COMPLETED sale — the
+                  server rejects one on an open/preparing order (reverse
+                  those with a void instead), so offering the buttons there
+                  would just produce a guaranteed 409. Void stays available
+                  on any live order, subject to its own no-prior-refund rule. */}
+              {selectedOrder.status !== "cancelled" && selectedOrder.refund_summary.remaining_refundable > 0 && (
+                <>
+                <div className="orm-actions-bar">
+                  {selectedOrder.refund_summary.total_refunded === 0 && (
+                    <button className="orm-btn orm-btn--danger" onClick={() => startAction("void")}>
+                      Void &amp; Refund Full Amount
+                    </button>
+                  )}
+                  {selectedOrder.status === "ready" ? (
+                    <>
+                      <button className="orm-btn orm-btn--warning" onClick={() => startAction("full")}>
+                        Full Refund (${selectedOrder.refund_summary.remaining_refundable.toFixed(2)})
+                      </button>
+                      <button className="orm-btn orm-btn--secondary" onClick={() => startAction("partial")}>
+                        Partial Amount Refund
+                      </button>
+                      <button className="orm-btn orm-btn--secondary" onClick={() => startAction("line_item")}>
+                        Line-Item Refund
+                      </button>
+                    </>
+                  ) : (
+                    <span className="orm-actions-note">
+                      Not yet completed — reverse this order with a void.
+                    </span>
+                  )}
+                </div>
+                <p className="orm-actions-help">
+                  Void cancels the entire order and returns the full payment.
+                  Refund keeps the order and returns money.
+                </p>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Reversal options popup — the fields live here rather than expanding
           under the action buttons, so the detail panel stays a clean read-only
