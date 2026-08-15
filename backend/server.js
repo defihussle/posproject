@@ -6576,6 +6576,29 @@ function workedSecondsSql(startExpr, endExpr, s = "s") {
                       - ${clippedBreakSecondsSql(startExpr, endExpr, s)})`;
 }
 
+// Refunds attributable to a stats window, PRE-TAX, as a scalar subquery.
+//
+// Scoped by the ORDER's completed_at — deliberately not the refund's own
+// created_at — so money handed back next week still reduces the period that
+// earned the sale. reports/sales-summary scopes it exactly this way, and the
+// two have to agree or Home and that report drift apart again (they did:
+// Home's Net Sales ignored refunds entirely until this was added).
+//
+// settledRefundsWhere() is a function declaration, so it hoists — callers
+// defined above this point still resolve it at request time.
+function windowRefundsPreTaxSql(locExpr, startExpr, endExpr) {
+  return `COALESCE((
+            SELECT SUM(r.amount - r.tax_amount)
+              FROM order_refunds r
+              JOIN orders ro ON ro.id = r.order_id
+             WHERE ro.location_id = ${locExpr}
+               AND ro.status = 'ready'
+               AND ro.completed_at >= ${startExpr}
+               AND ro.completed_at <  ${endExpr}
+               AND ${settledRefundsWhere("r")}
+          ), 0)`;
+}
+
 function isYmd(s) {
   return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 }
@@ -6672,14 +6695,18 @@ async function weekdayComparison(client, b, count) {
             COALESCE(SUM(o.subtotal), 0) AS gross,
             COALESCE(SUM(o.discount), 0) AS disc,
             COALESCE(SUM(o.tip), 0)      AS tips,
-            COUNT(o.id)                  AS orders
+            COUNT(o.id)                  AS orders,
+            -- Per-sample refunds, so a weekday baseline is refund-aware on the
+            -- same terms as the day being judged against it.
+            ${windowRefundsPreTaxSql("$1", "(s.s_start AT TIME ZONE $3)", "(s.s_end AT TIME ZONE $3)")}
+              AS refunds_pretax
        FROM samples s
        LEFT JOIN orders o
               ON o.location_id = $1
              AND o.status = 'ready'
              AND o.completed_at >= (s.s_start AT TIME ZONE $3)
              AND o.completed_at <  (s.s_end   AT TIME ZONE $3)
-      GROUP BY s.idx, s.s_start
+      GROUP BY s.idx, s.s_start, s.s_end
       ORDER BY s.idx DESC`, // oldest first, so a sparkline reads left → right
     [b.location.id, b.startTs, b.tz, b.endTs, count]
   );
@@ -6692,7 +6719,7 @@ async function weekdayComparison(client, b, count) {
       date: r.sample_date,
       totalSales: total,
       grossSales: gross,
-      netSales: gross - parseFloat(r.disc),
+      netSales: round2(gross - parseFloat(r.disc) - parseFloat(r.refunds_pretax)),
       orderCount: orders,
       avgOrderValue: orders > 0 ? total / orders : 0,
       totalTips: parseFloat(r.tips),
@@ -6744,8 +6771,10 @@ app.get("/api/backoffice/stats/summary", async (req, res) => {
     const agg = async (startTs, endTs) => {
       const { rows } = await client.query(
         `SELECT COALESCE(SUM(total), 0) AS total, COALESCE(SUM(subtotal), 0) AS gross,
-                COALESCE(SUM(discount), 0) AS disc, COALESCE(SUM(tip), 0) AS tips,
-                COUNT(*) AS orders
+                COALESCE(SUM(discount), 0) AS disc, COALESCE(SUM(tax), 0) AS tax,
+                COALESCE(SUM(tip), 0) AS tips,
+                COUNT(*) AS orders,
+                ${windowRefundsPreTaxSql("$1", "$2", "$3")} AS refunds_pretax
            FROM orders
           WHERE location_id = $1 AND status = 'ready'
             AND completed_at >= $2 AND completed_at < $3`,
@@ -6754,20 +6783,78 @@ app.get("/api/backoffice/stats/summary", async (req, res) => {
       const r = rows[0];
       const total = parseFloat(r.total);
       const gross = parseFloat(r.gross);
+      const disc = parseFloat(r.disc);
+      const refundsPreTax = parseFloat(r.refunds_pretax);
       const orders = parseInt(r.orders, 10);
       return {
         totalSales: total,
         grossSales: gross,
-        netSales: gross - parseFloat(r.disc),
-        discountTotal: parseFloat(r.disc),
+        // Gross − discounts − refunds(pre-tax), the SAME definition
+        // reports/sales-summary uses. Applied to the previous-period baseline
+        // too (this helper computes both), so a delta never compares a
+        // refund-aware figure against a pre-refund one.
+        netSales: round2(gross - disc - refundsPreTax),
+        discountTotal: disc,
+        refundsPreTax,
         orderCount: orders,
+        // Deliberately left on raw SUM(total): reports/sales-summary computes
+        // AOV the same pre-refund way, and the point of this pass is to make
+        // the two agree. Changing it here would only move the divergence.
         avgOrderValue: orders > 0 ? total / orders : 0,
         totalTips: parseFloat(r.tips),
+        taxTotal: parseFloat(r.tax),
       };
     };
 
     const cur = await agg(b.startTs, b.endTs);
     const prev = b.prev ? await agg(b.prev.startTs, b.prev.endTs) : null;
+
+    // ---- Money detail for the Home cards ----
+    // Same three queries reports/sales-summary runs, deliberately kept
+    // identical rather than re-derived: the Payment Mix and Refunds cards on
+    // Home have to reconcile with that report line for line.
+    const { rows: refRows } = await client.query(
+      `SELECT COALESCE(SUM(r.amount), 0) AS refund_total,
+              COALESCE(SUM(r.tax_amount), 0) AS refund_tax,
+              COUNT(*) AS refund_count
+         FROM order_refunds r
+         JOIN orders o ON o.id = r.order_id
+        WHERE o.location_id = $1 AND o.status = 'ready'
+          AND o.completed_at >= $2 AND o.completed_at < $3
+          AND ${settledRefundsWhere("r")}`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+    const refundTotal = parseFloat(refRows[0].refund_total);
+    const refundTax = parseFloat(refRows[0].refund_tax);
+    const refundCount = parseInt(refRows[0].refund_count, 10);
+
+    // Voids are scoped by when the void HAPPENED, not by the order's
+    // completed_at — a voided order is 'cancelled', so it has already dropped
+    // out of every sales line above. This is a memo, never part of the P&L.
+    const { rows: voidRows } = await client.query(
+      `SELECT COUNT(*) AS void_count, COALESCE(SUM(r.amount), 0) AS void_total
+         FROM order_refunds r
+         JOIN orders o ON o.id = r.order_id
+        WHERE o.location_id = $1 AND r.type = 'void' AND ${settledRefundsWhere("r")}
+          AND r.created_at >= $2 AND r.created_at < $3`,
+      [b.location.id, b.startTs, b.endTs]
+    );
+
+    // Net per method (captures + negative refund rows), so each bucket is what
+    // that method actually kept. Summed across methods this equals
+    // totalCollected below — the reconciliation anchor for the card.
+    const { rows: mixRows } = await client.query(
+      `SELECT p.method, COALESCE(SUM(p.amount), 0) AS amount,
+              COUNT(*) FILTER (WHERE p.amount > 0) AS count
+         FROM payments p
+         JOIN orders o ON o.id = p.order_id
+        WHERE o.location_id = $1 AND o.status = 'ready'
+          AND o.completed_at >= $2 AND o.completed_at < $3
+          AND ${settledPaymentsWhere("p")}
+        GROUP BY p.method
+        ORDER BY amount DESC`,
+      [b.location.id, b.startTs, b.endTs]
+    );
 
     // ---- Comparison baseline ----
     const compareMode = (req.query.compare || "previous").toString();
@@ -6828,10 +6915,24 @@ app.get("/api/backoffice/stats/summary", async (req, res) => {
 
     res.json({
       range: b.isCustom ? "custom" : req.query.range || "today",
-      // Gross = pre-discount subtotal; Net = gross minus discounts (both
-      // pre-tax). totalSales = SUM(total), the revenue collected (incl.
-      // tax/tip). Tips are $0 until Stripe Terminal tip capture lands.
+      // Gross = pre-discount subtotal. Net = gross − discounts − refunds
+      // (pre-tax), matching reports/sales-summary exactly. totalSales =
+      // SUM(total), revenue billed incl. tax/tip and BEFORE refunds;
+      // totalCollected below is its refund-net counterpart.
       ...cur,
+      // Refund / void detail for the Home money cards.
+      refundTotal,
+      refundTax,
+      refundCount,
+      taxCollected: round2(cur.taxTotal - refundTax),
+      totalCollected: round2(cur.totalSales - refundTotal),
+      voidCount: parseInt(voidRows[0].void_count, 10),
+      voidTotal: parseFloat(voidRows[0].void_total),
+      paymentMix: mixRows.map((r) => ({
+        method: r.method,
+        amount: parseFloat(r.amount),
+        count: parseInt(r.count, 10),
+      })),
       // Previous period-to-date, for the "vs Last Period" deltas (omitted
       // for custom ranges).
       previous: prev

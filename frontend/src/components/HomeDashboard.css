@@ -840,3 +840,132 @@
     grid-column: span 2;
   }
 }
+
+/* ---------- Payment Mix ---------- */
+.homedash-mix {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.homedash-mix__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 10px;
+  align-items: center;
+}
+
+.homedash-mix__head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.homedash-mix__name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.homedash-mix__count {
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.homedash-mix__amount {
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.homedash-mix__track {
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--bg-surface-hover);
+  overflow: hidden;
+}
+
+.homedash-mix__fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--red);
+  transition: width 0.25s ease;
+}
+
+.homedash-mix__pct {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.homedash-mix__total {
+  margin-top: 12px;
+}
+
+/* ---------- Refunds & Voids ---------- */
+/* Two side-by-side figures on any width — they're a pair, and stacking them
+   on a phone made the card taller than it needed to be for four short lines. */
+.homedash-rev {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.homedash-rev__item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  min-width: 0;
+}
+
+.homedash-rev__label {
+  font-family: var(--font-body);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.homedash-rev__value {
+  font-family: var(--font-mono);
+  font-size: 1.2rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.homedash-rev__sub {
+  font-family: var(--font-body);
+  font-size: 0.65rem;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+
+.homedash-rev__note {
+  margin: 12px 0 0;
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}

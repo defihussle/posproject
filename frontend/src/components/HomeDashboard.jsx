@@ -247,8 +247,11 @@ export default function HomeDashboard({ staff }) {
 
     return [
       metric("gross", "Gross Sales", summary?.grossSales, base?.grossSales, fmtMoney),
+      // Hint spells out the definition because it changed: net is now net of
+      // refunds as well as discounts, matching the Sales Summary report. An
+      // owner comparing the two screens should see why they agree.
       metric("net", "Net Sales", summary?.netSales, base?.netSales, fmtMoney, {
-        hint: "after discounts",
+        hint: "after discounts & refunds",
       }),
       metric("orders", "Orders", summary?.orderCount, base?.orderCount, fmtInt),
       metric("aov", "Avg Order", summary?.avgOrderValue, base?.avgOrderValue, fmtMoney),
@@ -321,6 +324,11 @@ export default function HomeDashboard({ staff }) {
             <HourlyBreakdownCard data={hourly} loading={loading} pending={customIncomplete} />
             <CategorySalesCard data={category} loading={loading} pending={customIncomplete} />
             <LaborVsSalesCard labor={labor} loading={loading && !customIncomplete} pending={customIncomplete} />
+            {/* Money-movement pair, placed together and directly after the
+                charts: "where did the money come from" then "what went back
+                out", both from the same summary payload the KPIs use. */}
+            <PaymentMixCard summary={summary} loading={loading && !customIncomplete} pending={customIncomplete} />
+            <ReversalsCard summary={summary} loading={loading && !customIncomplete} pending={customIncomplete} />
             <DiscountReportCard summary={summary} rows={discounts} loading={loading && !customIncomplete} pending={customIncomplete} />
             <TopItemsCard items={topItems} loading={loading && !customIncomplete} pending={customIncomplete} />
             <StaffPerformanceCard rows={staffPerf} hoursByStaff={hoursByStaff} loading={loading && !customIncomplete} pending={customIncomplete} />
@@ -842,6 +850,111 @@ const DISCOUNT_LABELS = {
   employee: "Employee",
   neighbouring_store: "Neighbouring Store",
 };
+
+// Human labels for payments.method. Anything not listed falls back to the raw
+// enum rather than being hidden — a method appearing here that we don't have a
+// label for is information, not noise.
+const PAYMENT_LABELS = {
+  cash: "Cash",
+  card: "Card",
+  gift_card: "Gift Card",
+  other: "Other",
+};
+
+// Net take per payment method for the selected range. "Net" matters: a refund
+// writes a negative payments row against the same method, so a method's bar is
+// what it actually kept, and the rows sum to Total Collected.
+function PaymentMixCard({ summary, loading, pending }) {
+  const mix = summary?.paymentMix || [];
+  const collected = summary?.totalCollected ?? 0;
+  // Percentages are taken against the sum of the mix itself, not against
+  // totalCollected, so the column always adds to 100% even if the two ever
+  // disagree — a mismatch then shows up as a visible gap rather than as
+  // percentages that quietly don't sum.
+  const mixTotal = mix.reduce((sum, m) => sum + m.amount, 0);
+  const pctOf = (amt) => (mixTotal > 0 ? (amt / mixTotal) * 100 : 0);
+
+  return (
+    <SectionCard title="Payment Mix">
+      {loading || pending ? (
+        <div className="homedash-card__notice">{pending ? "Select a preset range" : "Loading…"}</div>
+      ) : mix.length === 0 ? (
+        <div className="homedash-card__notice">No payments in this range</div>
+      ) : (
+        <>
+          <div className="homedash-mix">
+            {mix.map((m) => (
+              <div key={m.method} className="homedash-mix__row">
+                <div className="homedash-mix__head">
+                  <span className="homedash-mix__name">
+                    {PAYMENT_LABELS[m.method] || m.method}
+                    <span className="homedash-mix__count">{fmtInt(m.count)} orders</span>
+                  </span>
+                  <span className="homedash-mix__amount">{fmtMoney(m.amount)}</span>
+                </div>
+                <div className="homedash-mix__track">
+                  <div
+                    className="homedash-mix__fill"
+                    style={{ width: `${Math.max(0, pctOf(m.amount))}%` }}
+                  />
+                </div>
+                <span className="homedash-mix__pct">{fmtPct(pctOf(m.amount))}</span>
+              </div>
+            ))}
+          </div>
+          <div className="homedash-table__row homedash-table__row--total homedash-mix__total">
+            <span className="homedash-table__name">Total collected</span>
+            <span className="homedash-num">{fmtMoney(collected)}</span>
+          </div>
+        </>
+      )}
+    </SectionCard>
+  );
+}
+
+// Money that went back out. Refunds reduce Net Sales (the order stands);
+// voids erase a sale entirely and are shown as a memo, never netted into the
+// figures above — same treatment as the Sales Summary report.
+function ReversalsCard({ summary, loading, pending }) {
+  const refundTotal = summary?.refundTotal ?? 0;
+  const refundCount = summary?.refundCount ?? 0;
+  const voidTotal = summary?.voidTotal ?? 0;
+  const voidCount = summary?.voidCount ?? 0;
+  const nothing = refundCount === 0 && voidCount === 0;
+
+  return (
+    <SectionCard title="Refunds & Voids">
+      {loading || pending ? (
+        <div className="homedash-card__notice">{pending ? "Select a preset range" : "Loading…"}</div>
+      ) : nothing ? (
+        <div className="homedash-card__notice">No refunds or voids in this range</div>
+      ) : (
+        <>
+          <div className="homedash-rev">
+            <div className="homedash-rev__item">
+              <span className="homedash-rev__label">Refunded</span>
+              <span className="homedash-rev__value">{fmtMoney(refundTotal)}</span>
+              <span className="homedash-rev__sub">
+                {fmtInt(refundCount)} {refundCount === 1 ? "refund" : "refunds"} · reduces Net Sales
+              </span>
+            </div>
+            <div className="homedash-rev__item">
+              <span className="homedash-rev__label">Voided</span>
+              <span className="homedash-rev__value">{fmtMoney(voidTotal)}</span>
+              <span className="homedash-rev__sub">
+                {fmtInt(voidCount)} {voidCount === 1 ? "void" : "voids"} · excluded from sales
+              </span>
+            </div>
+          </div>
+          <p className="homedash-rev__note">
+            Voids are a memo — a voided order never counts as a sale, so it isn’t
+            subtracted from the figures above.
+          </p>
+        </>
+      )}
+    </SectionCard>
+  );
+}
 
 function DiscountReportCard({ summary, rows, loading, pending }) {
   const gross = summary?.grossSales || 0;
