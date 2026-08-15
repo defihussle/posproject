@@ -3,18 +3,21 @@ import { API_URL } from "../config";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import "./KitchenDisplay.css";
 import useScrollLock from "../useScrollLock";
+// Board rules shared with Back Office → Orders → Live Orders, so the owner's
+// phone and the kitchen screen can never disagree about ticket age, lateness
+// or Rush Hour grouping. See kdsBoard.js.
+import {
+  POLL_MS,
+  KDS_STATUSES,
+  elapsedSeconds,
+  formatMMSS,
+  elapsedTier,
+  aggregateRushLines,
+  voidedFirst,
+} from "./kdsBoard";
 
-const POLL_MS = 5000;
-// 'cancelled' pulls VOIDED tickets onto the board. The backend narrows those to
-// voids the kitchen was already cooking and hasn't acknowledged yet — a void of
-// an order that never got fired produces no ticket at all.
-const KDS_STATUSES = "open,preparing,cancelled";
 const FAIL_FLASH_MS = 2500; // how long a card shows its "update failed" state
 const UNDO_TOAST_MS = 6000; // how long the undo toast stays visible
-
-// --- Elapsed-time escalation thresholds (minutes) — tune here as needed ---
-const ELAPSED_YELLOW_MIN = 5; // green → yellow at/after this many minutes
-const ELAPSED_RED_MIN = 10; //   yellow → red at/after this many minutes
 
 // --- Past Orders window ---
 const HISTORY_SINCE_HOURS = 6;
@@ -23,25 +26,6 @@ const HISTORY_SINCE_HOURS = 6;
 const NEXT_STATUS = { open: "preparing", preparing: "ready" };
 const STATUS_LABEL = { open: "NEW", preparing: "IN PROGRESS" };
 const TAP_HINT = { open: "TAP TO START", preparing: "TAP WHEN READY" };
-
-// ---- Time helpers ----
-function elapsedSeconds(iso, nowMs) {
-  return Math.max(0, Math.floor((nowMs - new Date(iso).getTime()) / 1000));
-}
-
-// "4:32" (M:SS, minutes uncapped so a 72-minute order still reads correctly)
-function formatMMSS(totalSec) {
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function elapsedTier(totalSec) {
-  const min = totalSec / 60;
-  if (min >= ELAPSED_RED_MIN) return "red";
-  if (min >= ELAPSED_YELLOW_MIN) return "yellow";
-  return "green";
-}
 
 // Duration between two ISO timestamps → "6m 42s"
 function formatDuration(fromIso, toIso) {
@@ -160,39 +144,6 @@ function playVoidAlert() {
  * order. Tapping a card advances its status; once an order hits `ready` it
  * leaves the open,preparing filter and drops off the board.
  */
-
-// ---- Rush Hour make-line priority ----
-// Highest-value / longest-lead work first, so the line fires in the order the
-// kitchen actually wants during a rush.
-//
-// Matched on the item NAME because the KDS payload carries `name` and
-// `variant` but no category (see fetchKdsOrders in server.js) — adding a
-// category to that query would mean changing an endpoint the board depends on,
-// for a distinction the names already make. The live menu names are
-// unambiguous here: every taco says "taco", every burrito "burrito", every
-// bowl "bowl", and so on (see database/menu_restructure.sql, which renamed
-// these to "<Protein> Burrito", "<Protein> Bowl", "<Protein> Quesadilla").
-//
-// Order matters: the birria test runs first, otherwise "Birria Tacos (3pc)"
-// would match the generic taco rule. It requires BOTH words so a hypothetical
-// "Birria Bowl" still sorts as a bowl rather than jumping to the front.
-const RUSH_PRIORITY_TESTS = [
-  (n) => n.includes("birria") && n.includes("taco"), // 1 — best seller, leads the tacos
-  (n) => n.includes("taco"), // 2 — every other taco
-  (n) => n.includes("burrito"), // 3
-  (n) => n.includes("bowl"), // 4
-  (n) => n.includes("quesadilla"), // 5
-  (n) => n.includes("fries"), // 6 — "Fries Supreme" and "Seasoned Fries" alike
-];
-// Sides, desserts, drinks, nachos, elotes — keep their existing relative order,
-// which the count/age tiebreakers below already decide.
-const RUSH_PRIORITY_OTHER = RUSH_PRIORITY_TESTS.length + 1;
-
-function rushPriority(itemName) {
-  const n = (itemName || "").toLowerCase();
-  const i = RUSH_PRIORITY_TESTS.findIndex((test) => test(n));
-  return i === -1 ? RUSH_PRIORITY_OTHER : i + 1;
-}
 
 export default function KitchenDisplay({ deviceName }) {
   const [orders, setOrders] = useState([]);
@@ -319,10 +270,7 @@ export default function KitchenDisplay({ deviceName }) {
       knownVoidedIds.current = voidedIds;
       if (!initialLoadDone.current) initialLoadDone.current = true;
 
-      // Voided tickets jump to the front of the board regardless of FIFO age —
-      // they are an interrupt ("stop cooking this"), not a queue entry. Stable
-      // within each group, so live tickets keep the backend's FIFO order.
-      setOrders([...data.filter((o) => o.voided), ...data.filter((o) => !o.voided)]);
+      setOrders(voidedFirst(data));
       setError(null);
     } catch {
       // Keep the last good queue on screen; just surface a quiet notice.
@@ -501,54 +449,7 @@ export default function KitchenDisplay({ deviceName }) {
     [clearFailed, markFailed, fetchOrders]
   );
 
-  // Rush Hour aggregation — pure client-side reshaping of the SAME polled
-  // order data (open/preparing only, no extra fetching). Two lines merge only
-  // when item_id + variant_id + the FULL modifier set (option ids AND
-  // quantities) match exactly; any difference is a separate line, because the
-  // cook needs to see exactly what to make.
-  const fastLines = useMemo(() => {
-    const map = new Map();
-    for (const order of orders) {
-      // Voided tickets are never aggregated into a make-line — that would tell
-      // the cook to produce food that has just been cancelled. They stay
-      // visible as their own banner above the Rush Hour view instead.
-      if (order.voided) continue;
-      for (const it of order.items) {
-        const modKey = (it.modifiers_raw || [])
-          .map((m) => `${m.option_id}:${m.quantity}`)
-          .sort()
-          .join(",");
-        const key = `${it.item_id}|${it.variant_id || ""}|${modKey}`;
-        const entry = map.get(key);
-        if (entry) {
-          entry.count += it.quantity;
-          // Track the oldest source order so the line can carry the same
-          // elapsed-tier color language as the ticket view.
-          if (new Date(order.created_at) < new Date(entry.oldestCreatedAt)) {
-            entry.oldestCreatedAt = order.created_at;
-          }
-        } else {
-          map.set(key, {
-            key,
-            count: it.quantity,
-            oldestCreatedAt: order.created_at,
-            sample: it, // identical modifier set ⇒ identical display fields
-          });
-        }
-      }
-    }
-    // Station priority first, then busiest, then oldest. Priority is the outer
-    // key on purpose: during a rush the point of this view is to fire the
-    // highest-value work first, and a big pile of drinks shouldn't outrank a
-    // single birria order just because it aggregated to a larger count. The
-    // two previous keys are unchanged and still break ties within a tier.
-    return [...map.values()].sort(
-      (a, b) =>
-        rushPriority(a.sample.name) - rushPriority(b.sample.name) ||
-        b.count - a.count ||
-        new Date(a.oldestCreatedAt) - new Date(b.oldestCreatedAt)
-    );
-  }, [orders]);
+  const fastLines = useMemo(() => aggregateRushLines(orders), [orders]);
 
   const orderCountClass = orders.length > 0 ? "kds__badge--active" : "kds__badge--clear";
 

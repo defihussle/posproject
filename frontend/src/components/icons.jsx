@@ -82,6 +82,16 @@ export const IconDevices = (p) => (
   </Svg>
 );
 
+// A kitchen ticket — the thing the Orders section is about, and distinct at a
+// glance from IconReports' bar chart and IconMenu's list.
+export const IconOrders = (p) => (
+  <Svg {...p}>
+    <path d="M5.5 3h13v18l-2.2-1.6-2.15 1.6-2.15-1.6-2.15 1.6L7.7 19.4 5.5 21z" />
+    <path d="M9 8h6" />
+    <path d="M9 12h6" />
+  </Svg>
+);
+
 export const IconLogOut = (p) => (
   <Svg {...p}>
     <path d="M9.5 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4.5" />

@@ -10,7 +10,7 @@
    never drift out of sync (this is what caused the earlier dual-color
    bug — two things trying to say the same thing in two places):
 
-   1. AGE (elapsedTier() in KitchenDisplay.jsx, green/yellow/red) —
+   1. AGE (elapsedTier() in kdsBoard.js, green/yellow/red) —
       lives ONLY on the left accent bar and the elapsed timer badge.
    2. WORKFLOW STAGE (order.status, open/preparing) — lives ONLY on the
       CTA bar at the bottom (light neutral tint "TAP TO START" vs. solid

@@ -2131,6 +2131,44 @@ async function fetchKdsOrders(client, orderIds, { includeCompletedAt = false } =
 
 const KDS_ALLOWED_STATUSES = ["open", "preparing", "ready", "completed", "cancelled"];
 
+// The live-board query itself, with no auth or request parsing in it. TWO
+// routes serve this board — the device-paired KDS below, and the Back Office
+// Live Orders view (owner/admin session, no pairing) further down — and they
+// must return the same tickets in the same order, or an owner checking their
+// phone sees a different kitchen from the one the cooks are working. Keeping
+// the query in one function is what guarantees that.
+async function loadLiveBoard(client, statuses) {
+  // KDS is per-location; today there is a single active location.
+  const { rows: locRows } = await client.query(
+    "SELECT id FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
+  );
+  if (locRows.length === 0) throw new HttpError(500, "No active location");
+  const locationId = locRows[0].id;
+
+  // Live statuses match plainly. 'cancelled' is special (Slice 5): a voided
+  // order only belongs on the board if the kitchen was ALREADY cooking it
+  // (voided_from_status in preparing/ready — a void of an 'open' order never
+  // reached the line) and has not yet acknowledged it. Voided tickets are
+  // dismissed by hand, so an acknowledged one leaves the board permanently
+  // and reappears only in history.
+  const liveStatuses = statuses.filter((s) => s !== "cancelled");
+  const wantsVoided = statuses.includes("cancelled");
+
+  const { rows: idRows } = await client.query(
+    `SELECT id FROM orders
+      WHERE location_id = $1
+        AND ( ($2::text[] <> '{}' AND status::text = ANY($2::text[]))
+           OR ($3::boolean
+               AND status = 'cancelled'
+               AND voided_from_status IN ('preparing', 'ready')
+               AND void_acknowledged_at IS NULL) )
+      ORDER BY created_at ASC`, // FIFO oldest-first
+    [locationId, liveStatuses, wantsVoided]
+  );
+
+  return fetchKdsOrders(client, idRows.map((r) => r.id));
+}
+
 // GET /api/orders?status=open,preparing  (defaults to open,preparing)
 app.get("/api/orders", requireDevicePairing, async (req, res) => {
   const statusParam = (req.query.status ?? "open,preparing").toString();
@@ -2151,41 +2189,10 @@ app.get("/api/orders", requireDevicePairing, async (req, res) => {
 
   const client = await pool.connect();
   try {
-    // KDS is per-location; today there is a single active location.
-    const { rows: locRows } = await client.query(
-      "SELECT id FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
-    );
-    if (locRows.length === 0) {
-      return res.status(500).json({ error: "No active location" });
-    }
-    const locationId = locRows[0].id;
-
-    // Live statuses match plainly. 'cancelled' is special (Slice 5): a voided
-    // order only belongs on the board if the kitchen was ALREADY cooking it
-    // (voided_from_status in preparing/ready — a void of an 'open' order never
-    // reached the line) and has not yet acknowledged it. Voided tickets are
-    // dismissed by hand, so an acknowledged one leaves the board permanently
-    // and reappears only in history.
-    const liveStatuses = statuses.filter((s) => s !== "cancelled");
-    const wantsVoided = statuses.includes("cancelled");
-
-    const { rows: idRows } = await client.query(
-      `SELECT id FROM orders
-        WHERE location_id = $1
-          AND ( ($2::text[] <> '{}' AND status::text = ANY($2::text[]))
-             OR ($3::boolean
-                 AND status = 'cancelled'
-                 AND voided_from_status IN ('preparing', 'ready')
-                 AND void_acknowledged_at IS NULL) )
-        ORDER BY created_at ASC`, // FIFO oldest-first
-      [locationId, liveStatuses, wantsVoided]
-    );
-
-    const orders = await fetchKdsOrders(client, idRows.map((r) => r.id));
-    res.json(orders);
+    res.json(await loadLiveBoard(client, statuses));
   } catch (err) {
     console.error("KDS list failed:", err.message);
-    res.status(500).json({ error: "Failed to fetch orders" });
+    sendHttpError(res, err, "Failed to fetch orders");
   } finally {
     client.release();
   }
@@ -3854,6 +3861,31 @@ app.post("/api/orders/:id/receipt/email", requireDevicePairing, async (req, res)
       return res.status(502).json({ error: `Stripe could not send the receipt: ${err.message}` });
     }
     sendHttpError(res, err, "Failed to email the receipt");
+  }
+});
+
+// GET /api/backoffice/orders/live   (Back Office — owner/admin session)
+// The live kitchen board, for owners who want to see what the line is working
+// on without walking to the KDS tablet. READ-ONLY: there is deliberately no
+// Back Office counterpart to the KDS's status-advance, void-acknowledge or
+// undo routes, so nothing on this screen can change a ticket.
+//
+// Serves exactly what the KDS asks for (open + preparing + unacknowledged
+// voids) through the same loadLiveBoard() the device-paired route uses. The
+// status set is FIXED rather than read from the query string: this is a mirror
+// of the board, not a general order search, and 'ready' is terminal in this
+// system — an order that reaches it never leaves, so allowing it here would
+// return every completed order of the day. Past orders belong in the Order
+// History screen, which isn't built yet.
+app.get("/api/backoffice/orders/live", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    res.json(await loadLiveBoard(client, ["open", "preparing", "cancelled"]));
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch live orders");
+  } finally {
+    client.release();
   }
 });
 

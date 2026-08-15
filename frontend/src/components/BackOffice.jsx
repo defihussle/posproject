@@ -6,6 +6,7 @@ import MenuManager from "./MenuManager";
 import StaffManager from "./StaffManager";
 import Payroll from "./Payroll";
 import DeviceManager from "./DeviceManager";
+import LiveOrders from "./LiveOrders";
 import ReportsLayout, { ReportRoute } from "./reports/ReportsLayout";
 import { REPORTS, visibleReports } from "./reports/registry";
 import logoImg from "../assets/narcos-tacos-logo.png";
@@ -19,8 +20,21 @@ import {
   IconPayroll,
   IconReports,
   IconDevices,
+  IconOrders,
   IconLogOut,
 } from "./icons";
+
+// Sub-items of the Orders group. Order History is the planned second entry —
+// adding it is one line here plus its route below, same as adding a report.
+const ORDERS_VIEWS = [
+  {
+    key: "live",
+    label: "Live Orders",
+    path: "live",
+    roles: ["owner", "admin"],
+    element: () => <LiveOrders />,
+  },
+];
 
 // Persistent nav config — add future Back Office sections here, each with the
 // roles allowed to see/use it and a URL path (sections are real routes under
@@ -33,13 +47,20 @@ import {
 // account dropdown). ALLOWED_ROLES is derived from these lists, so removing
 // "manager" here also makes PIN login reject Manager with "Access Restricted".
 //
-// Order: Home, Staff, Menu, Payroll, Reports (dropdown), Devices.
+// A `group: true` item is an expandable dropdown; its `subs(role)` returns the
+// sub-items to list, so Reports draws from the reports registry and Orders from
+// ORDERS_VIEWS above without NavGroup knowing about either.
+//
+// Order: Home, Orders (dropdown), Staff, Menu, Payroll, Reports (dropdown),
+// Devices. Orders sits directly under Home because "what's happening right
+// now" is the other thing an owner opens the app to check.
 const NAV_ITEMS = [
   { key: "home", label: "Home", path: "home", Icon: IconHome, roles: ["owner", "admin"], element: (staff) => <HomeDashboard staff={staff} /> },
+  { key: "orders", label: "Orders", path: "orders", Icon: IconOrders, roles: ["owner", "admin"], group: true, subs: (role) => ORDERS_VIEWS.filter((v) => v.roles.includes(role)) },
   { key: "staff", label: "Staff Management", path: "staff", Icon: IconUsers, roles: ["owner", "admin"], element: (staff) => <StaffManager staff={staff} /> },
   { key: "menu", label: "Menu Management", path: "menu", Icon: IconMenu, roles: ["owner", "admin"], element: (staff) => <MenuManager staff={staff} /> },
   { key: "payroll", label: "Payroll", path: "payroll", Icon: IconPayroll, roles: ["owner", "admin"], element: (staff) => <Payroll staff={staff} /> },
-  { key: "reports", label: "Reports", path: "reports", Icon: IconReports, roles: ["owner", "admin"], group: true },
+  { key: "reports", label: "Reports", path: "reports", Icon: IconReports, roles: ["owner", "admin"], group: true, subs: (role) => visibleReports(role) },
   { key: "devices", label: "Devices", path: "devices", Icon: IconDevices, roles: ["owner", "admin"], element: () => <DeviceManager /> },
 ];
 
@@ -136,6 +157,7 @@ export default function BackOffice() {
   // Landing section for this role (owner/admin → Home) and first report route.
   const defaultPath = visibleNav.find((n) => !n.group)?.path ?? "home";
   const firstReportPath = visibleReports(staff.role)[0]?.path ?? "sales-summary";
+  const firstOrdersPath = ORDERS_VIEWS.filter((v) => v.roles.includes(staff.role))[0]?.path ?? "live";
   const closeDrawer = () => setSidebarOpen(false);
 
   return (
@@ -176,7 +198,7 @@ export default function BackOffice() {
           <div className="backoffice__navlist">
             {visibleNav.map((item) =>
               item.group ? (
-                <ReportsNavGroup key={item.key} item={item} staff={staff} onNavigate={closeDrawer} />
+                <NavGroup key={item.key} item={item} staff={staff} onNavigate={closeDrawer} />
               ) : (
                 <NavLink
                   key={item.key}
@@ -207,6 +229,16 @@ export default function BackOffice() {
             {NAV_ITEMS.filter((n) => !n.group && n.roles.includes(staff.role)).map((n) => (
               <Route key={n.key} path={n.path} element={n.element(staff)} />
             ))}
+            {/* Orders group. Flat (no shared layout) unlike Reports — its
+                views don't share a range selector, so there's nothing for a
+                parent element to own yet. */}
+            <Route path="orders">
+              <Route index element={<Navigate to={firstOrdersPath} replace />} />
+              {ORDERS_VIEWS.filter((v) => v.roles.includes(staff.role)).map((v) => (
+                <Route key={v.key} path={v.path} element={v.element(staff)} />
+              ))}
+              <Route path="*" element={<Navigate to={firstOrdersPath} replace />} />
+            </Route>
             <Route path="reports" element={<ReportsLayout staff={staff} />}>
               <Route index element={<Navigate to={firstReportPath} replace />} />
               {REPORTS.map((r) => (
@@ -222,23 +254,25 @@ export default function BackOffice() {
   );
 }
 
-// Expandable Reports section in the sidebar. Tapping the parent reveals the
-// per-report sub-items (each a real route); it auto-expands whenever a reports
-// route is active so the current report is always visible in context.
-function ReportsNavGroup({ item, staff, onNavigate }) {
+// Expandable sidebar section (Orders, Reports). Tapping the parent reveals its
+// sub-items (each a real route); it auto-expands whenever one of its own routes
+// is active, so the current page is always visible in context. Which sub-items
+// it lists comes from the nav item's own `subs(role)` — this component is
+// generic, so a new group costs one NAV_ITEMS entry and nothing here.
+function NavGroup({ item, staff, onNavigate }) {
   const location = useLocation();
-  const onReports = location.pathname.startsWith("/backoffice/reports");
-  const [open, setOpen] = useState(onReports);
+  const onSection = location.pathname.startsWith(`/backoffice/${item.path}`);
+  const [open, setOpen] = useState(onSection);
   useEffect(() => {
-    if (onReports) setOpen(true);
-  }, [onReports]);
+    if (onSection) setOpen(true);
+  }, [onSection]);
 
-  const subs = visibleReports(staff.role);
+  const subs = item.subs(staff.role);
 
   return (
     <div className="backoffice__navgroup">
       <button
-        className={`backoffice__navitem backoffice__navitem--group${onReports ? " backoffice__navitem--active" : ""}`}
+        className={`backoffice__navitem backoffice__navitem--group${onSection ? " backoffice__navitem--active" : ""}`}
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
