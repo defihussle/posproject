@@ -12,6 +12,26 @@ function fmtDuration(totalSeconds) {
   return `${h}h ${m}m`;
 }
 
+// Decimal hours — "6.6 hours", the same unit Payroll and the Labor report
+// state hours in, so what a staff member reads mid-shift is in the units
+// their pay is calculated in. Purely a format of the seconds the card already
+// had; no new time math.
+const fmtDecimalHours = (totalSeconds) =>
+  (Math.max(0, totalSeconds) / 3600).toFixed(1);
+
+// "4:12 PM"
+const fmtClock = (iso) =>
+  new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+// "Sat, Aug 15 · 8:09 PM"
+const fmtNowLine = (ms) => {
+  const d = new Date(ms);
+  const day = d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  return `${day} · ${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+};
+
+const titleCase = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : "");
+
 const ACTION_LABELS = {
   start_shift: "Start Shift",
   end_shift: "End Shift",
@@ -31,10 +51,17 @@ const ACTION_ENDPOINTS = {
  * One entry point, state-driven contents (fetched fresh via clock-status
  * every time the card opens):
  *   not_clocked_in -> Start Shift
- *   working        -> running shift timer, End Shift / Take Break
- *   on_break       -> running break timer, End Break / End Shift (can end
+ *   working        -> started-at + hours so far, End Shift / Take Break
+ *   on_break       -> running break timer, End Shift / End Break (can end
  *                     a shift directly from a break — e.g. an emergency —
  *                     the clock-out route auto-closes the open break)
+ *
+ * The card always names WHOSE shift is being acted on. Order Entry is a
+ * shared counter device where the account dropdown is two taps from anyone's
+ * hand, so "Test Admin / Cashier" sits at the top of the card and stays
+ * visible through the PIN step — the moment it matters most, because the PIN
+ * being asked for is that person's.
+ *
  * Every action requires a PIN, entered inline in this same card, before
  * it's submitted — the card never closes itself on success, it just
  * transitions to whatever the new state is so multiple actions (e.g.
@@ -165,14 +192,14 @@ export default function ClockCard({ staff, onClose }) {
         <>
           {endedSummary && (
             <div className="clockcard__summary">
-              Hours worked: <strong>{fmtDuration(endedSummary.workedSeconds)}</strong>
+              Hours worked: <strong>{fmtDecimalHours(endedSummary.workedSeconds)} hours</strong>
               {" · "}
               Break time: <strong>{fmtDuration(endedSummary.breakSeconds)}</strong>
             </div>
           )}
-          <div className="clockcard__action-row">
+          <div className="clockcard__actions">
             <button
-              className="clockcard__action-btn clockcard__action-btn--start"
+              className="clockcard__action-btn clockcard__action-btn--primary"
               onClick={() => {
                 setEndedSummary(null);
                 startAction("start_shift");
@@ -180,7 +207,7 @@ export default function ClockCard({ staff, onClose }) {
             >
               Start Shift
             </button>
-            <button className="clockcard__action-btn" onClick={onClose}>
+            <button className="clockcard__action-btn clockcard__action-btn--quiet" onClick={onClose}>
               Close
             </button>
           </div>
@@ -188,49 +215,39 @@ export default function ClockCard({ staff, onClose }) {
       );
     }
 
-    if (status === "working") {
-      // Worked time = elapsed since clock-in MINUS completed breaks, so the
-      // number reflects actual time on the clock, not raw elapsed.
-      const worked = (nowMs - new Date(clockIn).getTime()) / 1000 - breakSeconds;
+    if (status === "working" || status === "on_break") {
+      // The primary action follows the real state: once a shift is open, the
+      // thing to do is end it — from a break too, since the clock-out route
+      // closes the open break itself.
       return (
         <>
-          <div className="clockcard__timer">
-            Worked
-            <strong>{fmtDuration(worked)}</strong>
-          </div>
-          <div className="clockcard__action-row">
-            <button className="clockcard__action-btn" onClick={() => startAction("take_break")}>
-              Take Break
-            </button>
+          {status === "on_break" && (
+            <div className="clockcard__timer clockcard__timer--break">
+              On break for
+              <strong>{fmtDuration((nowMs - new Date(breakStart).getTime()) / 1000)}</strong>
+            </div>
+          )}
+          <div className="clockcard__actions">
             <button
-              className="clockcard__action-btn clockcard__action-btn--end"
+              className="clockcard__action-btn clockcard__action-btn--primary"
               onClick={() => startAction("end_shift")}
             >
               End Shift
             </button>
-          </div>
-        </>
-      );
-    }
-
-    if (status === "on_break") {
-      const seconds = (nowMs - new Date(breakStart).getTime()) / 1000;
-      return (
-        <>
-          <div className="clockcard__timer clockcard__timer--break">
-            On break for
-            <strong>{fmtDuration(seconds)}</strong>
-          </div>
-          <div className="clockcard__action-row">
-            <button className="clockcard__action-btn" onClick={() => startAction("end_break")}>
-              End Break
-            </button>
-            <button
-              className="clockcard__action-btn clockcard__action-btn--end"
-              onClick={() => startAction("end_shift")}
-            >
-              End Shift
-            </button>
+            <div className="clockcard__actions-row">
+              {status === "working" ? (
+                <button className="clockcard__action-btn" onClick={() => startAction("take_break")}>
+                  Take Break
+                </button>
+              ) : (
+                <button className="clockcard__action-btn" onClick={() => startAction("end_break")}>
+                  End Break
+                </button>
+              )}
+              <button className="clockcard__action-btn clockcard__action-btn--quiet" onClick={onClose}>
+                Close
+              </button>
+            </div>
           </div>
         </>
       );
@@ -238,6 +255,16 @@ export default function ClockCard({ staff, onClose }) {
 
     return null;
   };
+
+  const onShift = status === "working" || status === "on_break";
+  // Worked = elapsed since clock-in MINUS completed breaks, and minus the
+  // break currently running if there is one — the same "worked = elapsed −
+  // breaks" definition the server's payroll helpers use, just evaluated live.
+  const workedSeconds = onShift && clockIn
+    ? (nowMs - new Date(clockIn).getTime()) / 1000 -
+      breakSeconds -
+      (status === "on_break" && breakStart ? (nowMs - new Date(breakStart).getTime()) / 1000 : 0)
+    : 0;
 
   return (
     <div className="staffmgr__overlay" onClick={busy ? undefined : onClose}>
@@ -255,7 +282,27 @@ export default function ClockCard({ staff, onClose }) {
             </svg>
           </button>
         </div>
-        <div className="staffmgr__modal-body clockcard__body">{renderBody()}</div>
+        <div className="staffmgr__modal-body clockcard__body">
+          {/* Whose shift this is. Deliberately outside renderBody() so it
+              survives every state INCLUDING the PIN step — that's the screen
+              where acting on the wrong account is easiest and costliest. */}
+          <div className="clockcard__identity">
+            <span className="clockcard__name">{staff.name}</span>
+            <span className="clockcard__role">{titleCase(staff.role)}</span>
+          </div>
+
+          {onShift && !loading && !loadError && (
+            <div className="clockcard__shiftmeta">
+              Started at <strong>{fmtClock(clockIn)}</strong>
+              <span className="clockcard__dot"> · </span>
+              <strong>{fmtDecimalHours(workedSeconds)} hours</strong>
+            </div>
+          )}
+
+          <div className="clockcard__now">{fmtNowLine(nowMs)}</div>
+
+          {renderBody()}
+        </div>
       </div>
     </div>
   );

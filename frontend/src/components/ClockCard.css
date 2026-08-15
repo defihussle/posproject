@@ -9,6 +9,63 @@
 
 .clockcard__body {
   align-items: stretch;
+  gap: 10px;
+}
+
+/* ---------- Identity ----------
+   Name first and largest: on a shared counter tablet the question this card
+   has to answer before anything else is "is this my account?". */
+.clockcard__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.clockcard__name {
+  font-family: var(--font-headline);
+  font-size: 1.15rem;
+  line-height: 1.2;
+  color: var(--text-primary);
+}
+
+.clockcard__role {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Started-at + hours-so-far, one compact line rather than a big timer —
+   it's reference information, not the reason the card is open. */
+.clockcard__shiftmeta {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  padding: 10px 12px;
+  background: var(--bg-primary);
+  border-radius: var(--radius-md);
+}
+
+.clockcard__shiftmeta strong {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.clockcard__dot {
+  color: var(--text-muted);
+}
+
+/* Wall clock — quiet, and only ever context for the times above it. */
+.clockcard__now {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
 }
 
 .clockcard__timer {
@@ -38,10 +95,18 @@
   color: #b0670f;
 }
 
-.clockcard__action-row {
+/* Primary action gets its own full-width row; anything else sits beneath it,
+   so the button that matches the current state is never one of two equals. */
+.clockcard__actions {
   display: flex;
-  gap: 10px;
-  margin-top: 14px;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.clockcard__actions-row {
+  display: flex;
+  gap: 8px;
 }
 
 .clockcard__action-btn {
@@ -61,7 +126,9 @@
   border-color: var(--text-primary);
 }
 
-.clockcard__action-btn--start {
+/* Start Shift and End Shift are the same primary treatment — which one shows
+   is decided by the real clock state, so they never compete. */
+.clockcard__action-btn--primary {
   background: var(--red);
   color: #fff;
   border-color: transparent;
@@ -69,18 +136,21 @@
   font-size: 0.95rem;
 }
 
-.clockcard__action-btn--start:hover:not(:disabled) {
+.clockcard__action-btn--primary:hover:not(:disabled) {
   background: var(--red-hover);
 }
 
-.clockcard__action-btn--end {
-  background: var(--red);
-  color: #fff;
+/* Close changes nothing — it shouldn't look like it might. */
+.clockcard__action-btn--quiet {
+  background: transparent;
   border-color: transparent;
+  color: var(--text-muted);
+  font-weight: 600;
 }
 
-.clockcard__action-btn--end:hover:not(:disabled) {
-  background: var(--red-hover);
+.clockcard__action-btn--quiet:hover:not(:disabled) {
+  border-color: var(--border-color);
+  color: var(--text-primary);
 }
 
 .clockcard__pin-prompt {
