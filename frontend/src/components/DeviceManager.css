@@ -155,6 +155,17 @@
   color: var(--text-muted);
 }
 
+/* Stands in for the "Remove from List" button on a revoked device that took
+   card payments — says why the row can't leave rather than showing a button
+   the server would refuse. */
+.devices__remove-note {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
 .devices__name-view {
   display: flex;
   align-items: center;

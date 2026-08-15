@@ -7921,17 +7921,36 @@ app.post("/api/devices/pair", async (req, res) => {
   }
 });
 
+// Does this device have history that outlives the pairing row? Only card
+// checkouts do: pending_checkouts stamps the raw device_id (TEXT, deliberately
+// no FK — it records what the till reported, not a live relationship), so
+// deleting the pairing would silently orphan a money trail whose whole purpose
+// is answering "I was charged and got no food". Everything else a device
+// touches — orders, shifts, payments — is keyed to STAFF, not to the tablet,
+// so a device with no card checkouts leaves nothing behind when it goes.
+//
+// Same shape as STAFF_HISTORY_EXISTS_SQL: a correlated EXISTS the list query
+// and the delete route both reuse, so what the UI predicts and what the server
+// enforces can't drift.
+const DEVICE_HISTORY_EXISTS_SQL = `EXISTS(
+  SELECT 1 FROM pending_checkouts pc WHERE pc.device_id = dp.device_id::text
+)`;
+
 // GET /api/backoffice/devices — owner/admin. Every device that completed
-// pairing at some point (active AND revoked — revoked rows stay visible
-// as audit history, same "never hard-delete" spirit as the rest of this
-// schema). Pending, never-redeemed codes are excluded; they're not a
-// "device" yet.
+// pairing at some point (active AND revoked). Pending, never-redeemed codes
+// are excluded; they're not a "device" yet.
+//
+// has_history tells the client whether a revoked row can be removed from the
+// list, purely so the detail modal can word itself correctly before calling
+// DELETE — the decision is always re-made server-side, never trusted from the
+// request (same contract as the staff list's has_history).
 app.get("/api/backoffice/devices", async (req, res) => {
   try {
     await requireBackofficeSession(req);
     const { rows } = await pool.query(
       `SELECT dp.id, dp.device_id, dp.device_name, dp.paired_at, dp.last_seen_at, dp.revoked_at,
               dp.last_order_entry_at, dp.last_kds_at, dp.stripe_reader_id,
+              ${DEVICE_HISTORY_EXISTS_SQL} AS has_history,
               creator.name AS created_by_name, revoker.name AS revoked_by_name
          FROM device_pairings dp
          JOIN staff creator ON creator.id = dp.created_by
@@ -8047,6 +8066,60 @@ app.post("/api/backoffice/devices/:id/revoke", async (req, res) => {
     res.json({ success: true, id: rows[0].id, deviceName: rows[0].device_name });
   } catch (err) {
     sendHttpError(res, err, "Failed to revoke device");
+  }
+});
+
+// DELETE /api/backoffice/devices/:id — owner/admin. Tidies a dead device off
+// the Devices list once it's already been revoked.
+//
+// REVOKED ONLY, deliberately: revocation is what cuts a tablet off, and it's
+// the step that gets recorded (who/when). Deleting straight from paired would
+// collapse "stop trusting this" and "stop showing me this" into one
+// irreversible tap and erase the evidence of the first as it happened. Access
+// control is unaffected either way — requireDevicePairing needs a live row, so
+// a deleted pairing is refused exactly like a revoked one.
+//
+// Hard delete rather than a hidden flag: a revoked, history-free pairing is a
+// spent code and nothing else, and a soft-hide column would be a schema change
+// for a row nobody can learn anything from. A device that DID take card
+// payments keeps its row — see DEVICE_HISTORY_EXISTS_SQL.
+app.delete("/api/backoffice/devices/:id", async (req, res) => {
+  try {
+    await requireBackofficeSession(req);
+
+    // Read first purely so each refusal can say which rule it hit; the DELETE
+    // below re-asserts all of them, so this is messaging, not the guard.
+    const { rows } = await pool.query(
+      `SELECT dp.id, dp.device_name, dp.revoked_at, ${DEVICE_HISTORY_EXISTS_SQL} AS has_history
+         FROM device_pairings dp
+        WHERE dp.id = $1 AND dp.paired_at IS NOT NULL`,
+      [req.params.id]
+    );
+    const device = rows[0];
+    if (!device) throw new HttpError(404, "Paired device not found");
+    if (!device.revoked_at) {
+      throw new HttpError(409, "Revoke this device before removing it from the list");
+    }
+    if (device.has_history) {
+      throw new HttpError(
+        409,
+        `"${device.device_name}" has card payment history and can't be removed — its pairing is ` +
+          `part of that record. It stays listed as revoked.`
+      );
+    }
+
+    const del = await pool.query(
+      `DELETE FROM device_pairings dp
+        WHERE dp.id = $1 AND dp.paired_at IS NOT NULL AND dp.revoked_at IS NOT NULL
+          AND NOT ${DEVICE_HISTORY_EXISTS_SQL}`,
+      [req.params.id]
+    );
+    if (del.rowCount === 0) {
+      throw new HttpError(409, "Device changed while being removed — reload and try again");
+    }
+    res.json({ success: true, action: "deleted", id: device.id });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to remove device");
   }
 });
 

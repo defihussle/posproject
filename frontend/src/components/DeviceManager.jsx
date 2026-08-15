@@ -92,6 +92,12 @@ export default function DeviceManager() {
     setRows((prev) => prev.map((r) => (r.id === updated.id ? { ...r, ...updated } : r)));
   }, []);
 
+  // Drop a removed device locally rather than re-fetching — the row is gone
+  // server-side, so there is nothing to reconcile.
+  const dropRow = useCallback((id) => {
+    setRows((prev) => prev.filter((r) => r.id !== id));
+  }, []);
+
   const generateCode = useCallback(async () => {
     setGenerateModal({ state: "generating" });
     try {
@@ -178,6 +184,7 @@ export default function DeviceManager() {
           row={selectedRow}
           onSaved={applyRow}
           onRevoked={load}
+          onRemoved={dropRow}
           onError={setError}
           onClose={() => setSelectedId(null)}
         />
@@ -209,14 +216,19 @@ function ChevronIcon() {
 // hierarchy concept here (unlike StaffDetailModal) — every owner/admin
 // can manage every device equally, matching the plan's clarified scope
 // (owner + admin, same as every other Back Office capability).
-function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
+function DeviceDetailModal({ row, onSaved, onRevoked, onRemoved, onError, onClose }) {
   useScrollLock();
   const [name, setName] = useState(row.device_name || "");
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [revoking, setRevoking] = useState(false);
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
   const isRevoked = !!row.revoked_at;
+  // A revoked device that never took a card payment is a spent pairing code
+  // and nothing more, so it can leave the list. The server re-checks this.
+  const canRemove = isRevoked && !row.has_history;
 
   // Card-reader binding. Kept in its own state from the name above so the two
   // save independently — the PUT is a partial update, so saving one field can
@@ -353,6 +365,27 @@ function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
     } finally {
       setRevoking(false);
       setConfirmingRevoke(false);
+    }
+  };
+
+  const performRemove = async () => {
+    if (removing) return;
+    setRemoving(true);
+    try {
+      const res = await fetch(`${API_URL}/api/backoffice/devices/${row.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      onError(null);
+      onRemoved(row.id);
+      onClose();
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setRemoving(false);
+      setConfirmingRemove(false);
     }
   };
 
@@ -534,17 +567,31 @@ function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
             </div>
           )}
 
-          {!isRevoked && (
-            <>
-              <div className="staffmgr__modal-divider" />
-              <button
-                className="staffmgr__btn staffmgr__btn--danger"
-                onClick={() => setConfirmingRevoke(true)}
-                disabled={revoking}
-              >
-                {revoking ? "…" : "Revoke Device"}
-              </button>
-            </>
+          {/* Revoke cuts the device off; Remove tidies the dead row away
+              afterwards. Two steps on purpose — revoking is what gets
+              recorded above, and folding it into one tap would erase that
+              record in the same gesture that creates it. */}
+          <div className="staffmgr__modal-divider" />
+          {!isRevoked ? (
+            <button
+              className="staffmgr__btn staffmgr__btn--danger"
+              onClick={() => setConfirmingRevoke(true)}
+              disabled={revoking}
+            >
+              {revoking ? "…" : "Revoke Device"}
+            </button>
+          ) : canRemove ? (
+            <button
+              className="staffmgr__btn staffmgr__btn--danger"
+              onClick={() => setConfirmingRemove(true)}
+              disabled={removing}
+            >
+              {removing ? "…" : "Remove from List"}
+            </button>
+          ) : (
+            <p className="devices__remove-note">
+              This device took card payments, so it stays listed as part of that record.
+            </p>
           )}
         </div>
       </div>
@@ -558,6 +605,18 @@ function DeviceDetailModal({ row, onSaved, onRevoked, onError, onClose }) {
           busy={revoking}
           onConfirm={performRevoke}
           onCancel={() => setConfirmingRevoke(false)}
+        />
+      )}
+
+      {confirmingRemove && (
+        <ConfirmDialog
+          title="Remove this device?"
+          message={`Remove "${row.device_name}" from the list? It's already revoked and can't be used, so this only clears the row — the record of when it was paired and revoked goes with it. Pairing the same tablet again just needs a new code.`}
+          confirmLabel="Remove"
+          danger
+          busy={removing}
+          onConfirm={performRemove}
+          onCancel={() => setConfirmingRemove(false)}
         />
       )}
     </div>
