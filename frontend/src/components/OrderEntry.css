@@ -1729,3 +1729,13 @@ input:checked + .oe-switch-slider:before {
 .oe-checkout__summary[hidden] {
   display: none;
 }
+
+/* Clear reads as an escape from the additive chips, not another amount. */
+.oe-tender__chip--clear {
+  color: var(--text-muted);
+  border-style: dashed;
+}
+
+.oe-tender__chip--clear:hover:not(:disabled) {
+  border-style: solid;
+}

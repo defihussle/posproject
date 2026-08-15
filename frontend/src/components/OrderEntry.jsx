@@ -297,12 +297,11 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const changeDue = hasTender ? round2(tenderedAmount - total) : 0;
   const tenderIsShort = hasTender && changeDue < 0;
   const canCompleteCash = hasTender && changeDue >= 0;
-  // Only offer notes that could actually settle the bill — a $5 chip on a $23
-  // order is a wrong tap waiting to happen.
-  const quickTenders = useMemo(
-    () => [5, 10, 20, 50, 100].filter((n) => n >= total).slice(0, 4),
-    [total]
-  );
+  // Every denomination, unfiltered: the chips ADD, so a $5 is useful on any
+  // total (tap $20 then $5 for $25). They used to be filtered to notes that
+  // could settle the bill on their own, which only made sense while a tap
+  // replaced the field.
+  const QUICK_TENDERS = [5, 10, 20, 50, 100];
 
   // Map the cart into the /api/orders payload. Only sends WHAT was selected
   // (ids + quantities) — never prices; the server recomputes those. Same
@@ -469,6 +468,19 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   // the cashier can count what they were handed and read the change back. The
   // step is display-only — nothing is sent until Complete, which calls the very
   // same handleCheckout("cash") this used to call directly.
+  // Chips accumulate, mirroring how notes actually land on the counter: two
+  // twenties is two taps of $20, not mental arithmetic then a retype. Anything
+  // unparseable in the field (blank, a lone ".") counts as zero rather than
+  // poisoning the sum with NaN, and round2 keeps repeated adds off floating
+  // point drift. Always formatted to 2dp so the field reads like money.
+  const addTender = useCallback((amount) => {
+    setTendered((prev) => {
+      const current = Number(String(prev).trim());
+      const base = Number.isFinite(current) ? current : 0;
+      return round2(base + amount).toFixed(2);
+    });
+  }, []);
+
   const openCashTender = useCallback(() => {
     setCheckoutError(null);
     setTendered("");
@@ -1212,17 +1224,30 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                       >
                         Exact
                       </button>
-                      {quickTenders.map((n) => (
+                      {QUICK_TENDERS.map((n) => (
                         <button
                           key={n}
                           type="button"
                           className="oe-tender__chip"
-                          onClick={() => setTendered(String(n))}
+                          onClick={() => addTender(n)}
                           disabled={submitting}
                         >
-                          ${n}
+                          +${n}
                         </button>
                       ))}
+                      {/* Additive chips have no undo, and a mis-tap mid-rush
+                          otherwise means fiddling with a numeric field on a
+                          phone. Only shown once there's something to clear. */}
+                      {tendered !== "" && (
+                        <button
+                          type="button"
+                          className="oe-tender__chip oe-tender__chip--clear"
+                          onClick={() => setTendered("")}
+                          disabled={submitting}
+                        >
+                          Clear
+                        </button>
+                      )}
                     </div>
 
                     {/* The number the cashier is actually acting on, so it gets
