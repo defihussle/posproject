@@ -146,6 +146,11 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   // Success is NOT a phase here: it reuses `confirmation` below, so a card sale
   // and a cash sale confirm identically.
   const [cardState, setCardState] = useState(null);
+  // Cash tender step. Purely a counting aid in front of the existing cash
+  // path: `tendered` is what the customer handed over, change is derived for
+  // display, and neither is sent anywhere — the POST body is unchanged.
+  const [cashTenderOpen, setCashTenderOpen] = useState(false);
+  const [tendered, setTendered] = useState("");
   // Mirrors `submitting` for guard checks that must be correct synchronously —
   // React state lags a tick, and "retry" needs to re-enter checkout immediately
   // after clearing it.
@@ -278,6 +283,27 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const tax = useMemo(() => round2(discountedSubtotal * TAX_RATE), [discountedSubtotal]);
   const total = useMemo(() => round2(discountedSubtotal + tax), [discountedSubtotal, tax]);
 
+  // ---- Cash tender (display only) ----
+  // Accepts "20", "20.00", "20.5" alike — Number() handles all three, and a
+  // blank or half-typed value reads as NaN, which keeps Complete disabled
+  // rather than settling on a total the cashier hasn't confirmed.
+  const tenderedAmount = useMemo(() => {
+    const n = Number(String(tendered).trim());
+    return Number.isFinite(n) ? n : NaN;
+  }, [tendered]);
+  const hasTender = Number.isFinite(tenderedAmount) && String(tendered).trim() !== "";
+  // round2 matters: 20 - 17.35 is 2.6500000000000004 in binary floating point,
+  // and that must never reach a customer-facing change figure.
+  const changeDue = hasTender ? round2(tenderedAmount - total) : 0;
+  const tenderIsShort = hasTender && changeDue < 0;
+  const canCompleteCash = hasTender && changeDue >= 0;
+  // Only offer notes that could actually settle the bill — a $5 chip on a $23
+  // order is a wrong tap waiting to happen.
+  const quickTenders = useMemo(
+    () => [5, 10, 20, 50, 100].filter((n) => n >= total).slice(0, 4),
+    [total]
+  );
+
   // Map the cart into the /api/orders payload. Only sends WHAT was selected
   // (ids + quantities) — never prices; the server recomputes those. Same
   // for the discount: only percent + reason are sent, never a dollar figure.
@@ -308,6 +334,8 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
     setCheckoutError(null);
     setConfirmation(null);
     setCardState(null);
+    setCashTenderOpen(false);
+    setTendered("");
     setCheckoutOpen(true);
   }, []);
 
@@ -336,6 +364,8 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   // comes along purely so the confirmation can offer a receipt.
   const completeSale = useCallback((orderNumber, orderId) => {
     setCardState(null);
+    setCashTenderOpen(false);
+    setTendered("");
     setConfirmation({ orderNumber, orderId });
     setCart([]);
     setDiscount(null);
@@ -435,10 +465,26 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
     handleCheckout("card");
   }, [clearCardState, handleCheckout]);
 
+  // Cash now goes through the tender step rather than settling on the tap, so
+  // the cashier can count what they were handed and read the change back. The
+  // step is display-only — nothing is sent until Complete, which calls the very
+  // same handleCheckout("cash") this used to call directly.
+  const openCashTender = useCallback(() => {
+    setCheckoutError(null);
+    setTendered("");
+    setCashTenderOpen(true);
+  }, []);
+
+  const closeCashTender = useCallback(() => {
+    if (submittingRef.current) return; // never abandon a live submit
+    setCashTenderOpen(false);
+    setTendered("");
+  }, []);
+
   const switchToCash = useCallback(() => {
     clearCardState();
-    handleCheckout("cash");
-  }, [clearCardState, handleCheckout]);
+    openCashTender();
+  }, [clearCardState, openCashTender]);
 
   // Cashier aborts a live payment. The customer may be tapping at this exact
   // moment, so the backend decides the outcome — this just reports it.
@@ -1096,7 +1142,14 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                   </button>
                 </div>
 
-                <div className="oe-checkout__summary">
+                {/* Hidden while tendering: the tender card restates the total
+                    as "Amount due", and showing both put the same figure on
+                    screen twice and pushed Change due below the fold on a
+                    phone. The breakdown is one Cancel away. */}
+                <div
+                  className="oe-checkout__summary"
+                  hidden={cashTenderOpen}
+                >
                   <div className="oe-checkout__row">
                     <span>Subtotal</span>
                     <span>${subtotal.toFixed(2)}</span>
@@ -1123,26 +1176,107 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                   <div className="oe-checkout__error">{checkoutError}</div>
                 )}
 
-                <div className="oe-checkout__methods">
-                  <button
-                    className="oe-checkout__method"
-                    onClick={() => handleCheckout("cash")}
-                    disabled={submitting}
-                  >
-                    <span className="oe-checkout__method-icon">💵</span>
-                    <span>Cash</span>
-                  </button>
-                  <button
-                    className="oe-checkout__method"
-                    onClick={() => handleCheckout("card")}
-                    disabled={submitting}
-                  >
-                    <span className="oe-checkout__method-icon">💳</span>
-                    <span>Card</span>
-                  </button>
-                </div>
+                {cashTenderOpen ? (
+                  /* Cash tender — a counting aid, not a second money path.
+                     Nothing here is sent to the server: Complete calls the same
+                     handleCheckout("cash") the Cash button used to call. */
+                  <div className="oe-tender">
+                    <div className="oe-tender__due">
+                      <span className="oe-tender__due-label">Amount due</span>
+                      <span className="oe-tender__due-value">${total.toFixed(2)}</span>
+                    </div>
 
-                {submitting && (
+                    <label className="oe-tender__label" htmlFor="oe-tendered">
+                      Cash received
+                    </label>
+                    <div className="oe-tender__input-wrap">
+                      <span className="oe-tender__prefix">$</span>
+                      <input
+                        id="oe-tendered"
+                        className="oe-tender__input"
+                        value={tendered}
+                        onChange={(e) => setTendered(e.target.value)}
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        autoFocus
+                        disabled={submitting}
+                      />
+                    </div>
+
+                    <div className="oe-tender__quick">
+                      <button
+                        type="button"
+                        className="oe-tender__chip"
+                        onClick={() => setTendered(total.toFixed(2))}
+                        disabled={submitting}
+                      >
+                        Exact
+                      </button>
+                      {quickTenders.map((n) => (
+                        <button
+                          key={n}
+                          type="button"
+                          className="oe-tender__chip"
+                          onClick={() => setTendered(String(n))}
+                          disabled={submitting}
+                        >
+                          ${n}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* The number the cashier is actually acting on, so it gets
+                        the most weight on the screen. */}
+                    <div
+                      className={`oe-tender__change${tenderIsShort ? " oe-tender__change--short" : ""}`}
+                    >
+                      <span className="oe-tender__change-label">
+                        {tenderIsShort ? "Still owing" : "Change due"}
+                      </span>
+                      <span className="oe-tender__change-value">
+                        ${hasTender ? Math.abs(changeDue).toFixed(2) : "0.00"}
+                      </span>
+                    </div>
+
+                    <div className="oe-tender__actions">
+                      <button
+                        className="oe-tender__cancel"
+                        onClick={closeCashTender}
+                        disabled={submitting}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        className="oe-tender__complete"
+                        onClick={() => handleCheckout("cash")}
+                        disabled={submitting || !canCompleteCash}
+                      >
+                        {submitting ? "Completing…" : "Complete"}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="oe-checkout__methods">
+                    <button
+                      className="oe-checkout__method"
+                      onClick={openCashTender}
+                      disabled={submitting}
+                    >
+                      <span className="oe-checkout__method-icon">💵</span>
+                      <span>Cash</span>
+                    </button>
+                    <button
+                      className="oe-checkout__method"
+                      onClick={() => handleCheckout("card")}
+                      disabled={submitting}
+                    >
+                      <span className="oe-checkout__method-icon">💳</span>
+                      <span>Card</span>
+                    </button>
+                  </div>
+                )}
+
+                {submitting && !cashTenderOpen && (
                   <div className="oe-checkout__processing">Processing…</div>
                 )}
               </>
