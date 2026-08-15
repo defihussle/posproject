@@ -1,0 +1,504 @@
+/* ============================================================
+   Back Office — Orders → Order History
+   Searchable list of past orders + a view-first detail modal. Warm admin
+   palette, phone-first. Reuses StaffManager.css's generic overlay/modal/
+   button classes (the same convention DeviceManager already follows), so
+   this file holds only what's specific to this list's shape.
+   ============================================================ */
+
+.ordhist {
+  width: 100%;
+  max-width: 1000px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: fadeIn 0.25s ease-out;
+}
+
+.ordhist__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ordhist__title {
+  font-family: var(--font-headline);
+  font-size: 1.3rem;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.ordhist__search {
+  width: 100%;
+  padding: 11px 13px;
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  outline: none;
+}
+
+.ordhist__search::placeholder { color: var(--text-muted); }
+.ordhist__search:focus { border-color: var(--red); }
+
+/* ---------- Date presets + filter toggle ---------- */
+.ordhist__presets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ordhist__preset {
+  padding: 7px 12px;
+  font-family: var(--font-body);
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.ordhist__preset--on {
+  background: var(--red-light);
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.ordhist__daterange,
+.ordhist__filters {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.ordhist__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.ordhist__field-label,
+.ordhist__section-label {
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.ordhist__input {
+  width: 100%;
+  padding: 9px 11px;
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+
+.ordhist__input:focus { border-color: var(--red); }
+
+/* ---------- Status / empty ---------- */
+.ordhist__notice,
+.ordhist__empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-lg);
+}
+
+.ordhist__error {
+  padding: 10px 12px;
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--rose-text);
+  background: var(--rose-surface);
+  border-radius: var(--radius-md);
+}
+
+/* ---------- List ---------- */
+.ordhist__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ordhist-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  text-align: left;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ordhist-row:hover {
+  border-color: var(--text-muted);
+  box-shadow: var(--shadow-soft);
+}
+
+.ordhist-row__main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ordhist-row__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ordhist-row__number {
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.ordhist-row__sub {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.ordhist-row__method { text-transform: uppercase; }
+
+.ordhist-row__total {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.ordhist-row__chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.ordhist__more {
+  align-self: center;
+  padding: 9px 20px;
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+}
+
+.ordhist__more:disabled { opacity: 0.6; cursor: default; }
+
+/* ---------- Detail modal contents ---------- */
+.ordhist__detail-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.ordhist__detail-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ordhist__detail-label {
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.ordhist__detail-value {
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  text-align: right;
+  min-width: 0;
+}
+
+.ordhist__detail-value--mono {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+
+.ordhist__items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ordhist__item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+  color: var(--text-primary);
+}
+
+.ordhist__item-qty {
+  flex-shrink: 0;
+  min-width: 24px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.ordhist__item-name { flex: 1; min-width: 0; }
+.ordhist__item-variant { color: var(--text-muted); }
+
+.ordhist__item-total {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.ordhist__totals {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 13px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.ordhist__total-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.ordhist__total-row span:last-child {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.ordhist__total-row--discount,
+.ordhist__total-row--discount span:last-child { color: var(--red); }
+
+.ordhist__total-row--total {
+  padding-top: 6px;
+  margin-top: 3px;
+  border-top: 1px solid var(--border-color);
+  font-weight: 700;
+}
+
+.ordhist__total-row--total span:last-child { font-weight: 700; }
+
+.ordhist__total-row--refunded,
+.ordhist__total-row--refunded span:last-child {
+  color: var(--amber-text);
+  font-weight: 600;
+}
+
+.ordhist__log {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ordhist__log-row {
+  padding: 8px 10px;
+  font-family: var(--font-body);
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--text-primary);
+  background: var(--amber-surface);
+  border-radius: var(--radius-sm);
+}
+
+.ordhist__log-row strong {
+  font-family: var(--font-mono);
+  color: var(--amber-text);
+}
+
+.ordhist__log-status { color: var(--text-muted); }
+
+.ordhist__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---------- Reversal sheet ----------
+   Sits above the detail modal (which is at the shared modal z-index) so the
+   order stays readable behind the decision being made about it. */
+.ordhist__sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 12px;
+  background: rgba(42, 39, 36, 0.5);
+  backdrop-filter: blur(3px);
+}
+
+.ordhist__sheet-card {
+  width: 100%;
+  max-width: 460px;
+  max-height: 88vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-medium);
+}
+
+.ordhist__sheet-title {
+  margin: 0;
+  font-family: var(--font-headline);
+  font-size: 1.02rem;
+  line-height: 1.3;
+  color: var(--text-primary);
+  text-transform: capitalize;
+}
+
+.ordhist__sheet-sub {
+  margin: -6px 0 0 0;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.ordhist__sheet-note {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.ordhist__sheet-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ordhist__field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ordhist__method-choice {
+  display: flex;
+  gap: 8px;
+}
+
+.ordhist__method {
+  flex: 1;
+  padding: 9px 10px;
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.ordhist__method--on {
+  border-color: var(--red);
+  background: var(--red-light);
+  color: var(--red);
+}
+
+.ordhist__line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-color);
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  color: var(--text-primary);
+}
+
+.ordhist__line-name { min-width: 0; }
+
+.ordhist__stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ordhist__stepper button {
+  width: 30px;
+  height: 30px;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+}
+
+.ordhist__line-qty {
+  min-width: 46px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+@media (min-width: 640px) {
+  .ordhist__sheet { align-items: center; }
+}

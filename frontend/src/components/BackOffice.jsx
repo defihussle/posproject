@@ -7,6 +7,7 @@ import StaffManager from "./StaffManager";
 import Payroll from "./Payroll";
 import DeviceManager from "./DeviceManager";
 import LiveOrders from "./LiveOrders";
+import OrderHistory from "./OrderHistory";
 import ReportsLayout, { ReportRoute } from "./reports/ReportsLayout";
 import { REPORTS, visibleReports } from "./reports/registry";
 import logoImg from "../assets/narcos-tacos-logo.png";
@@ -24,8 +25,9 @@ import {
   IconLogOut,
 } from "./icons";
 
-// Sub-items of the Orders group. Order History is the planned second entry —
-// adding it is one line here plus its route below, same as adding a report.
+// Sub-items of the Orders group — "what's cooking now" then "what happened
+// before". Adding another is one entry here; the nav group and the routes
+// below both read from this list.
 const ORDERS_VIEWS = [
   {
     key: "live",
@@ -33,6 +35,13 @@ const ORDERS_VIEWS = [
     path: "live",
     roles: ["owner", "admin"],
     element: () => <LiveOrders />,
+  },
+  {
+    key: "history",
+    label: "Order History",
+    path: "history",
+    roles: ["owner", "admin"],
+    element: () => <OrderHistory />,
   },
 ];
 

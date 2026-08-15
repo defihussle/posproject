@@ -2,35 +2,37 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { API_URL } from "../config";
 import ReceiptModal from "./ReceiptModal";
 import useScrollLock from "../useScrollLock";
+// State/pricing rules shared with Back Office → Orders → Order History, which
+// lists the same orders and can start a reversal on one. See orderRecall.js.
+import {
+  REFUND_REASONS,
+  REFUND_OWNER_APPROVAL_THRESHOLD,
+  orderState,
+  isInteracOrder,
+  lineItemRefundAmount,
+} from "./orderRecall";
 import "./OrderRecallModal.css";
 
-const REFUND_REASONS = [
-  { key: "wrong_order", label: "Wrong Order Rung" },
-  { key: "kitchen_error", label: "Kitchen Error" },
-  { key: "quality_issue", label: "Quality Issue" },
-  { key: "customer_cancelled", label: "Customer Cancelled" },
-  { key: "overcharge", label: "Overcharge" },
-  { key: "duplicate", label: "Duplicate Ticket" },
-  { key: "other", label: "Other (Note Required)" },
-];
+// Maps the shared state key to this surface's pill. The POS keeps its raw
+// lowercase status text (`ready`, `preparing`) — the badge reads as a status
+// chip here, not a sentence.
+const POS_STATE_CLASS = {
+  voided: "orm-badge--cancelled",
+  fully_refunded: "orm-badge--refunded",
+  partially_refunded: "orm-badge--refunded",
+};
+const POS_STATE_TEXT = {
+  voided: "Voided",
+  fully_refunded: "Fully Refunded",
+  partially_refunded: "Partially Refunded",
+};
 
-const REFUND_OWNER_APPROVAL_THRESHOLD = 100; // $ — reversals at/above $100 require Owner/Admin approval
-
-// The single place that decides how an order's state reads, so the left-hand
-// list pills and the right-hand detail badge can never disagree. Reversal
-// state OUTRANKS the raw order status: once money has gone back, showing
-// "READY" is actively misleading to whoever is deciding what to reverse next.
 function orderStateBadge(order) {
-  if (order.status === "cancelled") {
-    return { text: "Voided", cls: "orm-badge--cancelled" };
-  }
-  if (order.refund_summary.is_fully_refunded) {
-    return { text: "Fully Refunded", cls: "orm-badge--refunded" };
-  }
-  if (order.refund_summary.total_refunded > 0) {
-    return { text: "Partially Refunded", cls: "orm-badge--refunded" };
-  }
-  return { text: order.status, cls: `orm-badge--${order.status}` };
+  const key = orderState(order);
+  return {
+    text: POS_STATE_TEXT[key] || key,
+    cls: POS_STATE_CLASS[key] || `orm-badge--${key}`,
+  };
 }
 
 const fmtLogTime = (iso) =>
@@ -44,18 +46,6 @@ const fmtLogTime = (iso) =>
 // this only decides whether to show the PIN step.
 const selfVoidAllowed = (order, actionType) =>
   actionType === "void" && (order?.status === "open" || order?.status === "preparing");
-
-// Interac debit can only be refunded to the card with the card physically at
-// the reader — Stripe cannot push an interac_present refund remotely (plan
-// decision D5). So when the customer has walked off without it, refunding to
-// the card is not a slow path, it is an impossible one, and cash is the only
-// way to give the money back.
-//
-// Credit (card_present) is unaffected and always refunds through Stripe, so the
-// choice is deliberately NOT offered there — a cash-out on a credit sale would
-// take money out of the till for a reversal the processor was going to make
-// anyway, and the two would double up.
-const isInteracOrder = (order) => order?.processor_payment_type === "interac_present";
 
 export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
   // The options/PIN overlays live inside this same component, so locking once
@@ -165,25 +155,13 @@ export default function OrderRecallModal({ staff, onClose, onOrderUpdated }) {
     setSuccessMsg(null);
   }, [selectedOrderId]);
 
-  // Preview of what the selected lines are worth. MUST mirror the server's
-  // pricing in applyRefund() — (qty × unit_price) scaled by total/subtotal, so
-  // the order's discount and tax are included. The server is authoritative and
-  // recomputes this itself; matching it here keeps the amount shown to the
-  // cashier honest and keeps the $100 owner-approval gate below in step with
-  // the threshold the server will actually apply.
-  const lineItemTotalAmount = useMemo(() => {
-    if (!selectedOrder || actionType !== "line_item") return 0;
-    const collectedRatio =
-      selectedOrder.subtotal > 0 ? selectedOrder.total / selectedOrder.subtotal : 0;
-    let sum = 0;
-    for (const item of selectedOrder.items || []) {
-      const qty = lineQuantities[item.order_item_id] || 0;
-      if (qty > 0) {
-        sum += Math.round((qty * item.unit_price * collectedRatio + Number.EPSILON) * 100) / 100;
-      }
-    }
-    return Math.round((sum + Number.EPSILON) * 100) / 100;
-  }, [selectedOrder, actionType, lineQuantities]);
+  const lineItemTotalAmount = useMemo(
+    () =>
+      selectedOrder && actionType === "line_item"
+        ? lineItemRefundAmount(selectedOrder, lineQuantities)
+        : 0,
+    [selectedOrder, actionType, lineQuantities]
+  );
 
   // Calculate final reversal amount to present
   const calculatedReversalAmount = useMemo(() => {

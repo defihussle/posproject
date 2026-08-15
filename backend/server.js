@@ -3355,29 +3355,72 @@ app.post("/api/orders/pending/:id/cancel", requireDevicePairing, async (req, res
   }
 });
 
-app.get("/api/orders/pos-recall", requireDevicePairing, async (req, res) => {
-  const limit = Math.min(Math.max(parseInt(req.query.limit || "20", 10) || 20, 1), 50);
-  const search = req.query.search ? req.query.search.toString().trim() : "";
+// The order-recall projection: recent orders with totals, line items, payment
+// details and prior reversal history, newest first.
+//
+// TWO surfaces read this — the device-paired POS recall modal below, and Back
+// Office → Orders → Order History (owner/admin session). Order History is the
+// same list with filters on top, so it must not be a second query: the
+// remaining_refundable an owner sees has to be the figure the cashier sees and
+// the one applyRefund() will enforce. Filters are all optional and every one
+// of them is omitted by the POS route, so its SQL is unchanged.
+const RECALL_STATUSES = ["open", "preparing", "ready", "completed", "cancelled"];
+const RECALL_PAYMENT_METHODS = ["card", "cash", "gift_card", "other"];
 
-  const client = await pool.connect();
-  try {
-    const { rows: locRows } = await client.query(
-      "SELECT id FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
-    );
-    if (locRows.length === 0) return res.status(500).json({ error: "No active location" });
-    const locationId = locRows[0].id;
+async function fetchRecallOrders(client, opts = {}) {
+  const {
+    search = "",
+    limit = 20,
+    offset = 0,
+    start = null, // YYYY-MM-DD, inclusive, resolved in the location timezone
+    end = null, //   YYYY-MM-DD, inclusive
+    status = null,
+    paymentMethod = null,
+  } = opts;
 
-    let whereClause = "WHERE o.location_id = $1";
-    const params = [locationId];
+  const { rows: locRows } = await client.query(
+    "SELECT id, timezone FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
+  );
+  if (locRows.length === 0) throw new HttpError(500, "No active location");
+  const locationId = locRows[0].id;
+  const tz = locRows[0].timezone;
 
-    if (search) {
-      params.push(`%${search}%`);
-      whereClause += ` AND (o.order_number::text ILIKE $${params.length} OR o.customer_name ILIKE $${params.length})`;
-    }
+  let whereClause = "WHERE o.location_id = $1";
+  const params = [locationId];
 
-    params.push(limit);
-    const { rows: orders } = await client.query(
-      `SELECT o.id, o.order_number, o.status, o.fulfillment_type, o.customer_name,
+  if (search) {
+    params.push(`%${search}%`);
+    whereClause += ` AND (o.order_number::text ILIKE $${params.length} OR o.customer_name ILIKE $${params.length})`;
+  }
+
+  // Half-open [start, end+1day) in the location's own timezone — the same
+  // windowing getStatsBounds uses for a custom range, so "Today" here means
+  // the same day boundary the reports and the dashboard use.
+  if (start) {
+    params.push(start, tz);
+    whereClause += ` AND o.created_at >= ($${params.length - 1}::date)::timestamp AT TIME ZONE $${params.length}`;
+  }
+  if (end) {
+    params.push(end, tz);
+    whereClause += ` AND o.created_at < (($${params.length - 1}::date + 1)::timestamp) AT TIME ZONE $${params.length}`;
+  }
+  if (status) {
+    params.push(status);
+    whereClause += ` AND o.status::text = $${params.length}`;
+  }
+  if (paymentMethod) {
+    params.push(paymentMethod);
+    whereClause += ` AND COALESCE(p.method::text, 'other') = $${params.length}`;
+  }
+
+  // limit + 1 so the caller can tell "there is another page" without a second
+  // COUNT over the same predicate; the extra row is trimmed before returning.
+  params.push(limit + 1);
+  const limitPlaceholder = params.length;
+  params.push(offset);
+
+  const { rows: pageRows } = await client.query(
+    `SELECT o.id, o.order_number, o.status, o.fulfillment_type, o.customer_name,
               o.staff_id, s.name AS staff_name,
               o.subtotal, o.tax, o.tip, o.discount, o.discount_percent, o.discount_reason, o.total,
               o.created_at, o.completed_at,
@@ -3393,130 +3436,143 @@ app.get("/api/orders/pos-recall", requireDevicePairing, async (req, res) => {
     LEFT JOIN payments p ON p.order_id = o.id AND p.refund_id IS NULL
        ${whereClause}
        ORDER BY o.created_at DESC
-       LIMIT $${params.length}`,
-      params
-    );
+       LIMIT $${limitPlaceholder} OFFSET $${params.length}`,
+    params
+  );
 
-    if (orders.length === 0) {
-      return res.json({ orders: [] });
-    }
+  const hasMore = pageRows.length > limit;
+  const orders = hasMore ? pageRows.slice(0, limit) : pageRows;
 
-    const orderIds = orders.map((o) => o.id);
+  if (orders.length === 0) return { orders: [], hasMore: false };
 
-    const { rows: itemsRows } = await client.query(
-      `SELECT oi.id AS order_item_id, oi.order_id, oi.item_id, oi.variant_id, oi.quantity, oi.unit_price,
-              mi.name AS item_name, iv.name AS variant_name
-         FROM order_items oi
-    LEFT JOIN menu_items mi ON mi.id = oi.item_id
-    LEFT JOIN item_variants iv ON iv.id = oi.variant_id
-        WHERE oi.order_id = ANY($1::uuid[])
-        ORDER BY oi.id`,
-      [orderIds]
-    );
+  const orderIds = orders.map((o) => o.id);
 
-    const { rows: refundsRows } = await client.query(
-      `SELECT r.id, r.order_id, r.type, r.amount, r.tax_amount, r.reason, r.reason_note,
-              r.status, r.created_at,
-              req.name AS requested_by_name, app.name AS approved_by_name
-         FROM order_refunds r
-         JOIN staff req ON req.id = r.requested_by
-         JOIN staff app ON app.id = r.approved_by
-        WHERE r.order_id = ANY($1::uuid[]) AND r.status <> 'failed'
-        ORDER BY r.created_at ASC`,
-      [orderIds]
-    );
+  const { rows: itemsRows } = await client.query(
+    `SELECT oi.id AS order_item_id, oi.order_id, oi.item_id, oi.variant_id, oi.quantity, oi.unit_price,
+            mi.name AS item_name, iv.name AS variant_name
+       FROM order_items oi
+  LEFT JOIN menu_items mi ON mi.id = oi.item_id
+  LEFT JOIN item_variants iv ON iv.id = oi.variant_id
+      WHERE oi.order_id = ANY($1::uuid[])
+      ORDER BY oi.id`,
+    [orderIds]
+  );
 
-    // Which lines a line-item refund covered, for the POS reversal log ("REFUND
-    // $18.07 — Quesadilla"). Display-only: the money still comes from
-    // order_refunds.amount, which the server priced at reversal time.
-    const { rows: refundItemRows } = await client.query(
-      `SELECT ori.refund_id, ori.quantity,
-              COALESCE(mi.name, 'Unknown Item') AS item_name
-         FROM order_refund_items ori
-         JOIN order_items oi ON oi.id = ori.order_item_id
-         LEFT JOIN menu_items mi ON mi.id = oi.item_id
-        WHERE ori.refund_id = ANY($1::uuid[])
-        ORDER BY ori.id`,
-      [refundsRows.map((r) => r.id)]
-    );
-    const itemsByRefund = {};
-    for (const ri of refundItemRows) {
-      (itemsByRefund[ri.refund_id] ||= []).push({
-        name: ri.item_name,
-        quantity: parseInt(ri.quantity, 10),
-      });
-    }
+  const { rows: refundsRows } = await client.query(
+    `SELECT r.id, r.order_id, r.type, r.amount, r.tax_amount, r.reason, r.reason_note,
+            r.status, r.created_at,
+            req.name AS requested_by_name, app.name AS approved_by_name
+       FROM order_refunds r
+       JOIN staff req ON req.id = r.requested_by
+       JOIN staff app ON app.id = r.approved_by
+      WHERE r.order_id = ANY($1::uuid[]) AND r.status <> 'failed'
+      ORDER BY r.created_at ASC`,
+    [orderIds]
+  );
 
-    const itemsByOrder = {};
-    for (const item of itemsRows) {
-      (itemsByOrder[item.order_id] ||= []).push({
-        order_item_id: item.order_item_id,
-        item_id: item.item_id,
-        variant_id: item.variant_id,
-        name: item.item_name || "Unknown Item",
-        variant_name: item.variant_name || null,
-        quantity: item.quantity,
-        unit_price: parseFloat(item.unit_price),
-        line_total: round2(item.quantity * parseFloat(item.unit_price)),
-      });
-    }
-
-    const refundsByOrder = {};
-    for (const ref of refundsRows) {
-      (refundsByOrder[ref.order_id] ||= []).push({
-        id: ref.id,
-        type: ref.type,
-        amount: parseFloat(ref.amount),
-        tax_amount: parseFloat(ref.tax_amount),
-        reason: ref.reason,
-        reason_note: ref.reason_note,
-        status: ref.status,
-        created_at: ref.created_at,
-        requested_by_name: ref.requested_by_name,
-        approved_by_name: ref.approved_by_name,
-        items: itemsByRefund[ref.id] || [],
-      });
-    }
-
-    const result = orders.map((o) => {
-      const oTotal = parseFloat(o.total);
-      const oTax = parseFloat(o.tax);
-      const refs = refundsByOrder[o.id] || [];
-      const totalRefunded = round2(refs.reduce((acc, r) => acc + r.amount, 0));
-      const totalRefundedTax = round2(refs.reduce((acc, r) => acc + r.tax_amount, 0));
-      const remainingRefundable = Math.max(0, round2(oTotal - totalRefunded));
-
-      return {
-        id: o.id,
-        order_number: o.order_number,
-        status: o.status,
-        fulfillment_type: o.fulfillment_type,
-        customer_name: o.customer_name,
-        staff_id: o.staff_id,
-        staff_name: o.staff_name,
-        subtotal: parseFloat(o.subtotal),
-        tax: oTax,
-        tip: parseFloat(o.tip),
-        discount: parseFloat(o.discount),
-        discount_percent: o.discount_percent ? parseFloat(o.discount_percent) : null,
-        discount_reason: o.discount_reason,
-        total: oTotal,
-        payment_method: o.payment_method,
-        processor_payment_type: o.processor_payment_type,
-        created_at: o.created_at,
-        completed_at: o.completed_at,
-        items: itemsByOrder[o.id] || [],
-        refund_summary: {
-          total_refunded: totalRefunded,
-          total_refunded_tax: totalRefundedTax,
-          remaining_refundable: remainingRefundable,
-          is_fully_refunded: remainingRefundable === 0 && refs.length > 0,
-        },
-        refunds: refs,
-      };
+  // Which lines a line-item refund covered, for the POS reversal log ("REFUND
+  // $18.07 — Quesadilla"). Display-only: the money still comes from
+  // order_refunds.amount, which the server priced at reversal time.
+  const { rows: refundItemRows } = await client.query(
+    `SELECT ori.refund_id, ori.quantity,
+            COALESCE(mi.name, 'Unknown Item') AS item_name
+       FROM order_refund_items ori
+       JOIN order_items oi ON oi.id = ori.order_item_id
+       LEFT JOIN menu_items mi ON mi.id = oi.item_id
+      WHERE ori.refund_id = ANY($1::uuid[])
+      ORDER BY ori.id`,
+    [refundsRows.map((r) => r.id)]
+  );
+  const itemsByRefund = {};
+  for (const ri of refundItemRows) {
+    (itemsByRefund[ri.refund_id] ||= []).push({
+      name: ri.item_name,
+      quantity: parseInt(ri.quantity, 10),
     });
+  }
 
-    res.json({ orders: result });
+  const itemsByOrder = {};
+  for (const item of itemsRows) {
+    (itemsByOrder[item.order_id] ||= []).push({
+      order_item_id: item.order_item_id,
+      item_id: item.item_id,
+      variant_id: item.variant_id,
+      name: item.item_name || "Unknown Item",
+      variant_name: item.variant_name || null,
+      quantity: item.quantity,
+      unit_price: parseFloat(item.unit_price),
+      line_total: round2(item.quantity * parseFloat(item.unit_price)),
+    });
+  }
+
+  const refundsByOrder = {};
+  for (const ref of refundsRows) {
+    (refundsByOrder[ref.order_id] ||= []).push({
+      id: ref.id,
+      type: ref.type,
+      amount: parseFloat(ref.amount),
+      tax_amount: parseFloat(ref.tax_amount),
+      reason: ref.reason,
+      reason_note: ref.reason_note,
+      status: ref.status,
+      created_at: ref.created_at,
+      requested_by_name: ref.requested_by_name,
+      approved_by_name: ref.approved_by_name,
+      items: itemsByRefund[ref.id] || [],
+    });
+  }
+
+  const result = orders.map((o) => {
+    const oTotal = parseFloat(o.total);
+    const oTax = parseFloat(o.tax);
+    const refs = refundsByOrder[o.id] || [];
+    const totalRefunded = round2(refs.reduce((acc, r) => acc + r.amount, 0));
+    const totalRefundedTax = round2(refs.reduce((acc, r) => acc + r.tax_amount, 0));
+    const remainingRefundable = Math.max(0, round2(oTotal - totalRefunded));
+
+    return {
+      id: o.id,
+      order_number: o.order_number,
+      status: o.status,
+      fulfillment_type: o.fulfillment_type,
+      customer_name: o.customer_name,
+      staff_id: o.staff_id,
+      staff_name: o.staff_name,
+      subtotal: parseFloat(o.subtotal),
+      tax: oTax,
+      tip: parseFloat(o.tip),
+      discount: parseFloat(o.discount),
+      discount_percent: o.discount_percent ? parseFloat(o.discount_percent) : null,
+      discount_reason: o.discount_reason,
+      total: oTotal,
+      payment_method: o.payment_method,
+      processor_payment_type: o.processor_payment_type,
+      created_at: o.created_at,
+      completed_at: o.completed_at,
+      items: itemsByOrder[o.id] || [],
+      refund_summary: {
+        total_refunded: totalRefunded,
+        total_refunded_tax: totalRefundedTax,
+        remaining_refundable: remainingRefundable,
+        is_fully_refunded: remainingRefundable === 0 && refs.length > 0,
+      },
+      refunds: refs,
+    };
+  });
+
+  return { orders: result, hasMore };
+}
+
+// GET /api/orders/pos-recall?search=...&limit=20   (POS — device-paired)
+app.get("/api/orders/pos-recall", requireDevicePairing, async (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit || "20", 10) || 20, 1), 50);
+  const search = req.query.search ? req.query.search.toString().trim() : "";
+
+  const client = await pool.connect();
+  try {
+    // No filters and no offset — identical SQL to before the extraction.
+    const { orders } = await fetchRecallOrders(client, { search, limit });
+    res.json({ orders });
   } catch (err) {
     console.error("POS recall failed:", err.message);
     res.status(500).json({ error: "Failed to fetch orders for recall" });
@@ -3884,6 +3940,80 @@ app.get("/api/backoffice/orders/live", async (req, res) => {
     res.json(await loadLiveBoard(client, ["open", "preparing", "cancelled"]));
   } catch (err) {
     sendHttpError(res, err, "Failed to fetch live orders");
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/backoffice/orders/history   (Back Office — owner/admin session)
+//   ?search=&start=YYYY-MM-DD&end=YYYY-MM-DD&status=&method=&limit=&offset=
+//
+// Order History: the POS recall list with filters and paging on top. It runs
+// through the SAME fetchRecallOrders() the POS uses, deliberately — an owner
+// looking up a ticket must see the same remaining_refundable the cashier sees
+// and the same figure applyRefund() will enforce, so there is exactly one
+// implementation of "what is left on this order".
+//
+// Read-only. Reversals from this screen go to the existing
+// POST /api/backoffice/orders/:id/refund below; nothing new happens here.
+app.get("/api/backoffice/orders/history", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+
+    const limit = Math.min(Math.max(parseInt(req.query.limit || "25", 10) || 25, 1), 100);
+    const offset = Math.max(parseInt(req.query.offset || "0", 10) || 0, 0);
+    const search = req.query.search ? req.query.search.toString().trim() : "";
+    const start = req.query.start ? req.query.start.toString() : null;
+    const end = req.query.end ? req.query.end.toString() : null;
+    const status = req.query.status ? req.query.status.toString() : null;
+    const method = req.query.method ? req.query.method.toString() : null;
+
+    // Validated rather than interpolated blind: these reach the SQL as bound
+    // parameters, but an unknown value would silently return nothing and read
+    // as "no orders" instead of "bad filter".
+    if (start && !isYmd(start)) throw new HttpError(400, "start must be YYYY-MM-DD");
+    if (end && !isYmd(end)) throw new HttpError(400, "end must be YYYY-MM-DD");
+    if (start && end && start > end) {
+      throw new HttpError(400, "start must be on or before end");
+    }
+    if (status && !RECALL_STATUSES.includes(status)) {
+      throw new HttpError(400, `status must be one of ${RECALL_STATUSES.join(", ")}`);
+    }
+    if (method && !RECALL_PAYMENT_METHODS.includes(method)) {
+      throw new HttpError(400, `method must be one of ${RECALL_PAYMENT_METHODS.join(", ")}`);
+    }
+
+    const { orders, hasMore } = await fetchRecallOrders(client, {
+      search,
+      limit,
+      offset,
+      start,
+      end,
+      status,
+      paymentMethod: method,
+    });
+    res.json({ orders, hasMore });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to fetch order history");
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/backoffice/orders/:id/receipt   (Back Office — owner/admin session)
+// The same read-only projection the POS reprints from — buildReceipt() prices
+// nothing and writes nothing, so this is purely a second door onto it for an
+// owner who isn't standing at a paired till. Emailing stays POS-only: it goes
+// through Stripe on the original charge, which is a counter action.
+app.get("/api/backoffice/orders/:id/receipt", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await requireBackofficeSession(req);
+    const receipt = await buildReceipt(client, req.params.id);
+    res.json({ receipt });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to build receipt");
   } finally {
     client.release();
   }

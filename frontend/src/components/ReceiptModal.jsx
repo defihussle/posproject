@@ -39,7 +39,20 @@ const ENTRY_TYPE_LABEL = {
 
 const money = (n) => `$${Number(n).toFixed(2)}`;
 
-export default function ReceiptModal({ orderId, onClose }) {
+// `basePath` is the route family this receipt is fetched from. The POS default
+// is the device-paired /api/orders; Back Office → Order History passes
+// /api/backoffice/orders, which serves the SAME buildReceipt() projection
+// behind a session cookie instead of a pairing cookie.
+//
+// `allowEmail` is off for Back Office: emailing hands the address to Stripe on
+// the original charge, which is a counter action taken with the customer
+// present, and there is no backoffice route for it.
+export default function ReceiptModal({
+  orderId,
+  onClose,
+  basePath = "/api/orders",
+  allowEmail = true,
+}) {
   useScrollLock();
   const [receipt, setReceipt] = useState(null);
   const [loadError, setLoadError] = useState(null);
@@ -50,11 +63,15 @@ export default function ReceiptModal({ orderId, onClose }) {
   const [email, setEmail] = useState("");
   const [emailState, setEmailState] = useState(null); // 'sending' | 'sent' | error string
 
+  // Stripe has to have a charge to attach the address to AND the surface has
+  // to be one with an email route behind it.
+  const canEmail = allowEmail && !!receipt?.email.available;
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${API_URL}/api/orders/${orderId}/receipt`, {
+        const res = await fetch(`${API_URL}${basePath}/${orderId}/receipt`, {
           credentials: "include",
         });
         const data = await res.json();
@@ -68,7 +85,7 @@ export default function ReceiptModal({ orderId, onClose }) {
     return () => {
       cancelled = true;
     };
-  }, [orderId]);
+  }, [orderId, basePath]);
 
   const sendEmail = useCallback(
     async (e) => {
@@ -271,7 +288,7 @@ export default function ReceiptModal({ orderId, onClose }) {
             <button className="rcpt-btn rcpt-btn--primary" onClick={() => window.print()}>
               Print
             </button>
-            {receipt.email.available ? (
+            {canEmail ? (
               <button className="rcpt-btn" onClick={() => setEmailOpen((v) => !v)}>
                 Email
               </button>
@@ -283,7 +300,7 @@ export default function ReceiptModal({ orderId, onClose }) {
           </div>
         )}
 
-        {receipt?.email.available && emailOpen && (
+        {canEmail && emailOpen && (
           <form className="rcpt-email" onSubmit={sendEmail}>
             <input
               className="rcpt-email-input"
