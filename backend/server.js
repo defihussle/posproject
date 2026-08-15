@@ -6628,8 +6628,110 @@ async function getStatsBounds(client, req) {
   };
 }
 
+// How many prior matching weekdays "vs last N Fridays" may average over. A
+// fixed set rather than a free integer: each one is a real query, and 10 weeks
+// is already as far back as a menu/pricing change makes the comparison
+// meaningful.
+const WEEKDAY_COMPARE_COUNTS = [1, 3, 5, 10];
+
+// Same-weekday baseline: the N previous occurrences of the anchor window's
+// weekday, each windowed to the SAME elapsed slice of its day.
+//
+// That last part is the whole point. Comparing today-at-11am against a
+// complete previous Friday would say the business had collapsed every morning
+// — the prior day includes a dinner service that hasn't happened yet today.
+// So sample i covers [anchorStart − 7i days, anchorEnd − 7i days): at 11am
+// that is 00:00–11:00 on each prior Friday, and at close it is the full day.
+// The arithmetic is done on LOCAL wall-clock timestamps and converted back, so
+// "same time, seven days earlier" survives a DST boundary.
+//
+// Days with no orders at all are kept in `samples` (the sparkline should show
+// a closed Friday) but excluded from the mean, and `used` reports how many
+// actually counted. A day the store never opened — a holiday, or a week before
+// the location existed — is missing data, not a $0 trading day, and averaging
+// zeros in would quietly understate every baseline.
+async function weekdayComparison(client, b, count) {
+  const { rows } = await client.query(
+    `WITH anchor AS (
+       SELECT ($2::timestamptz AT TIME ZONE $3) AS a_start,
+              ($4::timestamptz AT TIME ZONE $3) AS a_end
+     ),
+     samples AS (
+       SELECT g AS idx,
+              (SELECT a_start FROM anchor) - make_interval(days => g * 7) AS s_start,
+              (SELECT a_end   FROM anchor) - make_interval(days => g * 7) AS s_end
+         FROM generate_series(1, $5) AS g
+     )
+     SELECT s.idx,
+            -- to_char, not ::date: a date column comes back through pg as a
+            -- JS Date at local midnight, which then re-serialises as a UTC
+            -- timestamp ("2026-06-06T04:00:00Z") and reads as the wrong day
+            -- in some zones. A plain string is the calendar day, unambiguously.
+            to_char(s.s_start, 'YYYY-MM-DD') AS sample_date,
+            COALESCE(SUM(o.total), 0)    AS total,
+            COALESCE(SUM(o.subtotal), 0) AS gross,
+            COALESCE(SUM(o.discount), 0) AS disc,
+            COALESCE(SUM(o.tip), 0)      AS tips,
+            COUNT(o.id)                  AS orders
+       FROM samples s
+       LEFT JOIN orders o
+              ON o.location_id = $1
+             AND o.status = 'ready'
+             AND o.completed_at >= (s.s_start AT TIME ZONE $3)
+             AND o.completed_at <  (s.s_end   AT TIME ZONE $3)
+      GROUP BY s.idx, s.s_start
+      ORDER BY s.idx DESC`, // oldest first, so a sparkline reads left → right
+    [b.location.id, b.startTs, b.tz, b.endTs, count]
+  );
+
+  const samples = rows.map((r) => {
+    const total = parseFloat(r.total);
+    const gross = parseFloat(r.gross);
+    const orders = parseInt(r.orders, 10);
+    return {
+      date: r.sample_date,
+      totalSales: total,
+      grossSales: gross,
+      netSales: gross - parseFloat(r.disc),
+      orderCount: orders,
+      avgOrderValue: orders > 0 ? total / orders : 0,
+      totalTips: parseFloat(r.tips),
+    };
+  });
+
+  const traded = samples.filter((s) => s.orderCount > 0);
+  const mean = (pick) =>
+    traded.length > 0 ? traded.reduce((acc, s) => acc + pick(s), 0) / traded.length : null;
+
+  const meanTotal = mean((s) => s.totalSales);
+  const meanOrders = mean((s) => s.orderCount);
+
+  return {
+    samples,
+    used: traded.length,
+    baseline:
+      traded.length > 0
+        ? {
+            grossSales: mean((s) => s.grossSales),
+            netSales: mean((s) => s.netSales),
+            orderCount: meanOrders,
+            // mean(total)/mean(orders) == pooled total/orders, so the average
+            // order value is weighted by volume rather than treating a
+            // 3-order day as equal to a 300-order one.
+            avgOrderValue: meanOrders > 0 ? meanTotal / meanOrders : 0,
+            totalTips: mean((s) => s.totalTips),
+          }
+        : null,
+  };
+}
+
 // GET /api/backoffice/stats/summary?staffId=...&range=today|week|month
 //   or ...&start=YYYY-MM-DD&end=YYYY-MM-DD (custom)
+//   &compare=previous|weekday   &weekdays=1|3|5|10
+//
+// `compare` defaults to `previous`, which is the original behaviour and the
+// `previous` field below is unchanged — nothing that already reads this
+// endpoint has to know the option exists.
 app.get("/api/backoffice/stats/summary", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -6667,6 +6769,63 @@ app.get("/api/backoffice/stats/summary", async (req, res) => {
     const cur = await agg(b.startTs, b.endTs);
     const prev = b.prev ? await agg(b.prev.startTs, b.prev.endTs) : null;
 
+    // ---- Comparison baseline ----
+    const compareMode = (req.query.compare || "previous").toString();
+    if (!["previous", "weekday"].includes(compareMode)) {
+      throw new HttpError(400, "compare must be 'previous' or 'weekday'");
+    }
+
+    let comparison = {
+      mode: "previous",
+      baseline: prev
+        ? {
+            grossSales: prev.grossSales,
+            netSales: prev.netSales,
+            orderCount: prev.orderCount,
+            avgOrderValue: prev.avgOrderValue,
+            totalTips: prev.totalTips,
+          }
+        : null,
+      samples: [],
+    };
+
+    if (compareMode === "weekday") {
+      const count = req.query.weekdays === undefined ? 1 : Number(req.query.weekdays);
+      if (!WEEKDAY_COMPARE_COUNTS.includes(count)) {
+        throw new HttpError(
+          400,
+          `weekdays must be one of ${WEEKDAY_COMPARE_COUNTS.join(", ")}`
+        );
+      }
+
+      // Only meaningful over a single day. "This week vs the last 3 weeks that
+      // contained a Tuesday" isn't a thing, and silently comparing a month
+      // against the month 7 days earlier would be worse than refusing.
+      const { rows: spanRows } = await client.query(
+        `SELECT ($1::timestamptz AT TIME ZONE $3)::date AS start_day,
+                (($2::timestamptz AT TIME ZONE $3) - interval '1 microsecond')::date AS end_day,
+                to_char($1::timestamptz AT TIME ZONE $3, 'FMDay') AS weekday`,
+        [b.startTs, b.endTs, b.tz]
+      );
+      const span = spanRows[0];
+      if (String(span.start_day) !== String(span.end_day)) {
+        throw new HttpError(
+          400,
+          "Same-weekday comparison only applies to a single day — pick Today, or a custom range with the same start and end date"
+        );
+      }
+
+      const wd = await weekdayComparison(client, b, count);
+      comparison = {
+        mode: "weekday",
+        weekday: span.weekday,
+        requested: count,
+        used: wd.used,
+        baseline: wd.baseline,
+        samples: wd.samples,
+      };
+    }
+
     res.json({
       range: b.isCustom ? "custom" : req.query.range || "today",
       // Gross = pre-discount subtotal; Net = gross minus discounts (both
@@ -6684,6 +6843,9 @@ app.get("/api/backoffice/stats/summary", async (req, res) => {
             totalTips: prev.totalTips,
           }
         : null,
+      // The comparison the caller actually asked for. `previous` above is kept
+      // as-is for anything already reading it; new callers use this.
+      comparison,
     });
   } catch (err) {
     sendHttpError(res, err, "Failed to fetch sales summary");

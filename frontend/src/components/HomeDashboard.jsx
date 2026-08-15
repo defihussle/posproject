@@ -15,6 +15,45 @@ const RANGES = [
 
 const LIVE_STATUS_POLL_MS = 5000;
 
+// Comparison baselines. "previous" is the original vs-last-period behaviour,
+// kept unchanged. The weekday options answer the question a previous-period
+// delta can't: a Friday compared against a Thursday says almost nothing in a
+// restaurant, where the week has a shape. They're only offered on a single-day
+// view — see weekdayAllowed below.
+const COMPARE_MODES = [
+  { key: "off", label: "No comparison" },
+  { key: "previous", label: "vs Previous period" },
+  { key: "weekday:1", label: "vs Last {wd}" },
+  { key: "weekday:3", label: "vs Last 3 {wd}s (avg)" },
+  { key: "weekday:5", label: "vs Last 5 {wd}s (avg)" },
+  { key: "weekday:10", label: "vs Last 10 {wd}s (avg)" },
+];
+
+const WEEKDAY_NAMES = [
+  "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+];
+
+const parseCompareMode = (key) => {
+  const [mode, n] = key.split(":");
+  return { mode, weekdays: n ? Number(n) : null };
+};
+
+// "2026-06-06" -> "Jun 6". Numeric parts again, never Date(string).
+function fmtShortDay(ymd) {
+  if (!ymd) return "";
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// Day-of-week index for a YYYY-MM-DD string, or for today when given null.
+// Built from numeric parts, never parsed from the string: iOS Safari throws on
+// new Date("YYYY-MM-DD") where Chromium accepts it (same rule as reportRange).
+function localWeekday(ymd) {
+  if (!ymd) return new Date().getDay();
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(y, m - 1, d).getDay();
+}
+
 const fmtMoney = (n) =>
   `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtInt = (n) => Number(n || 0).toLocaleString();
@@ -45,7 +84,7 @@ export default function HomeDashboard({ staff }) {
   const [range, setRange] = useState("today");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
-  const [compare, setCompare] = useState(false);
+  const [compareKey, setCompareKey] = useState("off");
 
   const [summary, setSummary] = useState(null);
   const [topItems, setTopItems] = useState([]);
@@ -66,6 +105,23 @@ export default function HomeDashboard({ staff }) {
   // the dashboard loads the custom window like any preset.
   const customIncomplete = isCustom && (!customStart || !customEnd);
 
+  // Same-weekday only makes sense over one day. Rather than let the user pick
+  // an option the backend would 400, the weekday choices disappear when the
+  // range isn't a single day and a selected one falls back to previous-period
+  // — computed, not synced through an effect, so it can never lag a render.
+  const weekdayAllowed = range === "today" || (isCustom && !!customStart && customStart === customEnd);
+  const effectiveKey =
+    !weekdayAllowed && compareKey.startsWith("weekday:") ? "previous" : compareKey;
+  const { mode: compareMode, weekdays: compareWeekdays } = parseCompareMode(effectiveKey);
+  const compare = compareMode !== "off";
+
+  // Which weekday the option labels name. Server-confirmed once data is in
+  // (it resolves the day in the location timezone); until then the browser's
+  // own idea of the day fills the label so the menu never reads "vs Last {wd}".
+  const weekdayName =
+    summary?.comparison?.weekday ||
+    (weekdayAllowed ? WEEKDAY_NAMES[localWeekday(isCustom ? customStart : null)] : "");
+
   const load = useCallback(async () => {
     // Custom needs both dates before it can query; until then the sections
     // show a "pick dates" prompt rather than firing an incomplete request.
@@ -79,8 +135,12 @@ export default function HomeDashboard({ staff }) {
       const qs = customReady
         ? `staffId=${staff.id}&start=${customStart}&end=${customEnd}`
         : `staffId=${staff.id}&range=${range}`;
+      // Only the summary endpoint knows about comparison modes; every other
+      // card is unaffected by the choice.
+      const summaryQs =
+        compareMode === "weekday" ? `${qs}&compare=weekday&weekdays=${compareWeekdays}` : qs;
       const [sumRes, topRes, perfRes, hourRes, catRes, laborRes, discRes] = await Promise.all([
-        fetch(`${API_URL}/api/backoffice/stats/summary?${qs}`, { credentials: "include" }),
+        fetch(`${API_URL}/api/backoffice/stats/summary?${summaryQs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/top-items?${qs}&limit=5`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/staff-performance?${qs}`, { credentials: "include" }),
         fetch(`${API_URL}/api/backoffice/stats/hourly?${qs}`, { credentials: "include" }),
@@ -117,7 +177,7 @@ export default function HomeDashboard({ staff }) {
     } finally {
       setLoading(false);
     }
-  }, [staff.id, range, customStart, customEnd]);
+  }, [staff.id, range, customStart, customEnd, compareMode, compareWeekdays]);
 
   useEffect(() => {
     load();
@@ -165,40 +225,49 @@ export default function HomeDashboard({ staff }) {
   // the labor endpoint, each with a vs-previous-period delta from that same
   // response's `previous` block.
   const kpis = useMemo(() => {
-    const prev = summary?.previous;
-    // % change vs the previous period-to-date; null when there's no prior
-    // baseline (no arrow rather than a fake ∞/100%).
+    // Whichever baseline the caller asked for. The backend hands back the same
+    // shape for both modes, so nothing here branches on which one it is.
+    const base = summary?.comparison?.baseline;
+    // % change vs the baseline; null when there's none (no arrow rather than a
+    // fake ∞/100%).
     const pctDelta = (cur, prior) =>
       cur != null && prior != null && prior > 0 ? ((cur - prior) / prior) * 100 : null;
-    const money = (key, label, cur, prior, extra = {}) => ({
+    const absDelta = (cur, prior) => (cur != null && prior != null ? cur - prior : null);
+
+    const metric = (key, label, cur, prior, fmt, extra = {}) => ({
       key,
       label,
-      value: cur != null ? fmtMoney(cur) : null,
-      delta: pctDelta(cur, prior),
+      value: cur != null ? fmt(cur) : null,
+      deltaPct: pctDelta(cur, prior),
+      deltaAbs: absDelta(cur, prior),
+      fmtAbs: fmt,
       goodUp: true,
       ...extra,
     });
+
     return [
-      money("gross", "Gross Sales", summary?.grossSales, prev?.grossSales),
-      money("net", "Net Sales", summary?.netSales, prev?.netSales, { hint: "after discounts" }),
-      {
-        key: "orders",
-        label: "Orders",
-        value: summary ? fmtInt(summary.orderCount) : null,
-        delta: pctDelta(summary?.orderCount, prev?.orderCount),
-        goodUp: true,
-      },
-      money("aov", "Avg Order", summary?.avgOrderValue, prev?.avgOrderValue),
-      money("tips", "Total Tips", summary?.totalTips, prev?.totalTips),
+      metric("gross", "Gross Sales", summary?.grossSales, base?.grossSales, fmtMoney),
+      metric("net", "Net Sales", summary?.netSales, base?.netSales, fmtMoney, {
+        hint: "after discounts",
+      }),
+      metric("orders", "Orders", summary?.orderCount, base?.orderCount, fmtInt),
+      metric("aov", "Avg Order", summary?.avgOrderValue, base?.avgOrderValue, fmtMoney),
+      metric("tips", "Total Tips", summary?.totalTips, base?.totalTips, fmtMoney),
       {
         key: "labor",
         label: "Labor Cost %",
         value: labor ? fmtPct(labor.laborPct) : null,
-        delta: pctDelta(labor?.laborPct, labor?.previous?.laborPct),
+        // Labor comes from a different endpoint, which has no weekday
+        // baseline. Rather than quietly show a previous-period delta beside
+        // five weekday ones, this card says it isn't comparable in that mode.
+        deltaPct: compareMode === "weekday" ? null : pctDelta(labor?.laborPct, labor?.previous?.laborPct),
+        deltaAbs: compareMode === "weekday" ? null : absDelta(labor?.laborPct, labor?.previous?.laborPct),
+        fmtAbs: (n) => `${Number(n).toFixed(1)} pts`,
+        notComparable: compareMode === "weekday",
         goodUp: false, // a rising labor % is worse, so up = red
       },
     ];
-  }, [summary, labor]);
+  }, [summary, labor, compareMode]);
 
   // Hours per staff, keyed by id, to fill the Staff Performance Hours column.
   const hoursByStaff = useMemo(() => {
@@ -219,8 +288,10 @@ export default function HomeDashboard({ staff }) {
         customEnd={customEnd}
         onCustomStart={setCustomStart}
         onCustomEnd={setCustomEnd}
-        compare={compare}
-        onCompare={setCompare}
+        compareKey={effectiveKey}
+        onCompareKey={setCompareKey}
+        weekdayAllowed={weekdayAllowed}
+        weekdayName={weekdayName}
       />
 
       {error ? (
@@ -241,6 +312,10 @@ export default function HomeDashboard({ staff }) {
 
           <KpiStrip kpis={kpis} compare={compare} loading={loading && !customIncomplete} pending={customIncomplete} />
 
+          {compareMode === "weekday" && !loading && !customIncomplete && (
+            <WeekdayTrend comparison={summary?.comparison} today={summary?.grossSales} />
+          )}
+
           <div className="homedash__sections">
             <SalesTrendCard trend={trend} mode={trendMode} onMode={setTrendMode} loading={trendLoading} pending={customIncomplete} />
             <HourlyBreakdownCard data={hourly} loading={loading} pending={customIncomplete} />
@@ -258,20 +333,30 @@ export default function HomeDashboard({ staff }) {
 }
 
 /* ---------------- Top bar ---------------- */
-function TopBar({ range, onRange, isCustom, customStart, customEnd, onCustomStart, onCustomEnd, compare, onCompare }) {
+function TopBar({
+  range, onRange, isCustom, customStart, customEnd, onCustomStart, onCustomEnd,
+  compareKey, onCompareKey, weekdayAllowed, weekdayName,
+}) {
+  // A native select rather than a row of pills: six options with weekday names
+  // in them won't fit across a phone, and this is a set-once-and-forget
+  // choice, not something tapped between glances.
+  const options = COMPARE_MODES.filter(
+    (m) => weekdayAllowed || !m.key.startsWith("weekday:")
+  );
   return (
     <div className="homedash__topbar">
       <div className="homedash__topbar-row">
         <h2 className="homedash__title">Dashboard</h2>
-        <button
-          type="button"
-          className={`homedash__compare${compare ? " homedash__compare--on" : ""}`}
-          onClick={() => onCompare(!compare)}
-          aria-pressed={compare}
-        >
-          <span className="homedash__compare-track"><span className="homedash__compare-thumb" /></span>
-          vs Last Period
-        </button>
+        <label className="homedash__comparesel">
+          <span className="homedash__comparesel-label">Compare</span>
+          <select value={compareKey} onChange={(e) => onCompareKey(e.target.value)}>
+            {options.map((m) => (
+              <option key={m.key} value={m.key}>
+                {m.label.replace("{wd}", weekdayName)}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <div className="homedash__ranges" role="tablist" aria-label="Date range">
@@ -304,6 +389,86 @@ function TopBar({ range, onRange, isCustom, customStart, customEnd, onCustomStar
   );
 }
 
+/* ---------------- Same-weekday trend strip ----------------
+   The N matching weekdays plus the current one, so the baseline behind the
+   deltas is visible rather than a single number to take on trust. Gross sales
+   only — one series keeps it readable at this size, and it's the figure the
+   other KPIs move with. */
+function WeekdayTrend({ comparison, today }) {
+  if (!comparison || comparison.samples.length === 0) return null;
+
+  const points = [
+    ...comparison.samples.map((s) => ({ value: s.grossSales, date: s.date, traded: s.orderCount > 0 })),
+    { value: today ?? 0, date: null, traded: true, current: true },
+  ];
+  const max = Math.max(...points.map((p) => p.value), 1);
+  const W = 100;
+  const H = 28;
+  const step = points.length > 1 ? W / (points.length - 1) : 0;
+  const xy = points.map((p, i) => [i * step, H - (p.value / max) * (H - 4) - 2]);
+  const path = xy.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+
+  const skipped = comparison.requested - comparison.used;
+  const baseline = comparison.baseline?.grossSales;
+
+  return (
+    <div className="homedash-wdtrend">
+      <div className="homedash-wdtrend__head">
+        <span className="homedash-wdtrend__title">
+          Last {comparison.requested} {comparison.weekday}
+          {comparison.requested > 1 ? "s" : ""}
+        </span>
+        <span className="homedash-wdtrend__avg">
+          {baseline != null ? `avg ${fmtMoney(baseline)}` : "no baseline yet"}
+        </span>
+      </div>
+
+      <svg
+        className="homedash-wdtrend__spark"
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`Gross sales across the last ${comparison.requested} ${comparison.weekday}s and today`}
+      >
+        {baseline != null && (
+          <line
+            x1="0"
+            x2={W}
+            y1={H - (baseline / max) * (H - 4) - 2}
+            y2={H - (baseline / max) * (H - 4) - 2}
+            className="homedash-wdtrend__baseline"
+          />
+        )}
+        <path d={path} className="homedash-wdtrend__line" vectorEffect="non-scaling-stroke" />
+        {xy.map(([x, y], i) => (
+          <circle
+            key={i}
+            cx={x}
+            cy={y}
+            r={points[i].current ? 2.6 : 1.8}
+            className={`homedash-wdtrend__dot${
+              points[i].current ? " homedash-wdtrend__dot--current" : ""
+            }${points[i].traded ? "" : " homedash-wdtrend__dot--closed"}`}
+          />
+        ))}
+      </svg>
+
+      <div className="homedash-wdtrend__foot">
+        <span>{fmtShortDay(comparison.samples[0]?.date)}</span>
+        {/* A day with no sales is almost always closed rather than a $0
+            trading day, so it's drawn but kept out of the average — said
+            plainly here so the baseline is never a mystery. */}
+        {skipped > 0 && (
+          <span className="homedash-wdtrend__note">
+            {skipped} with no sales excluded from the average
+          </span>
+        )}
+        <span>today</span>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- KPI strip ---------------- */
 function KpiStrip({ kpis, compare, loading, pending }) {
   return (
@@ -332,15 +497,30 @@ function KpiCard({ kpi, compare, loading, pending }) {
           </div>
         )}
         {/* Delta — arrow (direction) + status color (good/bad), never color
-            alone. Shown only with the comparison toggle on; "— vs last period"
-            when there's no prior baseline to compare against. */}
+            alone. Shown only with a comparison selected; a dash when there's
+            no baseline to compare against. */}
         {compare &&
-          (kpi.delta == null ? (
-            <span className="homedash-kpi__delta homedash-kpi__delta--pending">— vs prior</span>
+          (kpi.deltaPct == null ? (
+            <span className="homedash-kpi__delta homedash-kpi__delta--pending">
+              {kpi.notComparable ? "n/a" : "—"}
+            </span>
           ) : (
-            <Delta value={kpi.delta} goodUp={kpi.goodUp} />
+            <Delta value={kpi.deltaPct} goodUp={kpi.goodUp} />
           ))}
       </div>
+      {/* Absolute difference under the percentage. A percentage alone hides
+          scale — "+40%" on tips is a different conversation from "+40%" on
+          gross — so the dollar figure sits directly beneath it. */}
+      {compare && kpi.deltaAbs != null && (
+        <div
+          className={`homedash-kpi__absdelta homedash-kpi__absdelta--${
+            kpi.deltaAbs >= 0 === kpi.goodUp ? "good" : "bad"
+          }`}
+        >
+          {kpi.deltaAbs >= 0 ? "+" : "−"}
+          {kpi.fmtAbs(Math.abs(kpi.deltaAbs))}
+        </div>
+      )}
       {kpi.hint && <div className="homedash-kpi__hint">{kpi.hint}</div>}
     </div>
   );

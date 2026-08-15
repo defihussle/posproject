@@ -36,47 +36,42 @@
 }
 
 /* Comparison toggle (switch + label) */
-.homedash__compare {
+/* Comparison baseline picker. Replaced the on/off toggle when the weekday
+   options arrived — six choices whose labels carry a weekday name don't fit
+   as pills on a phone, and this is a set-once choice rather than something
+   flipped between glances. */
+.homedash__comparesel {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
+  min-width: 0;
+}
+
+.homedash__comparesel-label {
   font-family: var(--font-body);
-  font-size: 0.76rem;
+  font-size: 0.68rem;
   font-weight: 700;
-  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
-.homedash__compare-track {
-  position: relative;
-  width: 34px;
-  height: 20px;
-  border-radius: var(--radius-full);
-  background: var(--border-color);
-  transition: background-color 0.15s ease;
-}
-
-.homedash__compare-thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-  transition: transform 0.15s ease;
-}
-
-.homedash__compare--on {
+.homedash__comparesel select {
+  max-width: 190px;
+  padding: 6px 9px;
+  font-family: var(--font-body);
+  font-size: 0.76rem;
+  font-weight: 600;
   color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  outline: none;
+  cursor: pointer;
 }
-.homedash__compare--on .homedash__compare-track {
-  background: var(--green);
-}
-.homedash__compare--on .homedash__compare-thumb {
-  transform: translateX(14px);
-}
+
+.homedash__comparesel select:focus { border-color: var(--red); }
 
 /* Range segmented control */
 .homedash__ranges {
@@ -219,6 +214,108 @@
   color: var(--text-muted);
   font-weight: 500;
   font-size: 0.66rem;
+}
+
+/* Absolute difference, under the percentage badge. A percentage alone hides
+   scale, so the dollar (or order-count) figure sits with it — quieter than
+   the badge, since the % is what's scanned first. */
+.homedash-kpi__absdelta {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.homedash-kpi__absdelta--good { color: var(--mint-text); }
+.homedash-kpi__absdelta--bad { color: var(--rose-text); }
+
+/* ---------------- Same-weekday trend strip ---------------- */
+.homedash-wdtrend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+}
+
+.homedash-wdtrend__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.homedash-wdtrend__title {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.homedash-wdtrend__avg {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.homedash-wdtrend__spark {
+  width: 100%;
+  height: 46px;
+  overflow: visible;
+}
+
+.homedash-wdtrend__line {
+  fill: none;
+  stroke: var(--red);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.homedash-wdtrend__baseline {
+  stroke: var(--text-muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.55;
+  vector-effect: non-scaling-stroke;
+}
+
+.homedash-wdtrend__dot {
+  fill: var(--red);
+}
+
+/* Today's point is the one being judged, so it reads heavier. */
+.homedash-wdtrend__dot--current {
+  fill: var(--text-primary);
+}
+
+/* A day the store didn't trade — drawn so the gap is visible, hollow so it
+   doesn't read as a real low. */
+.homedash-wdtrend__dot--closed {
+  fill: var(--bg-surface);
+  stroke: var(--text-muted);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.homedash-wdtrend__foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  color: var(--text-muted);
+}
+
+.homedash-wdtrend__note {
+  font-family: var(--font-body);
+  text-align: center;
+  flex: 1;
 }
 
 /* Trend reads as a small tinted badge rather than loose coloured text —
