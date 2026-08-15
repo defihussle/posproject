@@ -367,32 +367,37 @@
   gap: 8px;
 }
 
-/* ---------- Reversal sheet ----------
-   Sits above the detail modal (which is at the shared modal z-index) so the
-   order stays readable behind the decision being made about it. */
+/* ---------- Reversal card ----------
+   A centred floating card, matching .staffmgr__overlay / .staffmgr__modal —
+   the same treatment every other Back Office detail modal uses — rather than
+   a bottom sheet. Deciding to reverse money is the same kind of focused
+   moment as any other modal here, so it should look like one.
+
+   Only the z-index differs: this opens ON TOP of the order detail modal
+   (which sits at the shared 200), so the order stays readable behind the
+   decision being made about it. */
 .ordhist__sheet {
   position: fixed;
   inset: 0;
   z-index: 260;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
-  padding: 12px;
-  background: rgba(42, 39, 36, 0.5);
-  backdrop-filter: blur(3px);
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.5);
+  animation: fadeIn 0.15s ease-out;
 }
 
 .ordhist__sheet-card {
   width: 100%;
-  max-width: 460px;
+  max-width: 400px;
   max-height: 88vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 18px;
+  padding: 18px 20px 20px;
   background: var(--bg-surface);
-  border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-medium);
 }
@@ -497,8 +502,4 @@
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
-}
-
-@media (min-width: 640px) {
-  .ordhist__sheet { align-items: center; }
 }
