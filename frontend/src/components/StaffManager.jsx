@@ -5,7 +5,23 @@ import { IconPlus, IconUser, IconSearch, IconPencil } from "./icons";
 import "./StaffManager.css";
 import useScrollLock from "../useScrollLock";
 
-const ALL_ROLES = ["owner", "admin", "manager", "cashier", "kitchen"];
+// Mirrors the staff_role enum (database/add_line_role.sql added 'line').
+const ALL_ROLES = ["owner", "admin", "manager", "cashier", "kitchen", "line"];
+
+// Display labels. The raw enum leaked into the dropdowns as lowercase
+// ("cashier"), which the list rows only got away with because CSS uppercases
+// them. Spelling every label out here means "Line" reads as intended in the
+// select without relying on a text-transform that <option> honours
+// inconsistently across browsers.
+const ROLE_LABELS = {
+  owner: "Owner",
+  admin: "Admin",
+  manager: "Manager",
+  cashier: "Cashier",
+  kitchen: "Kitchen",
+  line: "Line",
+};
+const roleLabel = (r) => ROLE_LABELS[r] || r;
 
 // Mirrors the backend rules so the UI never offers an action the server
 // would reject (the server still re-checks everything).
@@ -450,7 +466,7 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
                 <select className="staffmgr__input" value={role} onChange={(e) => setRole(e.target.value)}>
                   {options.map((r) => (
                     <option key={r} value={r} disabled={!roles.includes(r)}>
-                      {r}
+                      {roleLabel(r)}
                     </option>
                   ))}
                 </select>
@@ -767,7 +783,7 @@ export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/back
         <select className="staffmgr__input" value={role} onChange={(e) => setRole(e.target.value)}>
           {roles.map((r) => (
             <option key={r} value={r}>
-              {r}
+              {roleLabel(r)}
             </option>
           ))}
         </select>

@@ -1,0 +1,33 @@
+-- ============================================================
+-- Add the "line" staff role
+-- ============================================================
+-- People who prepare orders on the line. Purely additive: it extends the
+-- staff_role enum and touches no existing row, constraint or permission.
+--
+-- Appended to the end of the enum rather than inserted next to 'kitchen'
+-- (ADD VALUE ... AFTER). Nothing in the app orders by the enum's ordinal —
+-- every role-ordered query sorts explicitly through
+-- array_position(ARRAY['owner',...,'kitchen','line'], role::text) — so the
+-- position carries no meaning and appending is the lower-risk operation.
+--
+-- IF NOT EXISTS makes this safe to re-run, which matters because the deploy
+-- procedure applies it to production by hand.
+--
+-- DEPLOY ORDER (see CLAUDE.md → Schema Change Checklist):
+--   1. Run this against PRODUCTION first
+--        psql "<Render External Database URL>" -f database/add_line_role.sql
+--   2. Verify:
+--        cd backend && DATABASE_URL="<Render External Database URL>" npm run check:schema
+--   3. ONLY THEN deploy the application code.
+--
+--   Shipping the code first does not take the system down — every existing
+--   role keeps working — but "Add Staff" with the Line role selected would
+--   fail with an invalid-enum error until this has run.
+--
+-- Note on transactions: since PostgreSQL 12 ALTER TYPE ... ADD VALUE may run
+-- inside a transaction block, but the new value cannot be USED until that
+-- transaction commits. This migration only adds the value, so there is
+-- nothing to trip over; psql's default autocommit commits it immediately.
+-- ============================================================
+
+ALTER TYPE staff_role ADD VALUE IF NOT EXISTS 'line';

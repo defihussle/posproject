@@ -5560,7 +5560,11 @@ app.delete("/api/backoffice/modifier-options/:id", async (req, res) => {
 // (add-only, outside /api/backoffice — see STAFF_MANAGER_ROLES below).
 
 const STAFF_MANAGER_ROLES = ["owner", "admin", "manager"]; // used ONLY by POST /api/staff/quick-add
-const STAFF_ROLES = ["owner", "admin", "manager", "cashier", "kitchen"];
+// Must stay in step with the staff_role enum (database/add_line_role.sql added
+// 'line'). 'line' is a floor role like cashier/kitchen: canManageTarget lets
+// any manager-or-above act on it, and assertRoleAssignable only gates
+// owner/admin, so nothing else needed changing to admit it.
+const STAFF_ROLES = ["owner", "admin", "manager", "cashier", "kitchen", "line"];
 // Columns safe to return — pin_hash is NEVER selected.
 const STAFF_SAFE_COLS =
   "id, location_id, name, title, phone, email, role, hourly_rate, hire_date, active, created_at";
@@ -5713,7 +5717,7 @@ app.get("/api/backoffice/staff", async (req, res) => {
     await requireBackofficeSession(req);
     const { rows } = await pool.query(
       `SELECT ${STAFF_SAFE_COLS}, ${STAFF_HISTORY_EXISTS_SQL} AS has_history FROM staff
-        ORDER BY active DESC, array_position(ARRAY['owner','admin','manager','cashier','kitchen'], role::text), name`
+        ORDER BY active DESC, array_position(ARRAY['owner','admin','manager','cashier','kitchen','line'], role::text), name`
     );
     res.json(rows);
   } catch (err) {
@@ -5910,7 +5914,7 @@ app.get("/api/staff/roster", async (req, res) => {
 
     const { rows } = await pool.query(
       `SELECT id, name, role, active, ${STAFF_HISTORY_EXISTS_SQL} AS has_history FROM staff
-        ORDER BY active DESC, array_position(ARRAY['owner','admin','manager','cashier','kitchen'], role::text), name`
+        ORDER BY active DESC, array_position(ARRAY['owner','admin','manager','cashier','kitchen','line'], role::text), name`
     );
     const liveByStaffId = await getLiveStatusByStaffId();
 
