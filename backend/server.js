@@ -125,6 +125,49 @@ console.log(
     (stripeClient ? `, keyMode=${stripeKeyMode(STRIPE_SECRET_KEY)}, apiVersion=${STRIPE_API_VERSION}` : "")
 );
 
+// --------------- Clover Mini configuration (Clover plan Phase 1) ---------------
+// See docs/architecture/plan.md and docs/architecture/clover-mini-phase1.md.
+//
+// Phase 1 is the OAuth handshake ONLY: connect the draft app, store the
+// merchant's token, and prove the token works with a read-only merchant ping.
+// NOTHING here touches the payment path. PAYMENTS_PROVIDER stays 'mock' or
+// 'stripe' (locked decisions L8/L9) — 'clover' is deliberately NOT an accepted
+// value yet, and adding it is Phase 2's job.
+//
+// Unlike the Stripe block above, a missing/incomplete Clover setup NEVER throws
+// at boot. There is no kill-switch to protect here: with no credentials the
+// Clover routes simply report "not configured" and every existing flow behaves
+// byte-for-byte as before. That is what "everything behind flags" means for
+// this slice.
+const CLOVER_APP_ID = (process.env.CLOVER_APP_ID || "").trim();
+const CLOVER_APP_SECRET = (process.env.CLOVER_APP_SECRET || "").trim();
+// The Clover Remote Application ID — identifies this app to a Clover DEVICE.
+// Read here so the name is claimed and documented in one place; nothing in
+// Phase 1 uses it, because talking to a device is Phase 3 (Cloud Pay Display).
+const CLOVER_RAID = (process.env.CLOVER_RAID || "").trim();
+// Optional pin. When set, the OAuth callback REFUSES a merchant_id that doesn't
+// match. The callback is necessarily an unauthenticated public URL (Clover
+// redirects a browser to it), so without this pin anyone who reached it with a
+// valid code of their own could write a row into our token store.
+const CLOVER_MERCHANT_ID = (process.env.CLOVER_MERCHANT_ID || "").trim();
+// Sandbox by default. Production is a DIFFERENT host and switching it is a
+// deliberate Phase 5 act, never something that should happen by omission.
+const CLOVER_API_BASE = (process.env.CLOVER_API_BASE || "https://apisandbox.dev.clover.com")
+  .trim()
+  .replace(/\/+$/, "");
+
+// "Configured" means the two values the token exchange cannot happen without.
+// CLOVER_RAID and CLOVER_MERCHANT_ID are not part of this: the first is for a
+// later phase, the second is an optional safety pin.
+const CLOVER_CONFIGURED = Boolean(CLOVER_APP_ID && CLOVER_APP_SECRET);
+
+// One line at boot so the mode is never a mystery in the logs — deliberately
+// says nothing about the secret beyond whether it is present.
+console.log(
+  `Clover: ${CLOVER_CONFIGURED ? "configured" : "not configured"}, apiBase=${CLOVER_API_BASE}` +
+    (CLOVER_MERCHANT_ID ? `, merchantPin=set` : "")
+);
+
 const FRONTEND_URL = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, "");
 
 // The frontend (pos.narcostacos.ca) and backend (api.narcostacos.ca) now
@@ -8549,6 +8592,357 @@ app.delete("/api/backoffice/devices/:id", async (req, res) => {
     res.json({ success: true, action: "deleted", id: device.id });
   } catch (err) {
     sendHttpError(res, err, "Failed to remove device");
+  }
+});
+
+// ============================================================
+// Clover Mini — OAuth callback, token store, merchant ping (Phase 1)
+// ------------------------------------------------------------
+// docs/architecture/plan.md · docs/architecture/clover-mini-phase1.md
+//
+// SCOPE: getting a merchant connected and proving the token works. There is no
+// charge, no tip, no Cloud Pay Display call and no device call anywhere below —
+// those are Phases 2-5. isStripeCardCheckout() and the whole payment path are
+// untouched by this section, on purpose (locked decisions L7/L9).
+//
+// SECRET DISCIPLINE: an access token, a refresh token and CLOVER_APP_SECRET
+// never appear in a log line, an HTTP response body, or the HTML rendered
+// below. The only things this section is willing to say out loud are: whether
+// a token EXISTS, which merchant it belongs to, and whether the last ping
+// worked.
+// ============================================================
+
+// Minimal HTML escaper. The callback renders query-parameter NAMES back to the
+// browser, and a query string is attacker-controllable — so anything echoed is
+// escaped rather than trusted.
+function escapeHtmlText(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// A deliberately plain page. This is an operator-facing diagnostic screen that
+// only ever appears in a browser tab after clicking Connect — it is not part of
+// the POS UI and gets no design-system treatment.
+function cloverHtmlPage(res, statusCode, title, bodyHtml) {
+  res.status(statusCode).type("html").send(
+    `<!doctype html><html><head><meta charset="utf-8">` +
+      `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+      `<title>${escapeHtmlText(title)}</title>` +
+      `<style>body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:40rem;` +
+      `margin:3rem auto;padding:0 1.25rem;line-height:1.5;color:#111}` +
+      `h1{font-size:1.35rem;margin-bottom:.25rem}code{background:#f2f2f0;padding:.1rem .3rem;` +
+      `border-radius:3px}ul{padding-left:1.2rem}.ok{color:#34A853}.bad{color:#E8442E}` +
+      `.muted{color:#666;font-size:.9rem}</style></head><body>${bodyHtml}</body></html>`
+  );
+}
+
+// Clover states token lifetimes as epoch SECONDS. Tolerate milliseconds too:
+// misreading a seconds value as ms (or the reverse) would silently mark a live
+// token as expired in 1970 or valid until the year 50,000, and neither failure
+// announces itself. Anything unparseable becomes NULL — "no stated expiry" —
+// rather than a bogus timestamp.
+function cloverEpochToDate(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const ms = n > 1e12 ? n : n * 1000;
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+// Strip anything token-shaped out of an upstream error before it is logged or
+// shown. Clover's error bodies are not supposed to contain credentials, but the
+// code we just posted and the secret we posted with it are both in scope if an
+// endpoint ever echoes the request back.
+function cloverSafeErrorText(text) {
+  const oneLine = String(text || "").replace(/\s+/g, " ").trim();
+  const redacted = oneLine
+    .replace(/("?(?:access_token|refresh_token|client_secret|code)"?\s*[:=]\s*"?)[^",}\s]+/gi, "$1[redacted]");
+  return redacted.length > 400 ? `${redacted.slice(0, 400)}…` : redacted;
+}
+
+// Exchange the authorization CODE for tokens.
+//
+// Clover has two token endpoints and they return different things:
+//   v2 (POST JSON /oauth/v2/token) — access_token + REFRESH token + expiries
+//   v1 (GET  /oauth/token)         — access_token only, no refresh, no expiry
+// We ask for v2 first because Phase 3 will need to survive an expiring token,
+// and fall back to v1 only when v2 is genuinely absent (404/405) so an older or
+// differently-provisioned app still connects. Which one answered is recorded on
+// the row as token_flow, so a NULL refresh_token is explainable later.
+//
+// NOTE FOR THE NEXT AGENT: confirm both shapes against Clover's current docs on
+// the first real run — this is the one place in Phase 1 that depends on an
+// endpoint contract rather than on something already observed working.
+async function exchangeCloverCode(code) {
+  const v2Url = `${CLOVER_API_BASE}/oauth/v2/token`;
+  let resp;
+  try {
+    resp = await fetch(v2Url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        client_id: CLOVER_APP_ID,
+        client_secret: CLOVER_APP_SECRET,
+        code,
+      }),
+    });
+  } catch (err) {
+    throw new Error(`Could not reach Clover at ${v2Url} (${err.message})`);
+  }
+
+  if (resp.ok) {
+    const data = await resp.json();
+    if (!data?.access_token) {
+      throw new Error("Clover's token response contained no access_token");
+    }
+    return {
+      tokenFlow: "v2",
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token || null,
+      accessTokenExpiresAt: cloverEpochToDate(data.access_token_expiration),
+      refreshTokenExpiresAt: cloverEpochToDate(data.refresh_token_expiration),
+    };
+  }
+
+  // Only a "this endpoint isn't here" answer justifies the fallback. A 401 means
+  // the credentials are wrong and retrying on v1 would just produce a second,
+  // more confusing failure.
+  if (resp.status !== 404 && resp.status !== 405) {
+    throw new Error(
+      `Clover token exchange failed (HTTP ${resp.status}): ${cloverSafeErrorText(await resp.text())}`
+    );
+  }
+
+  const v1Url =
+    `${CLOVER_API_BASE}/oauth/token?client_id=${encodeURIComponent(CLOVER_APP_ID)}` +
+    `&client_secret=${encodeURIComponent(CLOVER_APP_SECRET)}&code=${encodeURIComponent(code)}`;
+  const legacy = await fetch(v1Url, { headers: { Accept: "application/json" } });
+  if (!legacy.ok) {
+    throw new Error(
+      `Clover token exchange failed (HTTP ${legacy.status}): ${cloverSafeErrorText(await legacy.text())}`
+    );
+  }
+  const data = await legacy.json();
+  if (!data?.access_token) {
+    throw new Error("Clover's token response contained no access_token");
+  }
+  return {
+    tokenFlow: "v1",
+    accessToken: data.access_token,
+    refreshToken: null,
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+  };
+}
+
+// Read-only merchant ping — the proof that the stored token actually works.
+// GET only, never a write, so this is safe to call any number of times.
+async function cloverMerchantPing(merchantId, accessToken) {
+  const url = `${CLOVER_API_BASE}/v3/merchants/${encodeURIComponent(merchantId)}`;
+  const resp = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+  });
+  if (!resp.ok) {
+    throw new Error(
+      `Clover rejected the merchant lookup (HTTP ${resp.status}): ${cloverSafeErrorText(await resp.text())}`
+    );
+  }
+  return resp.json();
+}
+
+// One row per merchant: re-connecting REPLACES rather than appends, so there is
+// never an ambiguous "which token is current?". The ping columns are reset here
+// because a fresh token has not been proven yet.
+async function saveCloverTokens(merchantId, tokens) {
+  await pool.query(
+    `INSERT INTO clover_oauth_tokens
+       (merchant_id, api_base, access_token, refresh_token,
+        access_token_expires_at, refresh_token_expires_at, token_flow)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (merchant_id) DO UPDATE SET
+       api_base                 = EXCLUDED.api_base,
+       access_token             = EXCLUDED.access_token,
+       refresh_token            = EXCLUDED.refresh_token,
+       access_token_expires_at  = EXCLUDED.access_token_expires_at,
+       refresh_token_expires_at = EXCLUDED.refresh_token_expires_at,
+       token_flow               = EXCLUDED.token_flow,
+       last_merchant_ping       = NULL,
+       last_merchant_ping_at    = NULL,
+       updated_at               = now()`,
+    [
+      merchantId,
+      CLOVER_API_BASE,
+      tokens.accessToken,
+      tokens.refreshToken,
+      tokens.accessTokenExpiresAt,
+      tokens.refreshTokenExpiresAt,
+      tokens.tokenFlow,
+    ]
+  );
+}
+
+async function recordCloverPing(merchantId, result, merchantName) {
+  await pool.query(
+    `UPDATE clover_oauth_tokens
+        SET last_merchant_ping    = $2,
+            last_merchant_ping_at = now(),
+            merchant_name         = COALESCE($3, merchant_name),
+            updated_at            = now()
+      WHERE merchant_id = $1`,
+    [merchantId, result, merchantName || null]
+  );
+}
+
+// --------------- GET /api/clover/oauth/callback ---------------
+// The URL Clover already redirects to after App Market Preview → Connect.
+// It is necessarily PUBLIC and unauthenticated — Clover sends a browser here
+// and there is no session to check. Two things keep that honest: an
+// authorization code is worthless without CLOVER_APP_SECRET, and when
+// CLOVER_MERCHANT_ID is set a mismatched merchant is refused outright.
+//
+// Always answers with a human-readable HTML page rather than JSON: the only
+// thing that ever lands here is a person's browser, mid-setup.
+app.get("/api/clover/oauth/callback", async (req, res) => {
+  // Names only — a `code` is a live credential and its VALUE is never echoed.
+  const paramNames = Object.keys(req.query || {});
+  const paramList = paramNames.length
+    ? `<ul>${paramNames.map((n) => `<li><code>${escapeHtmlText(n)}</code></li>`).join("")}</ul>`
+    : "<p>No query parameters arrived at all.</p>";
+  const failed = (message, extraHtml = "") =>
+    cloverHtmlPage(
+      res,
+      400,
+      "Clover connect failed",
+      `<h1 class="bad">Clover callback failed</h1><p>${escapeHtmlText(message)}</p>${extraHtml}` +
+        `<p class="muted">Query parameter names that arrived (values deliberately not shown):</p>${paramList}`
+    );
+
+  const { merchant_id: merchantIdRaw, code, error, error_description: errorDescription } = req.query;
+  const merchantId = String(merchantIdRaw || "").trim();
+
+  if (error) {
+    return failed(
+      `Clover reported an error: ${cloverSafeErrorText(errorDescription || error)}`
+    );
+  }
+  if (!code) {
+    return failed(
+      "No authorization code arrived, so there is nothing to exchange. This is what you " +
+        "see if you open this URL directly instead of arriving from Clover's Connect button."
+    );
+  }
+  if (!CLOVER_CONFIGURED) {
+    return failed(
+      "The server has no Clover credentials, so the code cannot be exchanged. Set CLOVER_APP_ID " +
+        "and CLOVER_APP_SECRET in backend/.env and restart the backend, then click Connect again."
+    );
+  }
+  if (!merchantId) {
+    return failed("Clover did not send a merchant_id, so there is no merchant to store a token for.");
+  }
+  if (CLOVER_MERCHANT_ID && merchantId !== CLOVER_MERCHANT_ID) {
+    // Refuse rather than store. CLOVER_MERCHANT_ID is the operator saying "this
+    // server serves exactly one merchant" — honouring that is the whole point.
+    return failed(
+      "This server is pinned to a different merchant than the one that just connected. " +
+        "Nothing was stored. Check CLOVER_MERCHANT_ID."
+    );
+  }
+
+  try {
+    const tokens = await exchangeCloverCode(String(code));
+    await saveCloverTokens(merchantId, tokens);
+
+    // Prove the token before claiming success. A stored-but-dead token that
+    // looks fine here would only be discovered in Phase 3, at the counter.
+    let merchant = null;
+    let pingError = null;
+    try {
+      merchant = await cloverMerchantPing(merchantId, tokens.accessToken);
+      await recordCloverPing(merchantId, "ok", merchant?.name);
+    } catch (err) {
+      pingError = err.message;
+      await recordCloverPing(merchantId, "fail", null);
+    }
+
+    if (pingError) {
+      return cloverHtmlPage(
+        res,
+        502,
+        "Clover token stored, merchant lookup failed",
+        `<h1 class="bad">Token stored, but the merchant lookup failed</h1>` +
+          `<p>The token was saved for merchant <code>${escapeHtmlText(merchantId)}</code>, but reading ` +
+          `that merchant back from Clover did not work:</p><p><code>${escapeHtmlText(pingError)}</code></p>` +
+          `<p class="muted">Check that the app has the <strong>Read Merchant</strong> permission and that ` +
+          `CLOVER_API_BASE matches the environment the merchant lives in.</p>`
+      );
+    }
+
+    return cloverHtmlPage(
+      res,
+      200,
+      "Clover connected",
+      `<h1 class="ok">Clover connected</h1>` +
+        `<ul>` +
+        `<li>Merchant ID: <code>${escapeHtmlText(merchant?.id || merchantId)}</code></li>` +
+        `<li>Merchant name: <code>${escapeHtmlText(merchant?.name || "(not returned)")}</code></li>` +
+        `<li><strong>Token stored</strong></li>` +
+        `</ul>` +
+        `<p class="muted">Nothing about payments has changed — this slice only proves the connection. ` +
+        `Check <code>/api/clover/status</code> next.</p>`
+    );
+  } catch (err) {
+    // Logged WITHOUT the code, the secret, or any token.
+    console.error(`Clover OAuth callback failed for merchant ${merchantId}: ${err.message}`);
+    return failed(err.message);
+  }
+});
+
+// --------------- GET /api/clover/status ---------------
+// JSON only, and deliberately just four fields. No token, no secret, no
+// expiry — this answers "is Clover wired up?" and nothing else.
+//
+// Ungated for now because it discloses no credential and is the first thing to
+// check after clicking Connect. Putting it behind requireBackofficeSession is a
+// reasonable Phase 5 hardening step once it is reachable from the internet.
+app.get("/api/clover/status", async (req, res) => {
+  // Seeded from the pin so the answer still names the merchant we are waiting
+  // for even if the database read below fails outright.
+  const status = {
+    configured: CLOVER_CONFIGURED,
+    merchantId: CLOVER_MERCHANT_ID || null,
+    tokenPresent: false,
+    lastMerchantPing: "never",
+  };
+  try {
+    // Prefer the pinned merchant when one is configured; otherwise report the
+    // most recently connected row.
+    const { rows } = CLOVER_MERCHANT_ID
+      ? await pool.query(
+          `SELECT merchant_id, access_token IS NOT NULL AS has_token, last_merchant_ping
+             FROM clover_oauth_tokens WHERE merchant_id = $1`,
+          [CLOVER_MERCHANT_ID]
+        )
+      : await pool.query(
+          `SELECT merchant_id, access_token IS NOT NULL AS has_token, last_merchant_ping
+             FROM clover_oauth_tokens ORDER BY updated_at DESC LIMIT 1`
+        );
+    const row = rows[0];
+    if (row) {
+      status.merchantId = row.merchant_id;
+      status.tokenPresent = Boolean(row.has_token);
+      status.lastMerchantPing = row.last_merchant_ping || "never";
+    }
+    res.json(status);
+  } catch (err) {
+    console.error(`Clover status lookup failed: ${err.message}`);
+    // A diagnostic reports state, including its own bad state, with the same
+    // shape — a caller should never have to parse two different answers.
+    res.json(status);
   }
 });
 

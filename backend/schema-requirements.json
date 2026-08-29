@@ -2,6 +2,10 @@
   "generatedFrom": "database/*.sql",
   "tables": [
     {
+      "table": "clover_oauth_tokens",
+      "migration": "clover_oauth.sql"
+    },
+    {
       "table": "device_pairings",
       "migration": "device_pairing.sql"
     },
