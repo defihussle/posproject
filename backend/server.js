@@ -162,6 +162,26 @@ const CLOVER_API_BASE = (process.env.CLOVER_API_BASE || "https://apisandbox.dev.
   .trim()
   .replace(/\/+$/, "");
 
+// The Mini's SERIAL number, which is what X-Clover-Device-Id takes — NOT a
+// Stripe `tmr_` reader id, and deliberately never run through the Stripe reader
+// validator. Blank until a physical Mini exists; card checkout answers 409
+// rather than guessing (Clover Phase 3).
+const CLOVER_DEVICE_ID = (process.env.CLOVER_DEVICE_ID || "").trim();
+
+// REST Pay Display cloud base = the API host + /connect. Derived from
+// CLOVER_API_BASE so sandbox/production move together and there is only ever
+// one host to change.
+const CLOVER_CONNECT_BASE = `${CLOVER_API_BASE}/connect`;
+
+// How long to wait for the customer to finish on the Mini. Clover documents a
+// 0-300s range with a 135s default for payments; we clamp to that range. The
+// call is made in the BACKGROUND (see startCloverPayment) so this never holds
+// an HTTP request — the till polls, exactly as it does for Stripe.
+const CLOVER_PAY_TIMEOUT_SECONDS = Math.min(
+  300,
+  Math.max(0, Number(process.env.CLOVER_PAY_TIMEOUT_SECONDS) || 135)
+);
+
 // "Configured" means the two values the token exchange cannot happen without.
 // CLOVER_RAID and CLOVER_MERCHANT_ID are not part of this: the first is for a
 // later phase, the second is an optional safety pin.
@@ -182,10 +202,16 @@ console.log(
 // credential is "not finished wiring up", not "silently losing money". A
 // warning keeps the value usable for testing without pretending it is ready.
 if (PAYMENTS_PROVIDER === "clover") {
+  const gaps = [];
+  if (!CLOVER_CONFIGURED) gaps.push("CLOVER_APP_ID / CLOVER_APP_SECRET");
+  if (!CLOVER_DEVICE_ID) gaps.push("CLOVER_DEVICE_ID (the Mini's serial)");
+  if (!CLOVER_RAID) gaps.push("CLOVER_RAID");
   console.warn(
-    "PAYMENTS_PROVIDER=clover: card checkout returns 501 until Clover plan Phase 3. " +
-      "Cash is unaffected, and existing Stripe sales still refund through Stripe." +
-      (CLOVER_CONFIGURED ? "" : " CLOVER_APP_ID / CLOVER_APP_SECRET are not both set.")
+    gaps.length
+      ? `PAYMENTS_PROVIDER=clover but not ready to charge — missing: ${gaps.join(", ")}. ` +
+          "Card checkout returns 409 and charges nothing; cash is unaffected."
+      : `PAYMENTS_PROVIDER=clover: card payments go to Clover device ${CLOVER_DEVICE_ID} ` +
+          `via ${CLOVER_CONNECT_BASE} (timeout ${CLOVER_PAY_TIMEOUT_SECONDS}s).`
   );
 }
 
@@ -814,6 +840,275 @@ async function startTerminalPayment(res, pending) {
   }
 }
 
+// ============================================================
+// Clover Cloud Pay Display — taking the payment (Clover Phase 3)
+// ------------------------------------------------------------
+// Same money model as the Stripe path (plan decision D1/"Option B"): the cart
+// is frozen into pending_checkouts FIRST, no order row exists until the
+// processor confirms the money, and a decline/cancel/timeout leaves nothing
+// behind. Only the processor differs.
+//
+// The pay call runs in the BACKGROUND and the till polls
+// GET /api/orders/pending/:id — the same waiting panel and the same poll loop
+// the Stripe path already uses. REST Pay's payment call blocks until the
+// customer finishes (up to 300s), and holding an HTTP request open that long
+// through Render's proxy is a good way to lose the answer after the money has
+// moved. Polling makes the outcome durable in the database instead.
+// ============================================================
+
+// Required headers, from https://docs.clover.com/dev/reference/pay.
+//   Authorization      Bearer <OAuth access token>
+//   X-Clover-Device-Id the device SERIAL (never a Stripe tmr_ id)
+//   X-POS-Id           our Remote Application ID (CLOVER_RAID)
+//   Idempotency-Key    required on payment/refund/charge/capture
+function cloverPayHeaders(token, idempotencyKey) {
+  return {
+    Authorization: `Bearer ${token}`,
+    "X-Clover-Device-Id": CLOVER_DEVICE_ID,
+    "X-POS-Id": CLOVER_RAID,
+    "Idempotency-Key": idempotencyKey,
+    "User-Agent": "NarcosTacosPOS/1.0",
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+}
+
+// Clover's documented status codes for the pay endpoint, mapped onto the three
+// failure codes Order Entry's card panel already understands. Reusing those
+// codes is what lets the existing waiting UI handle Clover with no new copy.
+//
+//   200 success · 209 canceled · 400 invalid, do not retry · 401 bad token
+//   500 unknown/INDETERMINATE · 501 device does not support · 503 device busy
+//   504 device timeout
+function cloverErrorKind(status) {
+  if (status === 503) return "reader_busy";
+  if (status === 504 || status === 501) return "reader_offline";
+  return "reader_error";
+}
+
+// Is this outcome one where the money might ALREADY have moved on the device?
+// 500 is documented as an indeterminate state, and a dropped connection or our
+// own abort tells us nothing about what the customer did. Those become
+// 'orphaned', never 'failed' — a cashier must not be told "nothing was charged"
+// when that is unknown.
+function cloverOutcomeIsIndeterminate(status) {
+  return status == null || status === 500;
+}
+
+// Fire the payment and record the outcome. Nothing awaits this — it owns the
+// pending_checkouts row from here and every exit path writes a terminal status.
+async function runCloverPayment(pending, token) {
+  // externalPaymentId is capped at 32 chars by Clover, and a UUID with the
+  // dashes removed is exactly 32. Deriving it from the pending checkout id
+  // means it is deterministic and reproducible — no new column is needed to
+  // remember it, and a reconcile sweep can recompute it for any pending row.
+  const externalPaymentId = String(pending.id).replace(/-/g, "");
+  const url = `${CLOVER_CONNECT_BASE}/v1/payments`;
+  const controller = new AbortController();
+  const abortTimer = setTimeout(() => controller.abort(), (CLOVER_PAY_TIMEOUT_SECONDS + 15) * 1000);
+
+  let status = null;
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: cloverPayHeaders(token, `pc_${externalPaymentId}`),
+      signal: controller.signal,
+      body: JSON.stringify({
+        // Server-computed, from the FROZEN snapshot — never from the client.
+        amount: toStripeAmount(pending.total),
+        externalPaymentId,
+        taxAmount: toStripeAmount(pending.tax),
+        // No `final` and no `tipAmount`: that is what leaves the tip prompt to
+        // the Mini's own configured tip screen (the reference documents
+        // tipAmount as valid ONLY when final=true, i.e. when the POS has
+        // already decided the tip — the opposite of on-device tipping).
+      }),
+    });
+    status = resp.status;
+
+    if (resp.status === 200) {
+      const data = await resp.json();
+      const payment = data?.payment || {};
+      const result = String(payment.result || "").toUpperCase();
+      if (result && result !== "SUCCESS") {
+        return finishCloverPending(pending, "failed", `Clover declined the payment (${result})`, "declined");
+      }
+      if (!payment.id) {
+        return finishCloverPending(
+          pending, "orphaned",
+          "Clover returned success with no payment id — verify in the Clover dashboard before retrying",
+          "reader_error"
+        );
+      }
+      return await settleCloverPayment(pending, payment);
+    }
+
+    if (resp.status === 209) {
+      return finishCloverPending(pending, "cancelled", "Cancelled on the device", "cancelled");
+    }
+
+    const body = cloverSafeErrorText(await resp.text());
+    if (cloverOutcomeIsIndeterminate(resp.status)) {
+      return finishCloverPending(
+        pending, "orphaned",
+        `Clover returned HTTP ${resp.status} (indeterminate — the card MAY have been charged): ${body}`,
+        "reader_error"
+      );
+    }
+    return finishCloverPending(
+      pending, "failed",
+      `Clover refused the payment (HTTP ${resp.status}): ${body}`,
+      cloverErrorKind(resp.status)
+    );
+  } catch (err) {
+    // Network drop, DNS, or our own abort. We do not know what the customer
+    // did, so this is indeterminate by definition.
+    const why = err.name === "AbortError"
+      ? `No answer from Clover within ${CLOVER_PAY_TIMEOUT_SECONDS + 15}s`
+      : `Could not reach Clover: ${err.message}`;
+    return finishCloverPending(
+      pending, "orphaned",
+      `${why} — the card MAY have been charged. Check the Clover dashboard before retrying.`,
+      "reader_error"
+    );
+  } finally {
+    clearTimeout(abortTimer);
+  }
+}
+
+// Success path: normalize Clover's payment object and hand it to the SHARED
+// materializer, so the money invariant, the tip arithmetic and every INSERT are
+// identical to the Stripe path.
+async function settleCloverPayment(pending, payment) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Re-read under a lock so a concurrent cancel or a duplicate delivery
+    // cannot produce two orders for one payment.
+    const { rows } = await client.query(
+      "SELECT * FROM pending_checkouts WHERE id = $1 FOR UPDATE",
+      [pending.id]
+    );
+    const row = rows[0];
+    if (!row || row.status !== "awaiting_payment") {
+      await client.query("ROLLBACK");
+      return;
+    }
+
+    // Clover reports the sale and the tip separately; the customer was charged
+    // the sum. tipAmount is absent (not 0) when the device never asked.
+    const baseCents = Number(payment.amount) || 0;
+    const tipCents = payment.tipAmount == null ? null : Number(payment.tipAmount);
+    const card = payment.cardTransaction || {};
+
+    const result = await materializeOrderFromPendingCheckout(client, {
+      pending: row,
+      settlement: {
+        processorTxnId: payment.id, // no `pi_` prefix, so paymentProcessorOf() reads it as clover
+        chargedCents: baseCents + (tipCents || 0),
+        reportedTipCents: tipCents,
+        // Interac vs credit drives the Phase 4 refund rule. Clover reports the
+        // card type here; anything we do not recognise is 'other' rather than a
+        // guess that would later unlock the wrong refund path.
+        processorPaymentType: /interac/i.test(String(card.cardType || card.type || ""))
+          ? "interac_present"
+          : "card_present",
+        cardBrand: card.cardType || null,
+        cardLast4: card.last4 || null,
+      },
+    });
+    await client.query("COMMIT");
+    console.log(
+      `Clover payment settled: pending_checkout=${pending.id} order=${result.order.order_number} tip=${result.tip}`
+    );
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    // The money moved but we could not record it. 'orphaned' is the honest
+    // status: it must not read as a clean failure, because the customer paid.
+    console.error(`Clover settlement failed for pending_checkout ${pending.id}: ${err.message}`);
+    await finishCloverPending(
+      pending, "orphaned",
+      `Payment succeeded at Clover but the order could not be written: ${err.message}`,
+      "reader_error"
+    );
+  } finally {
+    client.release();
+  }
+}
+
+// Record a terminal outcome, but ONLY while the row is still open — a cancel
+// that raced us, or a settlement that already landed, must win.
+async function finishCloverPending(pending, status, message, kind) {
+  try {
+    await pool.query(
+      `UPDATE pending_checkouts
+          SET status = $2, error_message = $3, updated_at = now()
+        WHERE id = $1 AND status = 'awaiting_payment'`,
+      [pending.id, status, String(message || "").slice(0, 500)]
+    );
+  } catch (err) {
+    console.error(`Could not record Clover outcome for ${pending.id}: ${err.message}`);
+  }
+  console.error(`Clover payment ${status} (pending_checkout=${pending.id}, kind=${kind}): ${message}`);
+}
+
+// Entry point from the checkout route. Validates that a payment is even
+// possible, commits nothing itself, and returns the SAME 202 shape the Stripe
+// path returns so Order Entry needs no new branch.
+async function startCloverCheckout(res, pending) {
+  // Every reason a Clover payment cannot start, checked BEFORE the cart is
+  // considered live. Each releases the frozen checkout so staff keep the cart.
+  let token;
+  try {
+    if (!CLOVER_DEVICE_ID) {
+      throw new HttpError(
+        409,
+        "No Clover device is configured, so there is nothing to take the payment on. " +
+          "Set CLOVER_DEVICE_ID to the Mini's serial number (find it with GET /api/clover/devices), " +
+          "then restart the backend. Nothing has been charged."
+      );
+    }
+    if (!CLOVER_RAID) {
+      throw new HttpError(409, "CLOVER_RAID (Remote Application ID) is not set — Clover requires it as X-POS-Id");
+    }
+    ({ token } = await getCloverAccessToken());
+  } catch (err) {
+    await pool
+      .query(
+        `UPDATE pending_checkouts SET status = 'failed', error_message = $2, updated_at = now()
+          WHERE id = $1 AND status = 'awaiting_payment'`,
+        [pending.id, String(err.message).slice(0, 500)]
+      )
+      .catch(() => {});
+    const status = err instanceof HttpError ? err.status : 502;
+    return res.status(status).json({
+      error: err.message,
+      code: "clover_not_ready",
+      pendingCheckoutId: pending.id,
+    });
+  }
+
+  // Deliberately NOT awaited: the customer may take a minute or more on the
+  // Mini. The till gets its 202 now and polls for the outcome.
+  runCloverPayment(pending, token).catch((err) =>
+    console.error(`Unhandled Clover payment error (${pending.id}): ${err.message}`)
+  );
+
+  // 202, not 201 — nothing has been created yet, and nothing will be unless
+  // Clover confirms the money.
+  return res.status(202).json({
+    pending: true,
+    pendingCheckoutId: pending.id,
+    provider: "clover",
+    deviceId: CLOVER_DEVICE_ID,
+    status: "awaiting_payment",
+    subtotal: pending.subtotal,
+    discount: pending.discount,
+    tax: pending.tax,
+    total: pending.total,
+  });
+}
+
 // ---------------- Stripe webhook: order materialization (Slice 2) ------------
 //
 // This is where a card sale becomes real. Everything before it — the pending
@@ -831,7 +1126,21 @@ async function startTerminalPayment(res, pending) {
 // concurrent webhook deliveries serialise here and the second sees
 // status='succeeded' and does nothing. The partial UNIQUE index on
 // payments.processor_txn_id is the backstop underneath that.
-async function materializeOrderFromPendingCheckout(client, { pending, paymentIntent, charge }) {
+// Clover Phase 3 note on `settlement`: this function is now processor-agnostic
+// at its edges but IDENTICAL in the middle, which is the point. Stripe callers
+// still pass { paymentIntent, charge } and run the exact same derivation they
+// always did; Clover passes a pre-normalized `settlement` instead. The money
+// invariant, the tip arithmetic and every INSERT below are shared, so the two
+// processors cannot drift apart in how a sale is recorded.
+//
+//   settlement = {
+//     processorTxnId,        // goes to payments.processor_txn_id
+//     chargedCents,          // what the processor actually took, INCLUDING tip
+//     reportedTipCents,      // processor's own tip figure, or null if it has none
+//     processorPaymentType,  // 'card_present' | 'interac_present' | 'other' | null
+//     cardBrand, cardLast4,  // receipt detail, nullable
+//   }
+async function materializeOrderFromPendingCheckout(client, { pending, paymentIntent, charge, settlement }) {
   const snapshot = pending.payload || {};
   const lines = Array.isArray(snapshot.lines) ? snapshot.lines : [];
   if (lines.length === 0) {
@@ -844,9 +1153,11 @@ async function materializeOrderFromPendingCheckout(client, { pending, paymentInt
   // the difference makes the arithmetic self-checking: it can only be right if
   // Stripe charged exactly what we asked plus a non-negative tip.
   const snapshotCents = toStripeAmount(pending.total);
-  const chargedCents = Number(
-    paymentIntent.amount_received != null ? paymentIntent.amount_received : paymentIntent.amount
-  );
+  const chargedCents = settlement
+    ? Number(settlement.chargedCents)
+    : Number(
+        paymentIntent.amount_received != null ? paymentIntent.amount_received : paymentIntent.amount
+      );
   const tipCents = chargedCents - snapshotCents;
 
   if (!Number.isFinite(chargedCents) || tipCents < 0) {
@@ -862,11 +1173,13 @@ async function materializeOrderFromPendingCheckout(client, { pending, paymentInt
   // Cross-check against the charge's own tip figure when Stripe reports one.
   // Disagreement means our model of the amounts is wrong, which is exactly the
   // thing that must never be papered over.
-  const reportedTipCents = charge?.amount_details?.tip?.amount;
+  const reportedTipCents = settlement
+    ? settlement.reportedTipCents
+    : charge?.amount_details?.tip?.amount;
   if (reportedTipCents != null && Number(reportedTipCents) !== tipCents) {
     throw new HttpError(
       409,
-      `Tip mismatch on pending_checkout ${pending.id}: derived ${tipCents}¢ but Stripe reports ${reportedTipCents}¢`
+      `Tip mismatch on pending_checkout ${pending.id}: derived ${tipCents}¢ but the processor reports ${reportedTipCents}¢`
     );
   }
 
@@ -879,7 +1192,7 @@ async function materializeOrderFromPendingCheckout(client, { pending, paymentInt
   if (toStripeAmount(total) !== chargedCents) {
     throw new HttpError(
       409,
-      `Refusing to write an order whose total (${total}) does not equal what Stripe charged (${chargedCents}¢)`
+      `Refusing to write an order whose total (${total}) does not equal what the processor charged (${chargedCents}¢)`
     );
   }
 
@@ -936,13 +1249,15 @@ async function materializeOrderFromPendingCheckout(client, { pending, paymentInt
   // an interac_present sale cannot be refunded remotely from Back Office.
   const details = charge?.payment_method_details || {};
   const presentDetails = details.card_present || details.interac_present || null;
-  const processorPaymentType = details.card_present
-    ? "card_present"
-    : details.interac_present
-      ? "interac_present"
-      : charge
-        ? "other"
-        : null;
+  const processorPaymentType = settlement
+    ? settlement.processorPaymentType
+    : details.card_present
+      ? "card_present"
+      : details.interac_present
+        ? "interac_present"
+        : charge
+          ? "other"
+          : null;
 
   await client.query(
     `INSERT INTO payments (order_id, method, amount, status, processor_txn_id,
@@ -951,10 +1266,10 @@ async function materializeOrderFromPendingCheckout(client, { pending, paymentInt
     [
       order.id,
       total,
-      paymentIntent.id,
+      settlement ? settlement.processorTxnId : paymentIntent.id,
       processorPaymentType,
-      presentDetails?.brand || null,
-      presentDetails?.last4 || null,
+      settlement ? settlement.cardBrand : presentDetails?.brand || null,
+      settlement ? settlement.cardLast4 : presentDetails?.last4 || null,
     ]
   );
 
@@ -1880,6 +2195,7 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
   // the Stripe calls then happen after the transaction closes (see
   // startTerminalPayment).
   let pendingForReader = null;
+  let pendingForClover = null;
   let committed = false;
   try {
     await client.query("BEGIN");
@@ -1901,22 +2217,47 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
     // the frozen priced snapshot (D2), which is authoritative from this moment
     // on: a price edit in Manage Menu while the customer is tapping must never
     // change what they are charged.
-    // ---- Card under Clover: not built yet, and it must SAY so ----
-    // Placed ahead of every other card branch on purpose. Without it, Card
-    // under PAYMENTS_PROVIDER=clover would sail past the Stripe branch (which
-    // correctly requires provider==='stripe') and land on the mocked path
-    // below, inserting a 'captured' payment for money no terminal ever took.
-    // A 501 is the honest answer: the provider is selected but the hardware
-    // path is Phase 3. Cash is untouched and still works normally.
+    // ---- Card under Clover: freeze the cart, charge on the Mini ----
+    // Same shape as the Stripe branch below and for the same reason: the priced
+    // snapshot is committed first, NO order row is created, and the order is
+    // written only if Clover confirms the money. Placed ahead of the Stripe
+    // branch so Card under 'clover' can never fall through to the mocked path.
     if (isCloverCardCheckout(paymentMethod)) {
-      throw new HttpError(
-        501,
-        "Card payments through the Clover Mini are not available yet (Clover plan Phase 3). " +
-          "Take this order as cash, or set PAYMENTS_PROVIDER back to its previous value."
+      const { rows: pcRows } = await client.query(
+        `INSERT INTO pending_checkouts
+           (location_id, staff_id, device_id, payload, subtotal, discount,
+            discount_percent, discount_reason, tax, total)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING id`,
+        [
+          location.id,
+          staff.id,
+          req.deviceId,
+          JSON.stringify({
+            lines: pricedLines,
+            discountAppliedBy: discountPercent ? staff.id : null,
+          }),
+          subtotal,
+          discountAmount,
+          discountPercent,
+          discountReason,
+          tax,
+          total,
+        ]
       );
-    }
 
-    if (isStripeCardCheckout(paymentMethod)) {
+      await client.query("COMMIT");
+      committed = true;
+      pendingForClover = {
+        id: pcRows[0].id,
+        locationId: location.id,
+        staffId: staff.id,
+        subtotal,
+        discount: discountAmount,
+        tax,
+        total,
+      };
+    } else if (isStripeCardCheckout(paymentMethod)) {
       if (!stripeClient) {
         // Unreachable in practice: PAYMENTS_PROVIDER=stripe already requires a
         // key at boot. Fails loudly rather than silently falling back to the
@@ -2048,9 +2389,10 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
     client.release();
   }
 
-  // Only reachable on the Stripe-card path: the pending checkout is committed
-  // and the pooled connection is released, so the Stripe round-trips below hold
-  // no database resources.
+  // Only reachable on a terminal-card path: the pending checkout is committed
+  // and the pooled connection is released, so the processor round-trips below
+  // hold no database resources.
+  if (pendingForClover) return startCloverCheckout(res, pendingForClover);
   return startTerminalPayment(res, pendingForReader);
 });
 
@@ -3420,6 +3762,55 @@ app.post("/api/orders/pending/:id/cancel", requireDevicePairing, async (req, res
         alreadyResolved: true,
       });
     }
+    // ---- Clover: stop the action on the Mini (Clover Phase 3) ----
+    // POST {connectBase}/v1/device/cancel — an empty POST; an empty JSON object
+    // comes back and the device returns to its welcome screen.
+    //
+    // A Clover checkout has no stripe_payment_intent_id, which is what
+    // distinguishes it here without needing a new column. The row is NOT forced
+    // to 'cancelled': the background pay call owns the outcome, and the
+    // customer may be tapping at this exact moment. Cancelling the DEVICE and
+    // then reporting the row's real status is the honest thing — same race rule
+    // the Stripe branch follows.
+    if (!pending.stripe_payment_intent_id && PAYMENTS_PROVIDER === "clover") {
+      let deviceCancelled = false;
+      let cancelNote = null;
+      try {
+        const { token } = await getCloverAccessToken();
+        const resp = await fetch(`${CLOVER_CONNECT_BASE}/v1/device/cancel`, {
+          method: "POST",
+          headers: cloverPayHeaders(token, `pc_${String(pending.id).replace(/-/g, "")}_cancel`),
+          body: "{}",
+        });
+        deviceCancelled = resp.ok;
+        if (!resp.ok) cancelNote = `Clover returned HTTP ${resp.status} to the cancel request`;
+      } catch (err) {
+        cancelNote = `Could not reach Clover to cancel: ${err.message}`;
+      }
+      if (cancelNote) console.warn(`Clover device cancel (${pending.id}): ${cancelNote}`);
+
+      const { rows: after } = await pool.query(
+        `SELECT pc.status, pc.error_message, pc.order_id, o.order_number
+           FROM pending_checkouts pc
+      LEFT JOIN orders o ON o.id = pc.order_id
+          WHERE pc.id = $1`,
+        [pending.id]
+      );
+      const now = after[0] || {};
+      return res.json({
+        status: now.status,
+        orderId: now.order_id,
+        orderNumber: now.order_number,
+        errorMessage: now.error_message,
+        // Still open means the pay call has not come back yet. The till stays
+        // on the waiting panel rather than claiming a cancellation that the
+        // device may not have honoured.
+        paymentAlreadyCompleted: now.status === "succeeded",
+        deviceCancelled,
+        cancelNote,
+      });
+    }
+
     if (!stripeClient) throw new HttpError(503, "Stripe is not configured on this server");
 
     const idemBase = `pc_${pending.id}`;
@@ -9007,6 +9398,170 @@ app.get("/api/clover/oauth/callback", async (req, res) => {
     // Logged WITHOUT the code, the secret, or any token.
     console.error(`Clover OAuth callback failed for merchant ${merchantId}: ${err.message}`);
     return failed(err.message);
+  }
+});
+
+// ============================================================
+// Clover Phase 3 — token use, device list, Cloud Pay Display payment
+// ------------------------------------------------------------
+// Endpoints implemented here, copied from the Clover docs (see
+// docs/architecture/clover-mini-phase3.md for the exact pages):
+//   POST {connectBase}/v1/payments        — create a payment on the Mini
+//   POST {connectBase}/v1/device/cancel   — cancel the current device action
+//   POST {connectBase}/v1/device/ping     — connectivity check
+//   POST {apiBase}/oauth/v2/refresh       — refresh an expiring access token
+//   GET  {apiBase}/v3/merchants/{mId}/devices — list the merchant's devices
+// where connectBase = CLOVER_API_BASE + "/connect".
+// ============================================================
+
+// Refresh an expiring access token. Single-use: Clover invalidates the old
+// refresh token the moment a new pair is issued, so the new pair is written
+// back in the SAME statement that proves we still own the row.
+//
+// Tokens are never logged. On failure the caller decides what to do — this
+// returns null rather than throwing, because a failed refresh should surface as
+// "Clover not connected", not as a 500.
+async function refreshCloverToken(row) {
+  if (!row?.refresh_token || !CLOVER_APP_ID) return null;
+  try {
+    const resp = await fetch(`${CLOVER_API_BASE}/oauth/v2/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ client_id: CLOVER_APP_ID, refresh_token: row.refresh_token }),
+    });
+    if (!resp.ok) {
+      console.error(
+        `Clover token refresh failed (HTTP ${resp.status}): ${cloverSafeErrorText(await resp.text())}`
+      );
+      return null;
+    }
+    const data = await resp.json();
+    if (!data?.access_token) return null;
+
+    await pool.query(
+      `UPDATE clover_oauth_tokens
+          SET access_token = $2, refresh_token = COALESCE($3, refresh_token),
+              access_token_expires_at = $4, refresh_token_expires_at = $5,
+              token_flow = 'v2', updated_at = now()
+        WHERE merchant_id = $1`,
+      [
+        row.merchant_id,
+        data.access_token,
+        data.refresh_token || null,
+        cloverEpochToDate(data.access_token_expiration),
+        cloverEpochToDate(data.refresh_token_expiration),
+      ]
+    );
+    console.log(`Clover access token refreshed for merchant ${row.merchant_id}`);
+    return data.access_token;
+  } catch (err) {
+    console.error(`Clover token refresh error: ${err.message}`);
+    return null;
+  }
+}
+
+// The one place anything Clover-facing gets a usable bearer token. Refreshes
+// proactively when the stored token is within 60s of expiry — a token that
+// expires mid-payment is not a failure anyone should have to debug at a till.
+//
+// Throws HttpError so every caller reports the same clear reason.
+async function getCloverAccessToken() {
+  if (!CLOVER_CONFIGURED) {
+    throw new HttpError(409, "Clover is not configured on this server (CLOVER_APP_ID / CLOVER_APP_SECRET)");
+  }
+  const { rows } = CLOVER_MERCHANT_ID
+    ? await pool.query("SELECT * FROM clover_oauth_tokens WHERE merchant_id = $1", [CLOVER_MERCHANT_ID])
+    : await pool.query("SELECT * FROM clover_oauth_tokens ORDER BY updated_at DESC LIMIT 1");
+  const row = rows[0];
+  if (!row?.access_token) {
+    throw new HttpError(409, "Clover not connected — run OAuth (Clover plan Phase 1) before taking a payment");
+  }
+
+  const expiresAt = row.access_token_expires_at ? new Date(row.access_token_expires_at).getTime() : null;
+  const needsRefresh = expiresAt != null && expiresAt - Date.now() < 60_000;
+  if (needsRefresh) {
+    const fresh = await refreshCloverToken(row);
+    if (fresh) return { token: fresh, merchantId: row.merchant_id };
+    // A v1 token has no refresh partner; an expired one is simply dead.
+    throw new HttpError(
+      409,
+      "The stored Clover token has expired and could not be refreshed — reconnect the app (Clover plan Phase 1)"
+    );
+  }
+  return { token: row.access_token, merchantId: row.merchant_id };
+}
+
+// --------------- GET /api/clover/devices ---------------
+// Lists the merchant's Clover devices so the serial for CLOVER_DEVICE_ID can be
+// found WITHOUT a Mini in the building. Read-only, and returns no secrets — id,
+// serial and name only.
+//
+// Platform API (not the /connect base):
+//   GET {apiBase}/v3/merchants/{merchantId}/devices
+app.get("/api/clover/devices", async (req, res) => {
+  try {
+    const { token, merchantId } = await getCloverAccessToken();
+    const url = `${CLOVER_API_BASE}/v3/merchants/${encodeURIComponent(merchantId)}/devices`;
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    });
+    if (!resp.ok) {
+      throw new HttpError(
+        502,
+        `Clover rejected the device lookup (HTTP ${resp.status}): ${cloverSafeErrorText(await resp.text())}`
+      );
+    }
+    const data = await resp.json();
+    const devices = (Array.isArray(data?.elements) ? data.elements : []).map((d) => ({
+      id: d.id || null,
+      serial: d.serial || null,
+      name: d.name || d.model || null,
+      model: d.model || null,
+    }));
+    res.json({
+      merchantId,
+      // Which serial the server is currently pointed at, so a mismatch between
+      // "what exists" and "what is configured" is obvious at a glance.
+      configuredDeviceId: CLOVER_DEVICE_ID || null,
+      count: devices.length,
+      devices,
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to list Clover devices");
+  }
+});
+
+// --------------- POST /api/clover/device/ping ---------------
+// "Is the Mini reachable and is Cloud Pay Display running on it?"
+//   POST {connectBase}/v1/device/ping  → { "connected": true }
+// Read-only in effect (it starts no payment), and the fastest way to tell a
+// configuration problem from a hardware one before blaming a checkout.
+app.post("/api/clover/device/ping", async (req, res) => {
+  try {
+    if (!CLOVER_DEVICE_ID) {
+      throw new HttpError(409, "CLOVER_DEVICE_ID is not set — no device serial to ping");
+    }
+    const { token } = await getCloverAccessToken();
+    const resp = await fetch(`${CLOVER_CONNECT_BASE}/v1/device/ping`, {
+      method: "POST",
+      headers: cloverPayHeaders(token, `ping_${Date.now()}`),
+      body: "{}",
+    });
+    const text = await resp.text();
+    let body = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
+    res.json({
+      deviceId: CLOVER_DEVICE_ID,
+      httpStatus: resp.status,
+      connected: Boolean(body?.connected),
+      detail: resp.ok ? null : cloverSafeErrorText(text),
+    });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to ping the Clover device");
   }
 });
 

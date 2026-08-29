@@ -3,10 +3,10 @@
 The slice checklist. Decisions and context live in
 [docs/architecture/plan.md](plan.md). Read both at the start of every session.
 
-**Current slice: Phase 2 — provider enum + per-payment refund dispatch.**
-Stays the current slice until the human confirms it. Phase 2 needs **no
+**Current slice: Phase 3 — Cloud Pay Display checkout.**
+Stays the current slice until the human confirms it. Phase 3 needs **no
 migration and no deploy** — it is code-only and inert until someone sets
-`PAYMENTS_PROVIDER=clover`, which nobody has.
+`PAYMENTS_PROVIDER=clover`, which nobody has. Render env is unchanged.
 
 ---
 
@@ -96,7 +96,7 @@ Display call · touching `isStripeCardCheckout()` · any UI.
 
 ---
 
-## Phase 2 — Provider enum + per-payment refund dispatch ← **CURRENT SLICE**
+## Phase 2 — Provider enum + per-payment refund dispatch ✅ complete
 
 Design rationale: [plan.md §5 "Phase 2 note"](plan.md).
 
@@ -137,21 +137,42 @@ production flag changes.
 
 ---
 
-## Phase 3 — Cloud Pay Display checkout
+## Phase 3 — Cloud Pay Display checkout ← **CURRENT SLICE**
 
-- [ ] **Confirm the current Cloud Pay Display endpoint set with the human first**
-      — do not invent URLs
-- [ ] Server prices and freezes the cart before the charge
-      (`pending_checkouts` pattern)
-- [ ] Backend starts the payment on the Mini via Clover's cloud
-- [ ] POS waiting UI with explicit **success / failure / cancel** states
-- [ ] On-device tip captured; `orders.total` tip-inclusive;
-      `payments.amount == orders.total` asserted at insert
-- [ ] Order materialized **only** on payment success; ticket goes to KDS
-- [ ] Decline / cancel / abandon leaves **no order row**; the frozen cart is
-      released and staff can retry
-- [ ] A Clover completion path plus a safety-net reconcile (Clover's own, not a
-      Stripe PaymentIntent retrieve)
+Endpoints, tip rationale and test steps:
+[clover-mini-phase3.md](clover-mini-phase3.md).
+
+- [x] **Endpoint set taken from the live Clover docs**, not invented — every URL
+      cited to its doc page. Verified by a real sandbox round-trip that came
+      back `requestType: "PAY"`.
+- [x] Server prices and freezes the cart before the charge — same
+      `pending_checkouts` pattern as Stripe; amount sent in cents from the
+      frozen snapshot, never from the client
+- [x] Backend starts the payment on the Mini via Clover's cloud
+      (`POST {base}/connect/v1/payments`), in the background so no HTTP request
+      is held open for the customer's tap
+- [x] POS waiting UI with explicit success / failure / cancel — **reused the
+      Stripe card panel and its poll loop wholesale**; the only frontend change
+      is copy naming the Clover Mini
+- [x] Cancel calls the documented `POST {base}/connect/v1/device/cancel`
+- [x] On-device tip captured from `payment.tipAmount`; `orders.total`
+      tip-inclusive; `payments.amount == orders.total` asserted at insert —
+      **shared** with the Stripe path, not reimplemented
+- [x] Order materialized **only** on 200 + `result: SUCCESS`; ticket goes to KDS
+- [x] Decline / cancel / timeout / device-offline leaves **no order row** and
+      keeps the cart — verified against real Clover errors
+- [x] Indeterminate outcomes (HTTP 500, dropped connection, abort) recorded as
+      `orphaned`, never `failed` — the cashier is never told "nothing was
+      charged" when that is unknown
+- [x] `GET /api/clover/devices` finds the Mini's serial **without a Mini**;
+      `POST /api/clover/device/ping` checks connectivity
+- [x] Token refresh via `POST {base}/oauth/v2/refresh` before the pay call when
+      the stored token is near expiry; no token → 409 "run OAuth"
+- [x] **No schema change** — `externalPaymentId` is derived from the pending
+      checkout id (UUID minus dashes = exactly Clover's 32-char limit)
+- [ ] **Safety-net reconcile for `orphaned` rows** — deferred to Phase 4. Not
+      small enough to bolt on safely; the lookup key already exists.
+- [ ] **Human confirms**, then this becomes Phase 4's slice
 
 **Done when:** a sandbox card payment started from Order Entry appears on the
 Mini, completes with a tip, materializes exactly one order that reaches KDS, and

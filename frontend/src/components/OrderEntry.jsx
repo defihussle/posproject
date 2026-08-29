@@ -443,6 +443,9 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
             phase: "waiting",
             total: data.total,
             pendingCheckoutId: data.pendingCheckoutId,
+            // 'clover' | undefined (Stripe). Only used to name the right piece
+            // of hardware in the waiting copy — every other branch is shared.
+            provider: data.provider,
           });
           return;
         }
@@ -1054,10 +1057,13 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                 <div className="oe-checkout__success-title">
                   {cardState.phase === "cancelling"
                     ? "Cancelling…"
-                    : "Waiting for customer on reader…"}
+                    : cardState.provider === "clover"
+                      ? "Waiting for customer on the Clover Mini…"
+                      : "Waiting for customer on reader…"}
                 </div>
                 <div className="oe-checkout__success-sub">
-                  ${Number(cardState.total).toFixed(2)} — follow the prompts on the card reader.
+                  ${Number(cardState.total).toFixed(2)} — follow the prompts on the{" "}
+                  {cardState.provider === "clover" ? "Clover Mini" : "card reader"}.
                 </div>
                 <button
                   className="oe-checkout__result-btn oe-checkout__result-btn--danger"
