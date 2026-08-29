@@ -58,7 +58,13 @@ if (!DEVICE_SECRET) {
 // 'mock'. A typo ("stipe", "Stripe " with a trailing space) that quietly
 // disabled real card payments would be invisible until someone reconciled the
 // day's takings — exactly the class of failure this app keeps getting bitten by.
-const PAYMENTS_PROVIDERS = ["mock", "stripe"];
+// 'clover' joins the enum in Clover Phase 2 (docs/architecture/plan.md). It is
+// an ACCEPTED value that boots cleanly, but it does NOT yet take a payment:
+// card checkout under 'clover' returns 501 rather than falling through to the
+// mocked path. Faking a successful card sale is the one outcome worse than
+// refusing — it records money nobody paid. Cash is unaffected under every
+// provider. Taking a real Clover payment is Phase 3.
+const PAYMENTS_PROVIDERS = ["mock", "stripe", "clover"];
 const PAYMENTS_PROVIDER = (process.env.PAYMENTS_PROVIDER || "mock").trim().toLowerCase();
 if (!PAYMENTS_PROVIDERS.includes(PAYMENTS_PROVIDER)) {
   throw new Error(
@@ -167,6 +173,21 @@ console.log(
   `Clover: ${CLOVER_CONFIGURED ? "configured" : "not configured"}, apiBase=${CLOVER_API_BASE}` +
     (CLOVER_MERCHANT_ID ? `, merchantPin=set` : "")
 );
+
+// PAYMENTS_PROVIDER=clover deliberately does NOT throw on missing Clover
+// credentials, unlike the stripe block above. The reasoning differs because the
+// failure mode differs: 'stripe' with no key would take NO card payments while
+// looking live, so it must fail loudly at boot. 'clover' cannot take a card
+// payment either way in this phase — checkout answers 501 — so a missing
+// credential is "not finished wiring up", not "silently losing money". A
+// warning keeps the value usable for testing without pretending it is ready.
+if (PAYMENTS_PROVIDER === "clover") {
+  console.warn(
+    "PAYMENTS_PROVIDER=clover: card checkout returns 501 until Clover plan Phase 3. " +
+      "Cash is unaffected, and existing Stripe sales still refund through Stripe." +
+      (CLOVER_CONFIGURED ? "" : " CLOVER_APP_ID / CLOVER_APP_SECRET are not both set.")
+  );
+}
 
 const FRONTEND_URL = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, "");
 
@@ -596,6 +617,45 @@ const REFUND_OWNER_APPROVAL_THRESHOLD = 100; // $
 // insert-an-order-immediately path they have always had (decision D11).
 function isStripeCardCheckout(paymentMethod) {
   return paymentMethod === "card" && PAYMENTS_PROVIDER === "stripe";
+}
+
+// The Clover twin of the above (Clover Phase 2). Deliberately a SEPARATE
+// predicate rather than a widened isStripeCardCheckout(): the two providers
+// drive completely different hardware, and one function answering "is this a
+// terminal payment?" for both is exactly how a Clover checkout would end up
+// creating a Stripe PaymentIntent.
+//
+// Nothing acts on a `true` yet except the 501 in the checkout route — starting
+// a payment on a Mini is Phase 3.
+function isCloverCardCheckout(paymentMethod) {
+  return paymentMethod === "card" && PAYMENTS_PROVIDER === "clover";
+}
+
+// ---- Which processor took THIS money? (Clover Phase 2) ----
+// Read off the PAYMENT ROW, never off PAYMENTS_PROVIDER. That distinction is
+// the whole point of this helper: the env flag says what the till would do
+// TODAY, while a refund has to honour what actually happened, possibly months
+// ago. Flipping the store to Clover must not strand a Stripe sale from last
+// week — it still refunds through Stripe.
+//
+// Inferred from existing columns; this slice adds no schema. The mapping is
+// exhaustive against what the codebase actually writes:
+//   * cash, and every card sale taken on the mocked path, insert NO
+//     processor_txn_id (it stays NULL) → 'internal'
+//   * the Stripe webhook is the ONLY writer of processor_txn_id today, and it
+//     writes a PaymentIntent id → 'stripe'. The `pi_` prefix is already the
+//     established Stripe discriminator elsewhere in this file (the receipt
+//     projection and the emailed-receipt route both test it).
+//   * anything else can only be a Clover payment id written by Phase 3, since
+//     nothing else writes this column → 'clover'
+//
+// PHASE 3 CONTRACT: whichever column Clover's payment id lands in, update THIS
+// function. It is the single place the rest of the system asks who owns a
+// payment, so a new processor is one edit here plus its settlement branch.
+function paymentProcessorOf(payment) {
+  const txnId = payment?.processorTxnId ?? payment?.processor_txn_id ?? null;
+  if (!txnId) return "internal";
+  return String(txnId).startsWith("pi_") ? "stripe" : "clover";
 }
 
 // Money is NUMERIC(10,2) here and integer cents at Stripe. ONE helper and one
@@ -1841,6 +1901,21 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
     // the frozen priced snapshot (D2), which is authoritative from this moment
     // on: a price edit in Manage Menu while the customer is tapping must never
     // change what they are charged.
+    // ---- Card under Clover: not built yet, and it must SAY so ----
+    // Placed ahead of every other card branch on purpose. Without it, Card
+    // under PAYMENTS_PROVIDER=clover would sail past the Stripe branch (which
+    // correctly requires provider==='stripe') and land on the mocked path
+    // below, inserting a 'captured' payment for money no terminal ever took.
+    // A 501 is the honest answer: the provider is selected but the hardware
+    // path is Phase 3. Cash is untouched and still works normally.
+    if (isCloverCardCheckout(paymentMethod)) {
+      throw new HttpError(
+        501,
+        "Card payments through the Clover Mini are not available yet (Clover plan Phase 3). " +
+          "Take this order as cash, or set PAYMENTS_PROVIDER back to its previous value."
+      );
+    }
+
     if (isStripeCardCheckout(paymentMethod)) {
       if (!stripeClient) {
         // Unreachable in practice: PAYMENTS_PROVIDER=stripe already requires a
@@ -2506,11 +2581,20 @@ async function loadOriginalPayment(client, orderId) {
 //   stripe_reader — interac_present. The network requires the physical card
 //                   at the reader, so this is only possible at the POS with
 //                   the customer standing there.
+//   clover_api    — a card sale taken on a Clover Mini. Recognised so it can be
+//                   refused cleanly; the actual reversal is Phase 4.
 function decideRefundSettlement({ original, surface, refundMethod, readerId }) {
   if (refundMethod === "cash") return "internal_cash";
 
-  const isStripeSale = original.method === "card" && Boolean(original.processorTxnId);
-  if (!isStripeSale) return "internal";
+  // Which processor took this money — from the ROW, not from PAYMENTS_PROVIDER
+  // (Clover Phase 2). Previously this branch asked only "card + a processor id
+  // => Stripe", which was true while Stripe was the only processor but would
+  // have quietly handed a Clover sale to stripeClient.refunds.create() the
+  // moment Phase 3 started writing Clover ids.
+  const processor = paymentProcessorOf(original);
+  if (original.method !== "card" || processor === "internal") return "internal";
+
+  if (processor === "clover") return "clover_api";
 
   if (original.processorPaymentType === "interac_present") {
     if (surface !== "pos") {
@@ -2802,6 +2886,24 @@ async function applyRefund(client, {
   // issued from this surface is rejected with nothing recorded.
   const original = await loadOriginalPayment(client, orderId);
   const settlement = decideRefundSettlement({ original, surface, refundMethod, readerId });
+
+  // Clover reversals are Phase 4 (Clover plan). Refused HERE, before the audit
+  // row and the negative ledger row are written, so a Clover sale cannot be
+  // recorded as refunded when no money moved. Letting it fall through would be
+  // the worst available outcome: `refundStatus` would be 'completed' and
+  // `goesThroughStripe` false, i.e. a settled reversal against a processor
+  // nobody ever called.
+  //
+  // The cash-out escape hatch still works — `refundMethod: 'cash'` returns
+  // 'internal_cash' above and never reaches this line — so a Clover customer
+  // at the counter can still be made whole in notes.
+  if (settlement === "clover_api") {
+    throw new HttpError(
+      501,
+      "This sale was taken on a Clover terminal, and Clover refunds are not implemented yet " +
+        "(Clover plan Phase 4). Issue a cash refund instead, or refund it in the Clover dashboard."
+    );
+  }
 
   // 1. Audit record. Internal reversals settle immediately ('completed'); a
   //    Stripe one starts 'pending' and is promoted by the webhook that
@@ -3829,9 +3931,13 @@ async function buildReceipt(client, orderId) {
   // a receipt for a charge it actually processed, so a cash sale — and every
   // sale taken while PAYMENTS_PROVIDER=mock — is print-only, and the frontend
   // is told why rather than being left to guess.
-  const isStripeCharge = Boolean(
-    stripeClient && PAYMENTS_PROVIDER === "stripe" && pay?.processor_txn_id?.startsWith("pi_")
-  );
+  //
+  // Asks the ROW who took the money, not PAYMENTS_PROVIDER (Clover Phase 2).
+  // The old `PAYMENTS_PROVIDER === "stripe"` test was equivalent while Stripe
+  // was the only processor, but it would hide the button on a genuine Stripe
+  // charge the moment the store switched to Clover — the same env-flag-versus-
+  // row confusion this phase removes from the refund path.
+  const isStripeCharge = Boolean(stripeClient && paymentProcessorOf(pay) === "stripe");
 
   return {
     business: {
@@ -3925,7 +4031,9 @@ app.post("/api/orders/:id/receipt/email", requireDevicePairing, async (req, res)
     );
     const paymentIntentId = rows[0]?.processor_txn_id;
 
-    if (!stripeClient || PAYMENTS_PROVIDER !== "stripe" || !paymentIntentId?.startsWith("pi_")) {
+    // Row-driven, not flag-driven (Clover Phase 2): an old Stripe charge must
+    // stay emailable after the store moves to Clover.
+    if (!stripeClient || paymentProcessorOf({ processorTxnId: paymentIntentId }) !== "stripe") {
       throw new HttpError(
         400,
         "This order has no card charge to email a receipt for — print the receipt instead"
@@ -9024,4 +9132,10 @@ module.exports = {
   requireStaffIdParam,
   verifyStaffPin,
   reconcilePendingCheckouts,
+  // Clover Phase 2 — exported so the provider/processor decisions can be
+  // exercised directly without standing up a database or a payment.
+  isStripeCardCheckout,
+  isCloverCardCheckout,
+  paymentProcessorOf,
+  decideRefundSettlement,
 };

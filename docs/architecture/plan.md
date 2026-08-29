@@ -4,7 +4,8 @@
 live here; the slice checklist lives in
 [docs/architecture/task.md](task.md). Read both at the start of every session.
 
-**Status:** Phase 0 (docs only) · **Created:** 2026-08-27 · **Owner:** @defihussle
+**Status:** Phase 2 (provider enum + per-payment refund dispatch) ·
+**Created:** 2026-08-27 · **Owner:** @defihussle
 
 > Terminology, one line each:
 > - **Semi-integration** — the payment terminal only takes the money; our POS
@@ -103,16 +104,53 @@ where the API underneath differs:
 2. **Reader validation expects `tmr_`.** [backend/server.js:8413](../../backend/server.js#L8413)
    rejects anything that doesn't match `/^tmr_[A-Za-z0-9_]{1,240}$/` — a Clover
    device id will not pass it.
-3. **The provider enum blocks boot.** `PAYMENTS_PROVIDERS = ["mock", "stripe"]`
-   ([backend/server.js:61](../../backend/server.js#L61)) throws at startup on any
-   other value, and `isStripeCardCheckout()`
-   ([backend/server.js:554](../../backend/server.js#L554)) is the single gate
-   deciding whether Card takes the Stripe path or the synchronous mocked path.
+3. ~~**The provider enum blocks boot.**~~ **RESOLVED in Phase 2.**
+   `PAYMENTS_PROVIDERS` is now `["mock", "stripe", "clover"]` and all three boot;
+   an unrecognised value still throws. `isStripeCardCheckout()` is unchanged and
+   still requires `provider === "stripe"`; `isCloverCardCheckout()` is its
+   separate twin. Card under `clover` returns **501**, deliberately never
+   falling through to the mocked path.
 4. **Every new Clover column or table must follow this repo's
    Schema Change Checklist** — write the new `.sql` in `database/`,
    `npm run schema:sync`, apply to **production**, `npm run check:schema` must
    print `Schema OK`, **then** push the dependent code. No exemption for a
    "small" or "additive" migration.
+
+### Phase 2 note — how the processor is decided (settled 2026-08-29)
+
+**No new schema.** Phase 2 added no column and no table; the processor is
+inferred from columns that already exist, via one helper —
+`paymentProcessorOf(payment)` in `backend/server.js`.
+
+The mapping is exhaustive against what the code actually writes today:
+
+| `payments.processor_txn_id` | Processor | Who writes it |
+| --- | --- | --- |
+| `NULL` | `internal` | cash, and every card sale on the mocked path |
+| starts with `pi_` | `stripe` | the Stripe webhook — the **only** writer of this column today |
+| anything else | `clover` | nothing yet; Phase 3 will |
+
+Two facts make this safe rather than a guess: the Stripe webhook is the sole
+writer of `processor_txn_id`, and the `pi_` prefix was **already** the Stripe
+discriminator elsewhere in the file (the receipt projection and the
+emailed-receipt route both tested it before this phase).
+
+**Phase 3 contract:** whichever column a Clover payment id lands in,
+`paymentProcessorOf()` is the single place to update. Everything money-related
+asks it who owns a payment, so a new processor is one edit there plus its
+settlement branch.
+
+Consequently `decideRefundSettlement()` now reads the **row**, not
+`PAYMENTS_PROVIDER`. It previously asked "card + a processor id ⇒ Stripe",
+which was true while Stripe was the only processor but would have quietly
+handed a Clover sale to `stripeClient.refunds.create()` as soon as Phase 3
+started writing Clover ids. A Clover row now returns `clover_api`, which
+`applyRefund()` refuses with a 501 **before** any row is written — a completed
+reversal against a processor nobody called is the worst available outcome.
+
+The same env-flag-versus-row confusion was fixed in the two receipt paths, for
+the same reason: an old Stripe charge must stay emailable after the store moves
+to Clover.
 
 ---
 

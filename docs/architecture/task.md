@@ -3,9 +3,10 @@
 The slice checklist. Decisions and context live in
 [docs/architecture/plan.md](plan.md). Read both at the start of every session.
 
-**Current slice: Phase 1 — OAuth callback + token store + merchant ping.**
-Stays the current slice until the human confirms it — including the outstanding
-production migration steps and the end-to-end Connect run.
+**Current slice: Phase 2 — provider enum + per-payment refund dispatch.**
+Stays the current slice until the human confirms it. Phase 2 needs **no
+migration and no deploy** — it is code-only and inert until someone sets
+`PAYMENTS_PROVIDER=clover`, which nobody has.
 
 ---
 
@@ -56,7 +57,7 @@ Clover API call, any change to `CLAUDE.md`.
 
 ---
 
-## Phase 1 — OAuth callback + token store + merchant ping ← **CURRENT SLICE**
+## Phase 1 — OAuth callback + token store + merchant ping ✅ code complete
 
 Local test steps: [clover-mini-phase1.md](clover-mini-phase1.md)
 
@@ -95,19 +96,34 @@ Display call · touching `isStripeCardCheckout()` · any UI.
 
 ---
 
-## Phase 2 — Provider enum + per-payment refund dispatch
+## Phase 2 — Provider enum + per-payment refund dispatch ← **CURRENT SLICE**
 
-- [ ] Extend the provider enum to `mock | stripe | clover` (today boot **throws**
-      on anything but `mock|stripe`)
-- [ ] Refunds dispatch **per payment row** to the processor that actually took
-      the money — not off the current env flag
-- [ ] Old Stripe rows keep refunding through the Stripe APIs even when
-      `PAYMENTS_PROVIDER=clover`
-- [ ] Plan the stripe-shaped schema names (see plan.md §5) — new columns, a
-      neutral column, or a documented reuse; whichever, via the Schema Change
-      Checklist
-- [ ] Confirm `settledPaymentsWhere()` / `settledRefundsWhere()` still net every
-      provider's rows correctly
+Design rationale: [plan.md §5 "Phase 2 note"](plan.md).
+
+- [x] Extend the provider enum to `mock | stripe | clover` — all three boot; an
+      unrecognised value still throws with the updated list
+- [x] `isStripeCardCheckout()` **unchanged** — still requires `provider ===
+      "stripe"`; added `isCloverCardCheckout()` as a separate twin rather than
+      widening it
+- [x] Card under `clover` returns **501** and never falls through to the mocked
+      path — verified end-to-end: no order, no payment, no `pending_checkouts` row
+- [x] Refunds dispatch **per payment row** via `paymentProcessorOf()` — the
+      processor is read off the row, never off `PAYMENTS_PROVIDER`
+- [x] Old Stripe rows keep refunding through Stripe even when
+      `PAYMENTS_PROVIDER=clover` — verified against a real DB row: settlement
+      `stripe_api`, identical under `mock` and `clover`
+- [x] A Clover-shaped row returns `clover_api` and is refused **501 before
+      anything is written** (Clover refunds are Phase 4)
+- [x] Cash refunds, dual-control, PIN and the $100 threshold untouched —
+      `refundMethod: 'cash'` still short-circuits to `internal_cash`
+- [x] **No new schema** — processor inferred from existing `processor_txn_id`.
+      Schema Change Checklist therefore does not apply to this slice.
+- [x] Confirmed `settledPaymentsWhere()` / `settledRefundsWhere()` are untouched
+      and purely status-based (`captured`/`refunded`) — processor-agnostic, not
+      narrowed to Stripe
+- [x] Fixed the same env-flag-vs-row bug in the two receipt paths, so an old
+      Stripe charge stays emailable after a switch to Clover
+- [ ] **Human confirms** — then this becomes Phase 3's slice
 
 **Done when:** `mock` and `stripe` behave **exactly** as before, `clover` is an
 accepted value that boots cleanly, and a refund on a historical Stripe payment
@@ -115,6 +131,9 @@ still goes to Stripe.
 
 **Out of scope:** taking a Clover payment · the waiting UI · Interac rules ·
 production flag changes.
+
+**Deploy note:** code-only, no migration. Inert until someone sets
+`PAYMENTS_PROVIDER=clover`; Render env is unchanged and still `mock`/`stripe`.
 
 ---
 
