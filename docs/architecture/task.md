@@ -3,10 +3,10 @@
 The slice checklist. Decisions and context live in
 [docs/architecture/plan.md](plan.md). Read both at the start of every session.
 
-**Current slice: Phase 3 — Cloud Pay Display checkout.**
-Stays the current slice until the human confirms it. Phase 3 needs **no
-migration and no deploy** — it is code-only and inert until someone sets
-`PAYMENTS_PROVIDER=clover`, which nobody has. Render env is unchanged.
+**Current slice: Phase 4 — refunds + orphan reconcile.**
+Stays the current slice until you confirm it. Phase 4 **adds a database column**
+(`order_refunds.clover_refund_id`) that has NOT been applied to production, so
+the code must not be pushed yet. Render env is unchanged.
 
 ---
 
@@ -137,7 +137,7 @@ production flag changes.
 
 ---
 
-## Phase 3 — Cloud Pay Display checkout ← **CURRENT SLICE**
+## Phase 3 — Cloud Pay Display checkout ✅ complete
 
 Endpoints, tip rationale and test steps:
 [clover-mini-phase3.md](clover-mini-phase3.md).
@@ -182,14 +182,44 @@ a cancelled payment leaves nothing behind.
 
 ---
 
-## Phase 4 — Refunds, Interac, reports
+## Phase 4 — Refunds, Interac, reports ← **CURRENT SLICE**
 
-- [ ] Clover refunds behind the existing dual-control / PIN / **$100 threshold**
-      rules
-- [ ] Tip-aware refund math preserved — `refundableBase = total − tip`
-- [ ] Interac to-card vs cash-out rules applied to the Clover path
-- [ ] **The Stripe refund path keeps working for old rows** (plan.md L7)
-- [ ] Clover rows reconcile in every report through the existing ledger helpers
+Endpoints, doc links and test results:
+[clover-mini-phase4.md](clover-mini-phase4.md).
+
+- [x] Clover refunds behind the existing dual-control / PIN / **$100 threshold**
+      rules — those sit above the dispatch and were not touched
+- [x] Clover refund calls the documented
+      `POST {base}/connect/v1/payments/{paymentId}/refunds` with Bearer token,
+      `X-Clover-Device-Id`, `X-POS-Id`, `Idempotency-Key` — verified by a real
+      sandbox round-trip
+- [x] Tip-aware refund math preserved — always sends an explicit server-computed
+      `amount`, never Clover's `fullRefund` (which would include the tip)
+- [x] **The Stripe refund path keeps working for old rows** (plan.md L7) —
+      verified: a `pi_` row still settles `stripe_api` while the env is `clover`
+- [x] Device-required rule: no `CLOVER_DEVICE_ID`, or a non-POS surface, returns
+      **409 before anything is written**. No faked completed card refund.
+- [x] Cash-out escape hatch untouched — `refundMethod: 'cash'` still returns
+      `internal_cash` and never reaches the Clover path
+- [x] Interac reuses the `processor_payment_type` Phase 3 already stored; **no
+      new card-type detection**, and a missing cardType is never guessed as Interac
+- [x] Indeterminate refunds (500 / 504 / network drop) stay **`pending`**, never
+      `failed` — a failed status would restore a voided order and invite a double refund
+- [x] Orphan reconcile: `POST /api/clover/reconcile` (owner/admin), looks up
+      `GET {base}/v3/merchants/{mId}/payments?filter=externalPaymentId=…`,
+      materializes once on SUCCESS, marks `failed` when Clover has no record,
+      leaves `orphaned` when unknown. **Not scheduled** — no cron, like
+      `RECONCILE_INTERVAL_MINUTES` defaulting to 0.
+- [x] Clover rows reconcile in every report through the existing ledger helpers
+      — the negative row is written by the same code, so `settledPaymentsWhere()`
+      nets it unchanged
+- [ ] **Apply `database/clover_refunds.sql` to PRODUCTION** — Checklist step 3.
+      **NOT DONE, awaiting your go-ahead.**
+- [ ] **Verify `Schema OK` against PRODUCTION** — Checklist step 4. **NOT DONE.**
+- [ ] **Push/deploy the dependent code** — Checklist step 5. Deliberately
+      **NOT DONE**: the boot guard exits when a required column is missing.
+- [ ] **Interac on real hardware** — coded, never seen an actual Interac tap
+- [ ] **Human confirms**, then this becomes Phase 5's slice
 
 **Done when:** full, partial-$ and line-item refunds work on a Clover sale, an
 old Stripe sale still refunds via Stripe, and Sales Summary / Transaction Log /

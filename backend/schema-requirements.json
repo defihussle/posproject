@@ -153,6 +153,11 @@
       "migration": "menu_ux_enhancements.sql"
     },
     {
+      "table": "order_refunds",
+      "column": "clover_refund_id",
+      "migration": "clover_refunds.sql"
+    },
+    {
       "table": "orders",
       "column": "discount_applied_by",
       "migration": "modifier_management_and_discounts.sql"

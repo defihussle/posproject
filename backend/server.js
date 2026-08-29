@@ -1052,6 +1052,133 @@ async function finishCloverPending(pending, status, message, kind) {
   console.error(`Clover payment ${status} (pending_checkout=${pending.id}, kind=${kind}): ${message}`);
 }
 
+// ---- Safety net: resolve orphaned Clover checkouts (Clover Phase 4) ----
+//
+// An 'orphaned' pending_checkout is one where the pay call gave no usable
+// answer (HTTP 500, a dropped connection, our own abort). The customer may or
+// may not have been charged, and nothing else in the system will ever find out
+// on its own. This asks Clover.
+//
+// Lookup uses the SAME externalPaymentId the pay call already sent — the
+// pending checkout's UUID with dashes stripped — so nothing extra had to be
+// stored to make this possible.
+//
+// Endpoint (Platform REST, NOT the /connect base):
+//   GET {apiBase}/v3/merchants/{mId}/payments?filter=externalPaymentId={id}
+//   docs.clover.com/dev/reference/paygetpayments lists externalPaymentId among
+//   the filterable fields and returns it on the payment object.
+//
+// Deliberately NOT a Stripe-style PaymentIntent retrieve — different processor,
+// different lookup.
+async function lookupCloverPaymentByExternalId(token, merchantId, externalPaymentId) {
+  const url =
+    `${CLOVER_API_BASE}/v3/merchants/${encodeURIComponent(merchantId)}/payments` +
+    `?filter=${encodeURIComponent(`externalPaymentId=${externalPaymentId}`)}`;
+  const resp = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+  });
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}: ${cloverSafeErrorText(await resp.text())}`);
+  }
+  const data = await resp.json();
+  const elements = Array.isArray(data?.elements) ? data.elements : [];
+  // Defensive: the filter is server-side, but a processor that ignored it would
+  // otherwise hand us somebody else's payment to materialize.
+  return elements.find((p) => p.externalPaymentId === externalPaymentId) || null;
+}
+
+// Returns a per-row summary; never throws for one bad row.
+async function reconcileCloverOrphans({ limit = 25 } = {}) {
+  const started = new Date().toISOString();
+  const out = { startedAt: started, checked: 0, settled: 0, failed: 0, stillUnknown: 0, rows: [] };
+
+  const { rows } = await pool.query(
+    `SELECT * FROM pending_checkouts
+      WHERE status = 'orphaned' AND order_id IS NULL
+      ORDER BY created_at
+      LIMIT $1`,
+    [limit]
+  );
+  if (rows.length === 0) return out;
+
+  let token;
+  let merchantId;
+  try {
+    ({ token, merchantId } = await getCloverAccessToken());
+  } catch (err) {
+    out.error = err.message;
+    return out;
+  }
+
+  for (const pending of rows) {
+    out.checked += 1;
+    const externalPaymentId = String(pending.id).replace(/-/g, "");
+    try {
+      const payment = await lookupCloverPaymentByExternalId(token, merchantId, externalPaymentId);
+
+      if (!payment) {
+        // Clover has no record of it, so no money moved. Safe to close as
+        // failed — the cart was already kept, nothing to release.
+        await pool.query(
+          `UPDATE pending_checkouts
+              SET status = 'failed',
+                  error_message = 'Reconcile: Clover has no payment for this checkout — nothing was charged',
+                  updated_at = now()
+            WHERE id = $1 AND status = 'orphaned'`,
+          [pending.id]
+        );
+        out.failed += 1;
+        out.rows.push({ id: pending.id, outcome: "failed", detail: "no payment at Clover" });
+        continue;
+      }
+
+      const result = String(payment.result || "").toUpperCase();
+      if (result && result !== "SUCCESS") {
+        await pool.query(
+          `UPDATE pending_checkouts
+              SET status = 'failed',
+                  error_message = $2,
+                  updated_at = now()
+            WHERE id = $1 AND status = 'orphaned'`,
+          [pending.id, `Reconcile: Clover reports the payment as ${result}`]
+        );
+        out.failed += 1;
+        out.rows.push({ id: pending.id, outcome: "failed", detail: `Clover result ${result}` });
+        continue;
+      }
+
+      // Paid after all. Materialize through the SAME path a live success uses
+      // — it re-reads the row FOR UPDATE and no-ops unless it is still
+      // 'awaiting_payment', so this cannot double-write an order.
+      await pool.query(
+        `UPDATE pending_checkouts SET status = 'awaiting_payment', updated_at = now()
+          WHERE id = $1 AND status = 'orphaned'`,
+        [pending.id]
+      );
+      await settleCloverPayment(pending, payment);
+
+      const { rows: after } = await pool.query(
+        "SELECT status, order_id FROM pending_checkouts WHERE id = $1",
+        [pending.id]
+      );
+      if (after[0]?.status === "succeeded") {
+        out.settled += 1;
+        out.rows.push({ id: pending.id, outcome: "settled", orderId: after[0].order_id });
+      } else {
+        out.stillUnknown += 1;
+        out.rows.push({ id: pending.id, outcome: "unresolved", detail: after[0]?.status });
+      }
+    } catch (err) {
+      // Could not reach Clover, or an unreadable answer. Leave it ORPHANED —
+      // the one thing this must never do is guess.
+      out.stillUnknown += 1;
+      out.rows.push({ id: pending.id, outcome: "unknown", detail: err.message });
+      console.error(`Clover reconcile could not resolve ${pending.id}: ${err.message}`);
+    }
+  }
+  return out;
+}
+
 // Entry point from the checkout route. Validates that a payment is even
 // possible, commits nothing itself, and returns the SAME 202 shape the Stripe
 // path returns so Order Entry needs no new branch.
@@ -2923,8 +3050,17 @@ async function loadOriginalPayment(client, orderId) {
 //   stripe_reader — interac_present. The network requires the physical card
 //                   at the reader, so this is only possible at the POS with
 //                   the customer standing there.
-//   clover_api    — a card sale taken on a Clover Mini. Recognised so it can be
-//                   refused cleanly; the actual reversal is Phase 4.
+//   clover_api    — a card sale taken on a Clover Mini. Refunded on the Mini
+//                   through REST Pay Display (Clover Phase 4).
+//
+// Does this reversal have to leave the building through a processor? If so the
+// refund row and its negative payments row both start 'pending' and only become
+// real when that processor confirms — money is not returned just because we
+// asked. settledPaymentsWhere() ignores 'pending', so an unconfirmed reversal
+// is invisible to every report until it genuinely settles.
+function goesThroughProcessor(settlement) {
+  return settlement === "stripe_api" || settlement === "stripe_reader" || settlement === "clover_api";
+}
 function decideRefundSettlement({ original, surface, refundMethod, readerId }) {
   if (refundMethod === "cash") return "internal_cash";
 
@@ -2936,7 +3072,30 @@ function decideRefundSettlement({ original, surface, refundMethod, readerId }) {
   const processor = paymentProcessorOf(original);
   if (original.method !== "card" || processor === "internal") return "internal";
 
-  if (processor === "clover") return "clover_api";
+  // ---- Clover (Phase 4) ----
+  // Every Clover reversal runs on the Mini: Clover's REST Pay refund is a
+  // device-attached API ("Clover device is idle", "POS is connected to the
+  // device"), unlike stripe_api which settles server-side with no reader.
+  // So the customer-present rule that Stripe applies only to Interac applies
+  // to ALL Clover card refunds — Back Office cannot issue one remotely.
+  //
+  // The Interac test reuses the processorPaymentType that Phase 3 already
+  // stored from Clover's own cardType. It invents no new detection, and a
+  // missing/unrecognised cardType was stored as 'card_present', never guessed
+  // as Interac — so this can only be true when Clover actually said Interac.
+  if (processor === "clover") {
+    if (surface !== "pos") {
+      throw new HttpError(
+        409,
+        original.processorPaymentType === "interac_present"
+          ? "This was an Interac payment on the Clover Mini, which can only be refunded to the card at " +
+              "the terminal. Ask the customer to return to the counter with their card, or issue a cash refund."
+          : "This sale was taken on the Clover Mini, and a Clover refund has to run on the terminal — " +
+              "it cannot be issued from Back Office. Refund it at the till, or issue a cash refund."
+      );
+    }
+    return "clover_api";
+  }
 
   if (original.processorPaymentType === "interac_present") {
     if (surface !== "pos") {
@@ -3239,19 +3398,25 @@ async function applyRefund(client, {
   // The cash-out escape hatch still works — `refundMethod: 'cash'` returns
   // 'internal_cash' above and never reaches this line — so a Clover customer
   // at the counter can still be made whole in notes.
-  if (settlement === "clover_api") {
+  // Clover Phase 4: a Clover reversal needs the Mini. Clover documents the
+  // REST Pay refund's prerequisites as "Clover device is idle" and "POS is
+  // connected to the device" — it is a device-attached API, not a server-side
+  // one. So with no device configured there is nothing to refund ON, and that
+  // is refused HERE, before any row is written, rather than recorded as a
+  // reversal that can never settle.
+  if (settlement === "clover_api" && !CLOVER_DEVICE_ID) {
     throw new HttpError(
-      501,
-      "This sale was taken on a Clover terminal, and Clover refunds are not implemented yet " +
-        "(Clover plan Phase 4). Issue a cash refund instead, or refund it in the Clover dashboard."
+      409,
+      "This sale was taken on a Clover terminal, and a Clover refund has to run on the Mini — " +
+        "but no device is configured (CLOVER_DEVICE_ID is not set). Issue a cash refund instead, " +
+        "or set the Mini's serial and try again. Nothing has been refunded."
     );
   }
 
-  // 1. Audit record. Internal reversals settle immediately ('completed'); a
-  //    Stripe one starts 'pending' and is promoted by the webhook that
-  //    confirms the processor actually returned the money.
-  const refundStatus =
-    settlement === "stripe_api" || settlement === "stripe_reader" ? "pending" : "completed";
+  // 1. Audit record. Internal reversals settle immediately ('completed'); one
+  //    that has to leave through a processor starts 'pending' and is promoted
+  //    only once that processor confirms the money actually went back.
+  const refundStatus = goesThroughProcessor(settlement) ? "pending" : "completed";
   const { rows: insRows } = await client.query(
     `INSERT INTO order_refunds (order_id, type, amount, tax_amount, reason, reason_note,
                                 requested_by, approved_by, status)
@@ -3281,7 +3446,7 @@ async function applyRefund(client, {
   // because we asked. settledPaymentsWhere() counts 'captured' + 'refunded'
   // only, so a pending (or failed) reversal is invisible to every report until
   // it genuinely settles, and a refund Stripe rejects never becomes a deduction.
-  const goesThroughStripe = settlement === "stripe_api" || settlement === "stripe_reader";
+  const goesThroughStripe = goesThroughProcessor(settlement);
   const ledgerMethod =
     settlement === "internal_cash" ? "cash" : original.method === "other" ? "other" : original.method;
   //
@@ -3341,6 +3506,26 @@ async function applyRefund(client, {
             readerId,
           }
         : null,
+    // Clover Phase 4 twin of the above. Same ordering rule: the caller performs
+    // it AFTER committing, so no transaction is held open across a network call.
+    pendingCloverRefund:
+      settlement === "clover_api"
+        ? {
+            refundId,
+            orderId,
+            // Clover's own payment id, straight off the payment row — this is
+            // what {paymentId} in the refund URL takes.
+            cloverPaymentId: original.processorTxnId,
+            // ALWAYS an explicit amount, never Clover's `fullRefund: true`.
+            // fullRefund means "the whole payment", which INCLUDES the tip —
+            // and this product's refund math is deliberately tip-aware
+            // (refundableBase = total − tip). Letting Clover decide what "full"
+            // means would silently hand back the tip on a full refund and
+            // diverge from what every report says was returned. The amount
+            // computed above is authoritative for both.
+            amount: refundAmount,
+          }
+        : null,
     orderStatus,
     // What a FUTURE reversal could still return. Anything after this point is
     // necessarily a partial (something has now been refunded), so it is capped
@@ -3364,6 +3549,134 @@ async function applyRefund(client, {
 // Returns the row's resulting state; it does NOT decide success. Only the
 // webhook promotes a refund to 'completed', because Stripe accepting the
 // request is not the same as the money reaching the customer.
+// ---- Clover refund settlement (Clover Phase 4) ----
+// POST {connectBase}/v1/payments/{paymentId}/refunds
+//   docs.clover.com/dev/docs/refunding-a-charge
+//   body: { "amount": <cents> }   (partial) | { "fullRefund": true }
+// We always send an explicit amount — see the note where pendingCloverRefund is
+// built. Headers are the same set the pay call uses, including the mandatory
+// Idempotency-Key, derived from OUR refund row id so a retry after a timeout
+// cannot refund twice.
+//
+// Mirrors settleStripeRefund exactly in shape: it does not decide success on
+// its own beyond what Clover tells us, and every exit path writes a terminal
+// state onto the refund row.
+async function settleCloverRefund(pending) {
+  if (!CLOVER_DEVICE_ID) {
+    await failCloverRefund(pending.refundId, "No Clover device is configured (CLOVER_DEVICE_ID)");
+    return { status: "failed", error: "No Clover device is configured" };
+  }
+  if (!pending.cloverPaymentId) {
+    await failCloverRefund(pending.refundId, "This sale has no Clover payment id to refund against");
+    return { status: "failed", error: "No Clover payment id on the sale" };
+  }
+
+  let token;
+  try {
+    ({ token } = await getCloverAccessToken());
+  } catch (err) {
+    await failCloverRefund(pending.refundId, err.message);
+    return { status: "failed", error: err.message };
+  }
+
+  const url = `${CLOVER_CONNECT_BASE}/v1/payments/${encodeURIComponent(pending.cloverPaymentId)}/refunds`;
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: cloverPayHeaders(token, `rf_${pending.refundId}`),
+      body: JSON.stringify({ amount: toStripeAmount(pending.amount) }),
+    });
+
+    if (!resp.ok) {
+      const body = cloverSafeErrorText(await resp.text());
+      // 500 / 504 leave the outcome genuinely unknown: the terminal may have
+      // returned the money. Those stay 'pending' so a human (or a later sweep)
+      // resolves them, rather than being reported as a clean failure that
+      // would restore a voided order and invite a double refund.
+      if (resp.status === 500 || resp.status === 504) {
+        await pool
+          .query(
+            `UPDATE order_refunds SET processor_status = $2 WHERE id = $1 AND status = 'pending'`,
+            [pending.refundId, `indeterminate_http_${resp.status}`]
+          )
+          .catch(() => {});
+        console.error(
+          `Clover refund INDETERMINATE (order_refund=${pending.refundId}, HTTP ${resp.status}): ${body}`
+        );
+        return { status: "pending", indeterminate: true, error: body };
+      }
+      await failCloverRefund(pending.refundId, `Clover refused the refund (HTTP ${resp.status}): ${body}`);
+      return { status: "failed", error: body };
+    }
+
+    const data = await resp.json().catch(() => ({}));
+    // Clover's published refund page shows the success body only as a
+    // screenshot, so the id is read defensively from either shape rather than
+    // guessing one. A refund that succeeded but whose id we could not read is
+    // still a completed refund — the money moved.
+    const cloverRefundId = data?.refund?.id || data?.id || null;
+    const processorStatus = data?.refund?.result || data?.result || "SUCCESS";
+
+    await promoteCloverRefund(pending.refundId, cloverRefundId, String(processorStatus));
+    return { status: "completed", cloverRefundId };
+  } catch (err) {
+    // Network drop mid-refund. Same reasoning as the 500 above: unknown, so
+    // left pending rather than declared failed.
+    console.error(`Clover refund error (order_refund=${pending.refundId}): ${err.message}`);
+    await pool
+      .query(
+        `UPDATE order_refunds SET processor_status = 'indeterminate_network' WHERE id = $1 AND status = 'pending'`,
+        [pending.refundId]
+      )
+      .catch(() => {});
+    return { status: "pending", indeterminate: true, error: err.message };
+  }
+}
+
+// Twins of promote/failStripeRefund. Separate functions rather than a shared
+// one with a column name passed in: the column is the whole difference, and a
+// dynamically-chosen column name in an UPDATE is exactly the kind of thing that
+// silently writes to the wrong place later.
+async function promoteCloverRefund(refundId, cloverRefundId, processorStatus) {
+  const { rowCount } = await pool.query(
+    `UPDATE order_refunds
+        SET status = 'completed',
+            clover_refund_id = COALESCE($2, clover_refund_id),
+            processor_status = $3
+      WHERE id = $1 AND status = 'pending'`,
+    [refundId, cloverRefundId || null, processorStatus || null]
+  );
+  if (rowCount === 1) {
+    await pool.query(
+      `UPDATE payments SET status = 'refunded' WHERE refund_id = $1 AND status = 'pending'`,
+      [refundId]
+    );
+  }
+  return rowCount === 1;
+}
+
+async function failCloverRefund(refundId, message) {
+  const { rowCount } = await pool.query(
+    `UPDATE order_refunds
+        SET status = 'failed',
+            reason_note = COALESCE(reason_note, '') ||
+                          CASE WHEN COALESCE(reason_note,'') = '' THEN '' ELSE ' | ' END ||
+                          $2
+      WHERE id = $1 AND status = 'pending'`,
+    [refundId, `Refund failed: ${String(message).slice(0, 200)}`]
+  );
+  if (rowCount === 1) {
+    await pool.query(
+      `UPDATE payments SET status = 'failed' WHERE refund_id = $1 AND status = 'pending'`,
+      [refundId]
+    );
+    // A void that could not actually be reversed must not stay cancelled —
+    // same rule the Stripe path follows.
+    await restoreVoidedOrderAfterFailedReversal(refundId);
+  }
+  return rowCount === 1;
+}
+
 async function settleStripeRefund(pending) {
   if (!stripeClient) {
     await failStripeRefund(pending.refundId, "Stripe is not configured on this server");
@@ -3681,7 +3994,15 @@ app.post("/api/orders/:id/refund", requireDevicePairing, async (req, res) => {
       result.stripe = await settleStripeRefund(result.pendingStripeRefund);
       result.refund.status = result.stripe.status;
     }
+    // Clover Phase 4 — the two are mutually exclusive by construction
+    // (decideRefundSettlement returns exactly one settlement), so this is an
+    // independent branch rather than an else.
+    if (result.pendingCloverRefund) {
+      result.clover = await settleCloverRefund(result.pendingCloverRefund);
+      result.refund.status = result.clover.status;
+    }
     delete result.pendingStripeRefund;
+    delete result.pendingCloverRefund;
     res.status(201).json(result);
   } catch (err) {
     if (!committed) await client.query("ROLLBACK").catch(() => {});
@@ -4594,7 +4915,15 @@ app.post("/api/backoffice/orders/:id/refund", async (req, res) => {
       result.stripe = await settleStripeRefund(result.pendingStripeRefund);
       result.refund.status = result.stripe.status;
     }
+    // Clover Phase 4 — the two are mutually exclusive by construction
+    // (decideRefundSettlement returns exactly one settlement), so this is an
+    // independent branch rather than an else.
+    if (result.pendingCloverRefund) {
+      result.clover = await settleCloverRefund(result.pendingCloverRefund);
+      result.refund.status = result.clover.status;
+    }
     delete result.pendingStripeRefund;
+    delete result.pendingCloverRefund;
     res.status(201).json(result);
   } catch (err) {
     if (!committed) await client.query("ROLLBACK").catch(() => {});
@@ -9531,6 +9860,27 @@ app.get("/api/clover/devices", async (req, res) => {
   }
 });
 
+// --------------- POST /api/clover/reconcile ---------------
+// The manual safety net for orphaned Clover checkouts (Clover Phase 4).
+//
+// Owner/admin only — it MUTATES payment state (it can create an order), so it
+// is gated exactly like the other payment-admin surfaces rather than left open
+// the way the read-only status/devices endpoints are.
+//
+// Deliberately NOT scheduled. There is no cron and no interval env var yet:
+// nothing sweeps unattended until someone decides it should, the same stance
+// RECONCILE_INTERVAL_MINUTES takes for the Stripe sweep (default 0 = never).
+app.post("/api/clover/reconcile", async (req, res) => {
+  try {
+    await requireBackofficeSession(req); // owner/admin only
+    const limit = Math.min(100, Math.max(1, Number(req.body?.limit) || 25));
+    const report = await reconcileCloverOrphans({ limit });
+    res.json(report);
+  } catch (err) {
+    sendHttpError(res, err, "Clover reconcile failed");
+  }
+});
+
 // --------------- POST /api/clover/device/ping ---------------
 // "Is the Mini reachable and is Cloud Pay Display running on it?"
 //   POST {connectBase}/v1/device/ping  → { "connected": true }
@@ -9693,4 +10043,7 @@ module.exports = {
   isCloverCardCheckout,
   paymentProcessorOf,
   decideRefundSettlement,
+  // Clover Phase 4 — exercised directly by the offline test harness.
+  __settleCloverRefund: settleCloverRefund,
+  __reconcileCloverOrphans: reconcileCloverOrphans,
 };
