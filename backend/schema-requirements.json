@@ -153,9 +153,39 @@
       "migration": "menu_ux_enhancements.sql"
     },
     {
+      "table": "order_items",
+      "column": "name_snapshot",
+      "migration": "online_orders.sql"
+    },
+    {
+      "table": "order_items",
+      "column": "options_snapshot",
+      "migration": "online_orders.sql"
+    },
+    {
       "table": "order_refunds",
       "column": "clover_refund_id",
       "migration": "clover_refunds.sql"
+    },
+    {
+      "table": "orders",
+      "column": "clover_ecomm_charge_id",
+      "migration": "online_orders.sql"
+    },
+    {
+      "table": "orders",
+      "column": "customer_email",
+      "migration": "online_orders.sql"
+    },
+    {
+      "table": "orders",
+      "column": "customer_instructions",
+      "migration": "online_orders.sql"
+    },
+    {
+      "table": "orders",
+      "column": "customer_phone",
+      "migration": "online_orders.sql"
     },
     {
       "table": "orders",
@@ -171,6 +201,21 @@
       "table": "orders",
       "column": "discount_reason",
       "migration": "modifier_management_and_discounts.sql"
+    },
+    {
+      "table": "orders",
+      "column": "online_order_ref",
+      "migration": "online_orders.sql"
+    },
+    {
+      "table": "orders",
+      "column": "pickup_at",
+      "migration": "online_orders.sql"
+    },
+    {
+      "table": "orders",
+      "column": "source",
+      "migration": "online_orders.sql"
     },
     {
       "table": "orders",
@@ -194,6 +239,11 @@
     },
     {
       "table": "payments",
+      "column": "processor",
+      "migration": "online_orders.sql"
+    },
+    {
+      "table": "payments",
       "column": "processor_payment_type",
       "migration": "stripe_terminal.sql"
     },
@@ -201,6 +251,11 @@
       "table": "payments",
       "column": "refund_id",
       "migration": "refunds.sql"
+    },
+    {
+      "table": "staff",
+      "column": "is_system",
+      "migration": "online_orders.sql"
     },
     {
       "table": "staff",
