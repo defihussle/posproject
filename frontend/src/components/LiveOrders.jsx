@@ -113,6 +113,7 @@ export default function LiveOrders() {
             <span className="liveorders-card__number">#{o.order_number}</span>
             <span className="bo-pill bo-pill--negative">Voided</span>
           </div>
+          <OnlineTags order={o} />
           <p className="liveorders-card__voidnote">
             {o.voided_from_status === "ready"
               ? "Was ready — kitchen still to pull it from the pass."
@@ -169,6 +170,7 @@ export default function LiveOrders() {
                       {formatMMSS(secs)}
                     </span>
                   </div>
+                  <OnlineTags order={o} />
                   <ItemLines items={o.items} />
                 </div>
               );
@@ -211,7 +213,38 @@ function ModifierNote({ item }) {
     ...(item.added_modifiers || []).map((m) => (m.quantity > 1 ? `${m.name} ×${m.quantity}` : m.name)),
     ...(item.removed_ingredients || []).map((r) => `NO ${r}`),
     ...(item.addons || []).map((a) => a.name),
+    // Online lines carry their customisations as one pre-formatted string —
+    // there are no modifier_options rows behind a website cart to build the
+    // structured lists above from.
+    ...(item.options_snapshot ? [item.options_snapshot] : []),
   ];
   if (parts.length === 0) return null;
   return <span className="liveorders-card__mods">{parts.join(" · ")}</span>;
+}
+
+// Provenance tags for a website order, using the Back Office pill classes
+// already in use on these cards. Gated on source === 'online': every in-store
+// order is 'pickup' too (column default), so tagging on fulfillment_type
+// alone would label the entire board.
+function OnlineTags({ order }) {
+  if (order.source !== "online") return null;
+
+  const pickupAt = order.pickup_at ? new Date(order.pickup_at) : null;
+  const pickupClock =
+    pickupAt && !Number.isNaN(pickupAt.getTime())
+      ? pickupAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : null;
+
+  return (
+    <div className="liveorders-card__tags">
+      <span className="bo-pill bo-pill--neutral">ONLINE</span>
+      <span className="bo-pill bo-pill--neutral">
+        {order.fulfillment_type === "delivery" ? "DELIVERY" : "PICKUP"}
+      </span>
+      {order.customer_name && (
+        <span className="liveorders-card__tagtext">{order.customer_name}</span>
+      )}
+      {pickupClock && <span className="liveorders-card__tagtext">for {pickupClock}</span>}
+    </div>
+  );
 }

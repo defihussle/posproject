@@ -285,6 +285,7 @@
   --kds-pad-y: 28px;
   --kds-card-radius: 16px;
   --kds-top-pad: 16px 18px;
+  --kds-top-pad-x: 18px;
   --kds-num-size: 2.4rem;
   --kds-timer-size: 1.6rem;
   --kds-status-size: 0.82rem;
@@ -315,6 +316,7 @@
   --kds-pad-y: 20px;
   --kds-card-radius: 14px;
   --kds-top-pad: 12px 14px;
+  --kds-top-pad-x: 14px;
   --kds-num-size: 2rem;
   --kds-timer-size: 1.3rem;
   --kds-status-size: 0.74rem;
@@ -340,6 +342,7 @@
   --kds-pad-y: 14px;
   --kds-card-radius: 12px;
   --kds-top-pad: 10px 12px;
+  --kds-top-pad-x: 12px;
   --kds-num-size: 1.7rem;
   --kds-timer-size: 1.1rem;
   --kds-status-size: 0.66rem;
@@ -1382,4 +1385,47 @@
   color: #8A8A85;
   text-align: center;
   padding: 4px 8px;
+}
+
+/* ---- Online-order tags (ONLINE / PICKUP + who and when) ----
+   Deliberately the same neutral pill as .kds-card__status: provenance is
+   context, not urgency, and it must not compete with the elapsed-time tier
+   or the workflow-stage color the card already uses. Only rendered on
+   source='online' tickets, so in-store cards are visually unchanged. */
+.kds-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px var(--kds-top-pad-x, 14px);
+  background: #FCFCFB;
+  border-bottom: 1px solid #F0F0EF;
+}
+
+.kds-card__tag {
+  font-family: var(--font-mono);
+  font-size: var(--kds-status-size);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: #F0F0EF;
+  color: #6B6B6B;
+}
+
+/* One step darker than the neutral pill — enough to read "this one did not
+   come from the till" at a glance, without introducing a new accent color. */
+.kds-card__tag--online {
+  background: #E4E4E2;
+  color: #3D3D3B;
+}
+
+.kds-card__tagtext {
+  font-size: var(--kds-status-size);
+  font-weight: 600;
+  color: #6B6B6B;
+}
+
+.kds-card--voided .kds-card__tags {
+  background: transparent;
 }

@@ -385,7 +385,12 @@ function OrderDetailModal({ order, onClose, onReversed }) {
             <DetailRow label="Server" value={order.staff_name} />
             <DetailRow label="Payment" value={order.payment_method} mono />
             <DetailRow label="Time" value={new Date(order.created_at).toLocaleString()} />
+            {order.source === "online" && <DetailRow label="Source" value="Online (website)" />}
             {order.customer_name && <DetailRow label="Customer" value={order.customer_name} />}
+            {order.customer_phone && <DetailRow label="Phone" value={order.customer_phone} mono />}
+            {order.pickup_at && (
+              <DetailRow label="Pickup time" value={new Date(order.pickup_at).toLocaleString()} />
+            )}
           </div>
 
           <div className="staffmgr__modal-divider" />

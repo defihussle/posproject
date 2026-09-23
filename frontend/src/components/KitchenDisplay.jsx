@@ -41,6 +41,42 @@ function formatClock(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+// Same clock, but tolerant: pickup_at is NULL on every in-store order and on
+// any online order placed for "as soon as possible", so this must return
+// nothing rather than "Invalid Date" on the kitchen screen.
+function formatPickupClock(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : formatClock(iso);
+}
+
+// Provenance row for a WEBSITE order: where it came from, how it leaves, who
+// is collecting it and when.
+//
+// Gated on source === 'online' as a whole. Every in-store order also carries
+// fulfillment_type 'pickup' (it is the column default), so tagging on that
+// alone would stamp PICKUP across the entire board and add noise to every
+// ticket the kitchen already understands. Only the label itself follows
+// fulfillment_type.
+function OrderTags({ order }) {
+  if (order.source !== "online") return null;
+
+  const pickupClock = formatPickupClock(order.pickup_at);
+
+  return (
+    <div className="kds-card__tags">
+      <span className="kds-card__tag kds-card__tag--online">ONLINE</span>
+      <span className="kds-card__tag">
+        {order.fulfillment_type === "delivery" ? "DELIVERY" : "PICKUP"}
+      </span>
+      {order.customer_name && (
+        <span className="kds-card__tagtext">{order.customer_name}</span>
+      )}
+      {pickupClock && <span className="kds-card__tagtext">for {pickupClock}</span>}
+    </div>
+  );
+}
+
 // ---- New-order chime via Web Audio API ----
 // Two quick ascending tones, subtle and non-alarming.
 // Browser autoplay restrictions: AudioContext starts suspended until a user
@@ -650,6 +686,8 @@ function OrderCard({ order, nowMs, busy, failed, onAdvance }) {
         </div>
       </div>
 
+      <OrderTags order={order} />
+
       <div className="kds-card__items">
         {order.items.map((item) => (
           <ItemBlock key={item.id} item={item} />
@@ -707,6 +745,8 @@ function VoidedCard({ order, nowMs, busy, failed, onAcknowledge, compact = false
           <span className="kds-card__timer kds-card__timer--voided">{formatMMSS(sec)}</span>
         </div>
       </div>
+
+      <OrderTags order={order} />
 
       <div className="kds-card__voidmsg">
         {wasReady
@@ -812,6 +852,16 @@ function ItemBlock({ item }) {
               {opt.choice}
             </span>
           ))}
+        </div>
+      )}
+
+      {/* An online line's extras and removals: one readable string, because a
+          website cart has no modifier_options rows to build the structured
+          buckets above from. Rendered in the removed-ingredient slot so a
+          "No onions" from the website is as loud as one from the till. */}
+      {item.options_snapshot && (
+        <div className="kds-item__removed">
+          <span className="kds-item__removed-tag">{item.options_snapshot}</span>
         </div>
       )}
 
@@ -1041,6 +1091,8 @@ function PastOrderDetail({ order, onClose, onUndo, undoBusy, undoError }) {
             </>
           )}
         </div>
+
+        <OrderTags order={order} />
 
         <div className={`kds-detail__items${order.voided ? " kds-detail__items--voided" : ""}`}>
           {order.items.map((item) => (

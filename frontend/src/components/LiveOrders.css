@@ -292,3 +292,21 @@
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
 }
+
+/* ---- Online-order tags (ONLINE / PICKUP + who and when) ----
+   Uses the shared .bo-pill classes the rest of Back Office uses; this only
+   lays them out. Rendered on source='online' cards only, so in-store
+   tickets look exactly as they did. */
+.liveorders-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.liveorders-card__tagtext {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}

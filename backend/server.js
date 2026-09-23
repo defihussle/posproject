@@ -567,9 +567,16 @@ app.post("/api/auth/login", requireDevicePairing, async (req, res) => {
   }
 
   try {
-    // Fetch all active staff with their hashed PINs
+    // Fetch all active staff with their hashed PINs.
+    //
+    // is_system rows are excluded: the website's 'Online Ordering' account is
+    // a machine user that exists only because orders.staff_id is NOT NULL.
+    // Nobody holds its PIN, so it has no business being in a set we bcrypt
+    // every typed PIN against. COALESCE keeps this working on a database
+    // where the column has not been added yet.
     const { rows } = await pool.query(
-      "SELECT id, name, role, location_id, pin_hash FROM staff WHERE active = true"
+      `SELECT id, name, role, location_id, pin_hash FROM staff
+        WHERE active = true AND COALESCE(is_system, false) = false`
     );
 
     // Compare submitted PIN against each hash
@@ -678,7 +685,33 @@ function isCloverCardCheckout(paymentMethod) {
 // PHASE 3 CONTRACT: whichever column Clover's payment id lands in, update THIS
 // function. It is the single place the rest of the system asks who owns a
 // payment, so a new processor is one edit here plus its settlement branch.
+//
+// ONLINE ORDERING: the prefix inference below is now a FALLBACK, not the rule.
+// A Clover HOSTED ECOMMERCE charge id (website checkout) does not start with
+// `pi_` either, so the old logic would have classified it 'clover' and
+// decideRefundSettlement would have sent a web refund to the in-store Flex —
+// telling a customer who ordered from their sofa to bring their card to the
+// counter. payments.processor says it outright, and it is checked FIRST.
+// NULL processor = a row written before that column existed; those keep the
+// prefix logic they have always had, which is why nothing was backfilled.
 function paymentProcessorOf(payment) {
+  const explicit = payment?.processor ?? null;
+  const entryType = payment?.processorPaymentType ?? payment?.processor_payment_type ?? null;
+
+  // Checked before anything else, and deliberately before the txn-id test:
+  // an online charge stays online even if some future code path writes an id
+  // into processor_txn_id. processor_payment_type is honoured as a second
+  // signal so a row written by one and not the other still lands correctly.
+  if (explicit === "clover_ecomm" || entryType === "online_ecomm") return "online_ecomm";
+
+  if (explicit) {
+    // 'clover_pos' is the Flex / Cloud Pay Display. The rest of this file has
+    // always called that processor 'clover', so keep that name rather than
+    // renaming a value every settlement branch already tests for.
+    if (explicit === "clover_pos") return "clover";
+    return explicit; // 'stripe' | 'internal'
+  }
+
   const txnId = payment?.processorTxnId ?? payment?.processor_txn_id ?? null;
   if (!txnId) return "internal";
   return String(txnId).startsWith("pi_") ? "stripe" : "clover";
@@ -2523,6 +2556,379 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
   return startTerminalPayment(res, pendingForReader);
 });
 
+// ===================================================================
+// ONLINE ORDER INGEST (narcostacos.ca -> this API)
+// ===================================================================
+// A SEPARATE route from POST /api/orders above, deliberately, and not a
+// variant of it:
+//
+//   * POST /api/orders is behind requireDevicePairing, which reads a paired-
+//     device cookie. A Netlify function on another domain has no such cookie
+//     and must never be given one — device pairing is what stops an arbitrary
+//     browser ringing in sales.
+//   * That route also PRICES the cart from the live menu. An online order was
+//     already priced and ALREADY CHARGED by the website before it got here, so
+//     re-pricing it could disagree with the amount on the customer's card.
+//     This route therefore takes the amounts as given and only checks that
+//     they are internally consistent (see assertAmountsAddUp).
+//
+// Trust model: a shared secret over HTTPS, server-to-server. The website's
+// Netlify function is the only caller. No browser ever hits this, so
+// narcostacos.ca is NOT in ALLOWED_ORIGINS and must not be added — a CORS
+// entry would invite exactly the browser-side calls this design excludes.
+//
+// No card data is accepted here, ever. The card was tokenised by Clover's
+// hosted iframe and charged by Clover; all this route receives is an opaque
+// charge id for reconciliation.
+
+const ONLINE_ORDER_LOCATION_KEY = "lawrence";
+
+/** Integer cents -> the NUMERIC(10,2) dollars every money column stores. */
+function centsToDollars(cents) {
+  return round2(cents / 100);
+}
+
+/** A non-negative integer, and nothing that merely looks like one. */
+function isNonNegativeInt(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+function cleanIngestText(value, max) {
+  return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+/**
+ * Constant-time secret check.
+ *
+ * timingSafeEqual throws on a length mismatch, which would itself leak the
+ * secret's length, so both sides are hashed to a fixed 32 bytes first and the
+ * comparison always runs over equal-length buffers.
+ */
+function onlineSecretMatches(presented) {
+  const expected = process.env.ONLINE_ORDER_SECRET;
+  if (!expected || typeof presented !== "string" || presented.length === 0) return false;
+  const a = crypto.createHash("sha256").update(presented).digest();
+  const b = crypto.createHash("sha256").update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * The arithmetic must close, or nothing is written.
+ *
+ * This is NOT a re-pricing — the customer has already been charged and this
+ * server does not get to disagree with that number. It is a consistency check:
+ * a payload whose lines do not add up to its own subtotal, or whose total is
+ * not its own parts, is a bug or a tamper, and either way a ticket written
+ * from it would put the wrong money in the day's reports.
+ */
+function assertAmountsAddUp(amounts, lines) {
+  const lineSum = lines.reduce((sum, l) => sum + l.unitPriceCents * l.quantity, 0);
+  if (lineSum !== amounts.subtotalCents) {
+    throw new HttpError(
+      400,
+      `Line items total ${lineSum} cents but subtotalCents is ${amounts.subtotalCents}`
+    );
+  }
+
+  const expectedTotal =
+    amounts.subtotalCents - amounts.discountCents + amounts.taxCents + amounts.tipCents;
+  if (expectedTotal !== amounts.totalCents) {
+    throw new HttpError(
+      400,
+      `Amounts do not add up: expected totalCents ${expectedTotal}, got ${amounts.totalCents}`
+    );
+  }
+}
+
+/** Parses + validates the whole payload. Throws HttpError; writes nothing. */
+function readOnlineOrderPayload(body) {
+  const payload = body || {};
+
+  const idempotencyKey = cleanIngestText(payload.idempotencyKey, 200);
+  if (!idempotencyKey) throw new HttpError(400, "idempotencyKey is required");
+
+  const chargeId = cleanIngestText(payload.chargeId, 200);
+  if (!chargeId) throw new HttpError(400, "chargeId is required");
+
+  // Recorded for reconciliation only. The sandbox merchant is USD and the live
+  // Toronto one is CAD; this route does not convert and does not judge.
+  const currency = cleanIngestText(payload.currency, 10).toLowerCase();
+  if (currency !== "usd" && currency !== "cad") {
+    throw new HttpError(400, "currency must be 'usd' or 'cad'");
+  }
+
+  // Pickup at Lawrence is the whole of what is live. Anything else is a
+  // configuration mistake upstream and is rejected rather than quietly stored
+  // as something this kitchen cannot fulfil.
+  if (payload.fulfillment !== "pickup") {
+    throw new HttpError(400, "fulfillment must be 'pickup'");
+  }
+  if (payload.locationKey !== ONLINE_ORDER_LOCATION_KEY) {
+    throw new HttpError(400, `locationKey must be '${ONLINE_ORDER_LOCATION_KEY}'`);
+  }
+
+  const customer = payload.customer || {};
+  const customerName = cleanIngestText(customer.name, 120);
+  const customerPhone = cleanIngestText(customer.phone, 40);
+  const customerEmail = cleanIngestText(customer.email, 200);
+  if (!customerName) throw new HttpError(400, "customer.name is required");
+  if (!customerPhone) throw new HttpError(400, "customer.phone is required");
+
+  let pickupAt = null;
+  if (payload.pickupAt !== null && payload.pickupAt !== undefined && payload.pickupAt !== "") {
+    const parsed = new Date(payload.pickupAt);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new HttpError(400, "pickupAt must be an ISO-8601 timestamp or null");
+    }
+    pickupAt = parsed.toISOString();
+  }
+
+  const amountsRaw = payload.amounts || {};
+  const amounts = {};
+  for (const key of ["subtotalCents", "taxCents", "tipCents", "discountCents", "totalCents"]) {
+    if (!isNonNegativeInt(amountsRaw[key])) {
+      throw new HttpError(400, `amounts.${key} must be a non-negative integer number of cents`);
+    }
+    amounts[key] = amountsRaw[key];
+  }
+
+  if (!Array.isArray(payload.lines) || payload.lines.length === 0) {
+    throw new HttpError(400, "At least one line is required");
+  }
+  if (payload.lines.length > 100) {
+    throw new HttpError(400, "Too many lines");
+  }
+
+  const lines = payload.lines.map((raw, index) => {
+    const name = cleanIngestText(raw?.name, 200);
+    if (!name) throw new HttpError(400, `lines[${index}].name is required`);
+    if (!Number.isInteger(raw.quantity) || raw.quantity < 1) {
+      throw new HttpError(400, `lines[${index}].quantity must be an integer of at least 1`);
+    }
+    if (!isNonNegativeInt(raw.unitPriceCents)) {
+      throw new HttpError(400, `lines[${index}].unitPriceCents must be a non-negative integer`);
+    }
+    const asStrings = (value) =>
+      (Array.isArray(value) ? value : [])
+        .map((entry) => cleanIngestText(entry, 120))
+        .filter(Boolean);
+
+    return {
+      name,
+      quantity: raw.quantity,
+      unitPriceCents: raw.unitPriceCents,
+      notes: cleanIngestText(raw.notes, 500) || null,
+      extras: asStrings(raw.extras),
+      removedIngredients: asStrings(raw.removedIngredients),
+    };
+  });
+
+  assertAmountsAddUp(amounts, lines);
+
+  return {
+    idempotencyKey,
+    chargeId,
+    currency,
+    customerName,
+    customerPhone,
+    customerEmail: customerEmail || null,
+    pickupAt,
+    notes: cleanIngestText(payload.notes, 500) || null,
+    amounts,
+    lines,
+  };
+}
+
+/**
+ * The kitchen-readable version of a line's customisations.
+ *
+ * In-store these are order_item_modifiers rows keyed to modifier_options
+ * UUIDs, which a website cart cannot produce. This is what the KDS prints
+ * instead, so it is written to be read by a cook mid-service, not parsed.
+ */
+function buildOptionsSnapshot(line) {
+  const parts = [
+    ...line.removedIngredients.map((name) => `No ${name}`),
+    ...line.extras.map((name) => `+ ${name}`),
+  ];
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+// POST /api/online-orders
+// Header: X-Online-Order-Secret
+app.post("/api/online-orders", async (req, res) => {
+  // 503, not 500 and not a boot crash: an API with no online-ordering secret
+  // configured is a perfectly healthy in-store POS, and the till must keep
+  // taking money whatever the website can or cannot do.
+  if (!process.env.ONLINE_ORDER_SECRET) {
+    return res.status(503).json({ error: "online_ingest_not_configured" });
+  }
+  if (!onlineSecretMatches(req.get("X-Online-Order-Secret"))) {
+    // Deliberately uninformative, and never logs what was presented.
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  let order;
+  try {
+    order = readOnlineOrderPayload(req.body);
+  } catch (err) {
+    if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+    throw err;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows: locRows } = await client.query(
+      "SELECT id FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
+    );
+    if (locRows.length === 0) throw new HttpError(500, "No active location");
+    const locationId = locRows[0].id;
+
+    // The machine user from database/online_orders.sql. Its absence means that
+    // migration has not been applied, which is a server misconfiguration (500),
+    // not something the caller did wrong.
+    const { rows: staffRows } = await client.query(
+      `SELECT id FROM staff
+        WHERE is_system = true AND name = 'Online Ordering' AND active = true
+        LIMIT 1`
+    );
+    if (staffRows.length === 0) {
+      throw new HttpError(
+        500,
+        "The 'Online Ordering' staff account is missing - apply database/online_orders.sql"
+      );
+    }
+    const staffId = staffRows[0].id;
+
+    // ---- Idempotency ----
+    // The website reuses one key for every retry of a single checkout, and the
+    // charge id is unique at Clover. Either one already being present means
+    // this exact order was ingested before — almost always a retry after a
+    // timeout where the first call actually succeeded. Returning the original
+    // ticket is the only safe answer; writing a second one would put the same
+    // food on the pass twice for one payment.
+    const { rows: existing } = await client.query(
+      `SELECT id, order_number FROM orders
+        WHERE clover_ecomm_charge_id = $1 OR online_order_ref = $2
+        LIMIT 1`,
+      [order.chargeId, order.idempotencyKey]
+    );
+    if (existing.length > 0) {
+      await client.query("COMMIT");
+      return res.status(200).json({
+        id: existing[0].id,
+        order_number: existing[0].order_number,
+        idempotent: true,
+      });
+    }
+
+    const { amounts } = order;
+    const { rows: orderRows } = await client.query(
+      `INSERT INTO orders (location_id, staff_id, source, status, fulfillment_type,
+                           customer_name, customer_phone, customer_email,
+                           pickup_at, customer_instructions,
+                           subtotal, tax, tip, discount, total,
+                           clover_ecomm_charge_id, online_order_ref)
+       VALUES ($1, $2, 'online', 'open', 'pickup',
+               $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       RETURNING id, order_number, source, fulfillment_type, pickup_at`,
+      [
+        locationId,
+        staffId,
+        order.customerName,
+        order.customerPhone,
+        order.customerEmail,
+        order.pickupAt,
+        order.notes,
+        centsToDollars(amounts.subtotalCents),
+        centsToDollars(amounts.taxCents),
+        centsToDollars(amounts.tipCents),
+        centsToDollars(amounts.discountCents),
+        centsToDollars(amounts.totalCents),
+        order.chargeId,
+        order.idempotencyKey,
+      ]
+    );
+    const created = orderRows[0];
+
+    // item_id stays NULL: a website cart carries no POS menu UUIDs. The name
+    // and options snapshots are what the KDS renders for these lines.
+    for (const line of order.lines) {
+      await client.query(
+        `INSERT INTO order_items (order_id, item_id, variant_id, quantity, unit_price,
+                                  notes, name_snapshot, options_snapshot)
+         VALUES ($1, NULL, NULL, $2, $3, $4, $5, $6)`,
+        [
+          created.id,
+          line.quantity,
+          centsToDollars(line.unitPriceCents),
+          line.notes,
+          line.name,
+          buildOptionsSnapshot(line),
+        ]
+      );
+    }
+
+    // 'captured' because the money is already taken — Clover charged the card
+    // before this request was made. processor_txn_id stays NULL on purpose:
+    // that column is the STRIPE/Flex processor id, and the partial unique
+    // index on it plus paymentProcessorOf()'s prefix fallback both assume as
+    // much. The ecommerce charge id lives on the order instead, and
+    // processor='clover_ecomm' is what keeps this payment out of the Flex
+    // refund path.
+    //
+    // processor_payment_type is deliberately left NULL. Tagging it
+    // 'online_ecomm' as a second hint for older refund code was the intent,
+    // but payments_processor_payment_type_check (database/stripe_terminal.sql,
+    // already applied in production) restricts that column to
+    // card_present | interac_present | other. Widening a CHECK on the payments
+    // table is a migration with its own production checklist, not something to
+    // smuggle in behind a route. paymentProcessorOf() already reads this column
+    // as an alternative signal, so nothing more is needed here if that
+    // constraint is ever widened.
+    await client.query(
+      `INSERT INTO payments (order_id, method, amount, status, processor_txn_id, processor)
+       VALUES ($1, 'card', $2, 'captured', NULL, 'clover_ecomm')`,
+      [created.id, centsToDollars(amounts.totalCents)]
+    );
+
+    await client.query("COMMIT");
+
+    console.log("[online-orders] ticket created", {
+      orderNumber: created.order_number,
+      lines: order.lines.length,
+      totalCents: amounts.totalCents,
+      currency: order.currency,
+    });
+
+    return res.status(201).json({
+      id: created.id,
+      order_number: created.order_number,
+      source: created.source,
+      fulfillment_type: created.fulfillment_type,
+      pickup_at: created.pickup_at,
+      chargeId: order.chargeId,
+    });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    if (err instanceof HttpError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    // A unique-violation here means two ingests raced past the SELECT above.
+    // The indexes are the real guarantee; this just reports it honestly.
+    if (err?.code === "23505") {
+      console.warn("[online-orders] duplicate ingest raced the idempotency check");
+      return res.status(409).json({ error: "This order has already been received" });
+    }
+    console.error("Online order ingest failed:", err);
+    return res.status(500).json({ error: "Failed to record the online order" });
+  } finally {
+    client.release();
+  }
+});
+
 // --------------- Kitchen Display System (KDS) ---------------
 // These two routes are additive and intentionally price/customer-free.
 // KDS is a no-auth "open book" screen, so neither route has auth middleware.
@@ -2553,17 +2959,24 @@ async function fetchKdsOrders(client, orderIds, { includeCompletedAt = false } =
 
   const { rows: orders } = await client.query(
     `SELECT id, order_number, status, fulfillment_type, created_at, completed_at,
-            voided_from_status, void_acknowledged_at
+            voided_from_status, void_acknowledged_at,
+            source, customer_name, pickup_at
        FROM orders
       WHERE id = ANY($1::uuid[])`,
     [orderIds]
   );
 
+  // LEFT JOIN, not JOIN. An online line has no POS menu UUID, so item_id is
+  // NULL and an inner join would drop the line WITHOUT ERROR — the ticket
+  // would still reach the kitchen, just with nothing on it to cook. The name
+  // comes from the snapshot written at ingest; the literal is a last resort
+  // that should never render, and is a visible bug if it ever does.
   const { rows: items } = await client.query(
     `SELECT oi.id, oi.order_id, oi.item_id, oi.variant_id, oi.quantity, oi.notes, oi.status,
-            mi.name AS item_name, iv.name AS variant_name
+            COALESCE(mi.name, oi.name_snapshot, 'Online item') AS item_name,
+            oi.options_snapshot, iv.name AS variant_name
        FROM order_items oi
-       JOIN menu_items mi ON mi.id = oi.item_id
+       LEFT JOIN menu_items mi ON mi.id = oi.item_id
        LEFT JOIN item_variants iv ON iv.id = oi.variant_id
       WHERE oi.order_id = ANY($1::uuid[])
       ORDER BY oi.created_at ASC`,
@@ -2571,7 +2984,9 @@ async function fetchKdsOrders(client, orderIds, { includeCompletedAt = false } =
   );
 
   const itemIds = items.map((i) => i.id);
-  const menuItemIds = [...new Set(items.map((i) => i.item_id))];
+  // NULLs filtered out: online lines have no menu item, and feeding a NULL
+  // into the uuid[] lookups below would only ever match nothing.
+  const menuItemIds = [...new Set(items.map((i) => i.item_id).filter(Boolean))];
 
   // Modifiers actually on each order line, tagged with their group's name +
   // required flag (to split required choices out) and whether they're a
@@ -2687,6 +3102,11 @@ async function fetchKdsOrders(client, orderIds, { includeCompletedAt = false } =
       variant: it.variant_name, // null when the item has no variant
       quantity: it.quantity,
       notes: it.notes,
+      // Online lines cannot use order_item_modifiers (no modifier_options
+      // UUIDs exist for a website cart), so their extras and removals arrive
+      // as a readable string instead. Without this the kitchen would see the
+      // item name and none of the customisations the customer paid for.
+      options_snapshot: it.options_snapshot || null,
       status: it.status,
       selected_options: selectedByItem[it.id] || [],
       removed_ingredients,
@@ -2704,6 +3124,12 @@ async function fetchKdsOrders(client, orderIds, { includeCompletedAt = false } =
       status: o.status,
       fulfillment_type: o.fulfillment_type,
       created_at: o.created_at,
+      // Online-order context. Still price-free — the kitchen sees WHO and
+      // WHEN (so a pickup ticket can be timed and called out by name), never
+      // what anything cost.
+      source: o.source,
+      customer_name: o.customer_name,
+      pickup_at: o.pickup_at,
       ...(includeCompletedAt ? { completed_at: o.completed_at } : {}),
       // Void context (Slice 5). `voided` is the flag the KDS renders off;
       // voided_from_status says whether the kitchen ever saw the ticket.
@@ -3020,7 +3446,7 @@ app.patch("/api/orders/:id/status/revert", requireDevicePairing, async (req, res
 // Stripe at all, and if so by which route.
 async function loadOriginalPayment(client, orderId) {
   const { rows } = await client.query(
-    `SELECT method, processor_txn_id, processor_payment_type
+    `SELECT method, processor, processor_txn_id, processor_payment_type
        FROM payments
       WHERE order_id = $1 AND refund_id IS NULL
       ORDER BY created_at
@@ -3030,6 +3456,9 @@ async function loadOriginalPayment(client, orderId) {
   const p = rows[0];
   return {
     method: p ? p.method : "other",
+    // Selected so paymentProcessorOf() can read the processor off the row
+    // instead of guessing it from the txn id. NULL on every pre-existing row.
+    processor: p ? p.processor : null,
     processorTxnId: p ? p.processor_txn_id : null,
     processorPaymentType: p ? p.processor_payment_type : null,
   };
@@ -3071,6 +3500,24 @@ function decideRefundSettlement({ original, surface, refundMethod, readerId }) {
   // moment Phase 3 started writing Clover ids.
   const processor = paymentProcessorOf(original);
   if (original.method !== "card" || processor === "internal") return "internal";
+
+  // ---- Clover HOSTED ECOMMERCE (website order) ----
+  // There is no terminal to refund this at. The money was taken by a Netlify
+  // function through Clover's ecommerce API on a DIFFERENT merchant from the
+  // one the Flex is bound to, so clover_api — which drives the Mini over REST
+  // Pay Display — would be pointed at hardware that never saw this payment.
+  // Until a server-side ecommerce reversal is built, the two honest options
+  // are cash over the counter or a manual refund in Clover's own dashboard.
+  // A cash refund never reaches here: refundMethod === 'cash' returned
+  // 'internal_cash' at the top of this function.
+  if (processor === "online_ecomm") {
+    throw new HttpError(
+      409,
+      "This was an online order paid on the website, so it cannot be refunded at the terminal. " +
+        "Either give the refund in cash at the till, or refund the charge from the Clover " +
+        "ecommerce dashboard."
+    );
+  }
 
   // ---- Clover (Phase 4) ----
   // Every Clover reversal runs on the Mini: Clover's REST Pay refund is a
@@ -4278,6 +4725,7 @@ async function fetchRecallOrders(client, opts = {}) {
 
   const { rows: pageRows } = await client.query(
     `SELECT o.id, o.order_number, o.status, o.fulfillment_type, o.customer_name,
+              o.source, o.customer_phone, o.pickup_at,
               o.staff_id, s.name AS staff_name,
               o.subtotal, o.tax, o.tip, o.discount, o.discount_percent, o.discount_reason, o.total,
               o.created_at, o.completed_at,
@@ -4306,7 +4754,9 @@ async function fetchRecallOrders(client, opts = {}) {
 
   const { rows: itemsRows } = await client.query(
     `SELECT oi.id AS order_item_id, oi.order_id, oi.item_id, oi.variant_id, oi.quantity, oi.unit_price,
-            mi.name AS item_name, iv.name AS variant_name
+            -- name_snapshot covers online lines, which have no menu_items row
+            -- to join to; without it they would all read "Unknown Item".
+            COALESCE(mi.name, oi.name_snapshot) AS item_name, iv.name AS variant_name
        FROM order_items oi
   LEFT JOIN menu_items mi ON mi.id = oi.item_id
   LEFT JOIN item_variants iv ON iv.id = oi.variant_id
@@ -4332,7 +4782,7 @@ async function fetchRecallOrders(client, opts = {}) {
   // order_refunds.amount, which the server priced at reversal time.
   const { rows: refundItemRows } = await client.query(
     `SELECT ori.refund_id, ori.quantity,
-            COALESCE(mi.name, 'Unknown Item') AS item_name
+            COALESCE(mi.name, oi.name_snapshot, 'Unknown Item') AS item_name
        FROM order_refund_items ori
        JOIN order_items oi ON oi.id = ori.order_item_id
        LEFT JOIN menu_items mi ON mi.id = oi.item_id
@@ -4393,6 +4843,11 @@ async function fetchRecallOrders(client, opts = {}) {
       status: o.status,
       fulfillment_type: o.fulfillment_type,
       customer_name: o.customer_name,
+      // Online-order context: 'pos' | 'online', plus the pickup contact and
+      // time. NULL/'pos' on everything rung in at the till.
+      source: o.source,
+      customer_phone: o.customer_phone,
+      pickup_at: o.pickup_at,
       staff_id: o.staff_id,
       staff_name: o.staff_name,
       subtotal: parseFloat(o.subtotal),
@@ -4607,7 +5062,7 @@ async function buildReceipt(client, orderId) {
   // The original capture — refund_id IS NULL is what distinguishes it from the
   // negative reversal rows written alongside it (see applyRefund).
   const { rows: payRows } = await client.query(
-    `SELECT method, amount, status, processor_txn_id, processor_payment_type,
+    `SELECT method, amount, status, processor, processor_txn_id, processor_payment_type,
             card_brand, card_last4
        FROM payments
       WHERE order_id = $1 AND refund_id IS NULL
@@ -6784,7 +7239,10 @@ app.get("/api/staff/roster", async (req, res) => {
     await requireStaffIdParam(req.query.staffId);
 
     const { rows } = await pool.query(
+      // Machine users (the website's 'Online Ordering' account) are not people
+      // and must not appear on a staff list someone manages shifts from.
       `SELECT id, name, role, active, ${STAFF_HISTORY_EXISTS_SQL} AS has_history FROM staff
+        WHERE COALESCE(is_system, false) = false
         ORDER BY active DESC, array_position(ARRAY['owner','admin','manager','cashier','kitchen','line'], role::text), name`
     );
     const liveByStaffId = await getLiveStatusByStaffId();
