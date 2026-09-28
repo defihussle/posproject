@@ -9,6 +9,7 @@ const { generateSecret: generateTotpSecret, generateURI: generateTotpUri, verify
 const QRCode = require("qrcode");
 const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
+const { notifyOnlineOrder, notifyOnlineOrderPlaced } = require("./lib/onlineSms");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -2903,6 +2904,15 @@ app.post("/api/online-orders", async (req, res) => {
       currency: order.currency,
     });
 
+    // "placed" SMS, new-ticket path only (never the idempotent replay or the
+    // 409 race). Not awaited and never throws, so the ingest answer does not
+    // wait on Twilio and cannot fail because of it.
+    notifyOnlineOrderPlaced(pool, {
+      orderId: created.id,
+      orderNumber: created.order_number,
+      customerPhone: order.customerPhone,
+    });
+
     return res.status(201).json({
       id: created.id,
       order_number: created.order_number,
@@ -3310,9 +3320,11 @@ app.patch("/api/orders/:id/status", requireDevicePairing, async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // Lock the order row for the duration of the transition
+    // Lock the order row for the duration of the transition. source, phone and
+    // number are read here, on the locked row, for the SMS sent after COMMIT.
     const { rows } = await client.query(
-      "SELECT status FROM orders WHERE id = $1 FOR UPDATE",
+      `SELECT status, source, customer_phone, order_number
+         FROM orders WHERE id = $1 FOR UPDATE`,
       [id]
     );
     if (rows.length === 0) {
@@ -3352,6 +3364,17 @@ app.patch("/api/orders/:id/status", requireDevicePairing, async (req, res) => {
 
     await client.query("COMMIT");
 
+    // Online pickup SMS: preparing → "started", ready → "ready". Online orders
+    // only; in-store orders are never texted. Not awaited and never throws.
+    // UNIQUE (order_id, event) stops a resend after revert-then-forward.
+    if (rows[0].source === "online") {
+      notifyOnlineOrder(pool, status === "preparing" ? "started" : "ready", {
+        orderId: id,
+        orderNumber: rows[0].order_number,
+        customerPhone: rows[0].customer_phone,
+      });
+    }
+
     const [order] = await fetchKdsOrders(client, [id]);
     res.json(order);
   } catch (err) {
@@ -3366,6 +3389,7 @@ app.patch("/api/orders/:id/status", requireDevicePairing, async (req, res) => {
 // PATCH /api/orders/:id/status/revert
 // Reverses the most recent status change: preparing→open, ready→preparing.
 // Mirrors the forward endpoint's transactional lockstep pattern.
+// No SMS: reverting never texts the customer.
 app.patch("/api/orders/:id/status/revert", requireDevicePairing, async (req, res) => {
   const { id } = req.params;
 

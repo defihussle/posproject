@@ -66,6 +66,10 @@
       "migration": "schema.sql"
     },
     {
+      "table": "order_notifications",
+      "migration": "online_order_sms.sql"
+    },
+    {
       "table": "order_refund_items",
       "migration": "refunds.sql"
     },
