@@ -760,6 +760,39 @@
   display: none;
 }
 
+.oe-checkout__phone-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Skip: a tap-sized pill, filled when on. */
+.oe-checkout__skip {
+  min-width: 72px;
+  padding: 8px 16px;
+  border-radius: var(--radius-full);
+  border: 1.5px solid var(--border-color);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+}
+
+.oe-checkout__skip--on {
+  border-color: var(--red);
+  background: var(--red);
+  color: #fff;
+}
+
+.oe-checkout__skip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .oe-checkout__phone-label {
   font-family: var(--font-body);
   font-size: 0.72rem;

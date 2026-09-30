@@ -165,8 +165,11 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const [tendered, setTendered] = useState("");
   // Optional walk-in phone for the "ready" text. Blank = none.
   const [customerPhone, setCustomerPhone] = useState("");
+  // Cash/Card stay blocked until the cashier gives a valid phone or taps Skip.
+  const [phoneSkipped, setPhoneSkipped] = useState(false);
   const phoneTrimmed = customerPhone.trim();
   const phoneInvalid = phoneTrimmed !== "" && !isUsableWalkInPhone(phoneTrimmed);
+  const phoneReady = phoneSkipped || (phoneTrimmed !== "" && !phoneInvalid);
   // Mirrors `submitting` for guard checks that must be correct synchronously —
   // React state lags a tick, and "retry" needs to re-enter checkout immediately
   // after clearing it.
@@ -353,6 +356,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
     setCashTenderOpen(false);
     setTendered("");
     setCustomerPhone("");
+    setPhoneSkipped(false);
     setCheckoutOpen(true);
   }, []);
 
@@ -387,6 +391,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
     setCart([]);
     setDiscount(null);
     setCustomerPhone("");
+    setPhoneSkipped(false);
     autoCloseRef.current = setTimeout(() => {
       autoCloseRef.current = null;
       setConfirmation(null);
@@ -1210,11 +1215,26 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                 </div>
 
                 {/* Optional walk-in phone, asked before tender and sent with
-                    either Cash or Card. Used only to text "ready". */}
+                    either Cash or Card. Used only to text "ready". Cash/Card
+                    wait for a valid number or Skip, so it is never missed. */}
                 <div className="oe-checkout__phone" hidden={cashTenderOpen}>
-                  <label className="oe-checkout__phone-label" htmlFor="oe-customer-phone">
-                    Text when ready (optional)
-                  </label>
+                  <div className="oe-checkout__phone-row">
+                    <label className="oe-checkout__phone-label" htmlFor="oe-customer-phone">
+                      Text when ready
+                    </label>
+                    <button
+                      type="button"
+                      className={`oe-checkout__skip${phoneSkipped ? " oe-checkout__skip--on" : ""}`}
+                      aria-pressed={phoneSkipped}
+                      disabled={submitting}
+                      onClick={() => {
+                        if (!phoneSkipped) setCustomerPhone("");
+                        setPhoneSkipped(!phoneSkipped);
+                      }}
+                    >
+                      Skip
+                    </button>
+                  </div>
                   <input
                     id="oe-customer-phone"
                     className={`oe-checkout__phone-input${phoneInvalid ? " oe-checkout__phone-input--invalid" : ""}`}
@@ -1223,15 +1243,23 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                     autoComplete="off"
                     placeholder="416 555 1234"
                     value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    onChange={(e) => {
+                      setCustomerPhone(e.target.value);
+                      // Typing a number means the cashier is not skipping.
+                      if (e.target.value.trim() !== "") setPhoneSkipped(false);
+                    }}
                     disabled={submitting}
                     aria-invalid={phoneInvalid}
                   />
-                  {phoneInvalid && (
+                  {/* One red line while Cash/Card are blocked: the invalid
+                      sentence for a bad number, the standing hint when blank. */}
+                  {phoneInvalid ? (
                     <div className="oe-checkout__phone-error">
-                      Enter a 10-digit Canadian or US number, or leave it blank.
+                      Enter a 10-digit Canadian or US number, or tap Skip.
                     </div>
-                  )}
+                  ) : !phoneReady ? (
+                    <div className="oe-checkout__phone-error">Enter a number or tap Skip.</div>
+                  ) : null}
                 </div>
 
                 {checkoutError && (
@@ -1335,7 +1363,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                     <button
                       className="oe-checkout__method"
                       onClick={openCashTender}
-                      disabled={submitting || phoneInvalid}
+                      disabled={submitting || !phoneReady}
                     >
                       <span className="oe-checkout__method-icon">💵</span>
                       <span>Cash</span>
@@ -1343,7 +1371,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                     <button
                       className="oe-checkout__method"
                       onClick={() => handleCheckout("card")}
-                      disabled={submitting || phoneInvalid}
+                      disabled={submitting || !phoneReady}
                     >
                       <span className="oe-checkout__method-icon">💳</span>
                       <span>Card</span>
