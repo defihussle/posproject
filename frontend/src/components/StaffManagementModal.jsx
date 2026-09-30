@@ -52,7 +52,8 @@ export default function StaffManagementModal({ staff, onClose }) {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/staff/roster?staffId=${staff.id}`);
+      // Device + till-session cookies prove who is asking (no staffId sent).
+      const res = await fetch(`${API_URL}/api/staff/roster`, { credentials: "include" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setRows(data);
@@ -207,8 +208,9 @@ function StaffDetailSheet({ row, me, onSaved, onRemoved, onError, onClose }) {
     try {
       const res = await fetch(`${API_URL}/api/staff/${row.id}/status`, {
         method: "PATCH",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ staffId: me.id, active: true }),
+        body: JSON.stringify({ active: true }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -230,8 +232,9 @@ function StaffDetailSheet({ row, me, onSaved, onRemoved, onError, onClose }) {
     if (busy) return;
     setBusy(true);
     try {
-      const res = await fetch(`${API_URL}/api/staff/${row.id}?staffId=${me.id}`, {
+      const res = await fetch(`${API_URL}/api/staff/${row.id}`, {
         method: "DELETE",
+        credentials: "include",
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -372,8 +375,9 @@ function InlinePinReset({ staffId, staffName, me, onDone, onError }) {
     try {
       const res = await fetch(`${API_URL}/api/staff/${staffId}/reset-pin`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ staffId: me.id, pin }),
+        body: JSON.stringify({ pin }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);

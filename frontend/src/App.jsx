@@ -7,6 +7,7 @@ import BackOffice from "./components/BackOffice";
 import ManageMenu from "./components/ManageMenu";
 import ResetPassword from "./components/ResetPassword";
 import RequireDevicePairing from "./components/RequireDevicePairing";
+import { API_URL } from "./config";
 
 // Roles allowed onto the POS-side "Manage Menu" page (mirrors Back Office's
 // Menu Management access — real enforcement is server-side on every write,
@@ -94,6 +95,9 @@ export default function App() {
   const handleLogout = useCallback(() => {
     setStaff(null);
     localStorage.removeItem(STORAGE_KEY_STAFF);
+    // Clears the httpOnly till session set by PIN login. Best effort: the
+    // next PIN login overwrites it anyway.
+    fetch(`${API_URL}/api/auth/logout`, { method: "POST", credentials: "include" }).catch(() => {});
   }, []);
 
   const handleToggleTheme = useCallback(() => {

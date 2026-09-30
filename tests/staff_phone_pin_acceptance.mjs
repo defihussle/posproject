@@ -67,6 +67,8 @@ const { rows: devRows } = await pool.query(
 );
 deviceRowId = devRows[0].id;
 const deviceCookie = `device_token=${jwt.sign({ deviceId: devRows[0].device_id, purpose: "device" }, process.env.DEVICE_SECRET)}`;
+// quick-add takes its actor from the till session (P3 Slice 4), not the body.
+const tillCookie = `${deviceCookie}; till_session=${jwt.sign({ staffId: adminId, deviceId: devRows[0].device_id, purpose: "till" }, process.env.SESSION_SECRET)}`;
 
 async function call(method, path, body, cookie = boCookie) {
   const res = await fetch(`${base}${path}`, {
@@ -163,9 +165,9 @@ try {
   ok("blank phone clears it; blank PIN leaves PIN", clear.status === 200 && clear.data.phone === null && clear.data.has_pin === true, JSON.stringify(clear.data));
 
   console.log("quick-add stays PIN-required and phone-free:");
-  const qaNoPin = await call("POST", "/api/staff/quick-add", { staffId: adminId, name: "Slice1 QA", role: "cashier", hourly_rate: 17.5, phone: "416-555-0199" }, "");
+  const qaNoPin = await call("POST", "/api/staff/quick-add", { staffId: adminId, name: "Slice1 QA", role: "cashier", hourly_rate: 17.5, phone: "416-555-0199" }, tillCookie);
   ok("no PIN -> 400", qaNoPin.status === 400, JSON.stringify(qaNoPin.data));
-  const qa = await call("POST", "/api/staff/quick-add", { staffId: adminId, name: "Slice1 QA", role: "cashier", hourly_rate: 17.5, pin: await freePin(), phone: "416-555-0199" }, "");
+  const qa = await call("POST", "/api/staff/quick-add", { staffId: adminId, name: "Slice1 QA", role: "cashier", hourly_rate: 17.5, pin: await freePin(), phone: "416-555-0199" }, tillCookie);
   ok("with PIN -> 201", qa.status === 201, JSON.stringify(qa.data));
   ok("phone NOT written", qa.data.phone === null, qa.data.phone);
 

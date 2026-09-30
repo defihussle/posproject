@@ -618,6 +618,10 @@ app.post("/api/auth/login", requireDevicePairing, async (req, res) => {
     // Success — reset this PIN's failure count
     clearAttempts(pin, "pin");
 
+    // Proof of who is logged into THIS till, for routes that must not trust
+    // a staffId from the client (see requireTillStaff).
+    issueTillSession(req, res, matchedStaff.id);
+
     // Return staff info WITHOUT pin_hash
     const { pin_hash, ...staffData } = matchedStaff;
     return res.json({ success: true, staff: staffData });
@@ -625,6 +629,53 @@ app.post("/api/auth/login", requireDevicePairing, async (req, res) => {
     console.error("Login error:", err.message);
     return res.status(500).json({ success: false, message: "Internal server error" });
   }
+});
+
+// --------------- Till session (P3 Slice 4) ---------------
+// Order Entry keeps the logged-in staff object in localStorage, which is fine
+// for the UI but proves nothing to the server. PIN login now also sets an
+// httpOnly JWT naming the staff member AND the paired device it was issued
+// on. Staff-admin routes on the POS read the actor from it instead of a
+// staffId in the body/query — the same idea as the Back Office session
+// cookie, minus the password/TOTP.
+const TILL_COOKIE_NAME = "till_session";
+
+function issueTillSession(req, res, staffId) {
+  const token = jwt.sign({ staffId, deviceId: req.deviceId, purpose: "till" }, SESSION_SECRET, {
+    expiresIn: Math.floor(SESSION_MAX_AGE_MS / 1000),
+  });
+  res.cookie(TILL_COOKIE_NAME, token, { ...sessionCookieOpts(req), maxAge: SESSION_MAX_AGE_MS });
+}
+
+// Use after requireDevicePairing (which sets req.deviceId). A cookie issued
+// on another device, a forged/expired one, or none at all is 401; a real
+// session for a role outside `allowedRoles` is 403.
+async function requireTillStaff(req, allowedRoles = ["owner", "admin"]) {
+  let payload = null;
+  try {
+    payload = jwt.verify(req.cookies?.[TILL_COOKIE_NAME] || "", SESSION_SECRET);
+  } catch {
+    payload = null;
+  }
+  if (!payload || payload.purpose !== "till" || !payload.staffId || payload.deviceId !== req.deviceId) {
+    throw new HttpError(401, "Please log in with your PIN again");
+  }
+  const { rows } = await pool.query(
+    "SELECT id, name, role FROM staff WHERE id = $1 AND active = true AND COALESCE(is_system, false) = false",
+    [payload.staffId]
+  );
+  const staff = rows[0];
+  if (!staff) throw new HttpError(401, "Please log in with your PIN again");
+  if (!allowedRoles.includes(staff.role)) {
+    throw new HttpError(403, `Access restricted to ${allowedRoles.join("/")}`);
+  }
+  return staff;
+}
+
+// POST /api/auth/logout — Order Entry log out. Clears the till session.
+app.post("/api/auth/logout", (req, res) => {
+  res.clearCookie(TILL_COOKIE_NAME, sessionCookieOpts(req));
+  res.json({ success: true });
 });
 
 // --------------- Order Entry PIN setup / Forgot PIN by SMS (P3 Slice 2) ---------------
@@ -7766,11 +7817,11 @@ app.post("/api/backoffice/staff", async (req, res) => {
 // quick-add modal, owner/admin/manager. Deliberately NOT under /api/backoffice
 // so it isn't swept up by the Back Office access revocation — this is
 // Manager's one surviving staff action (add-only, no list/edit/PIN-reset).
-// Stays staffId-body-authenticated on purpose: Order Entry is PIN-login
-// only and has no Back Office session cookie to send.
-app.post("/api/staff/quick-add", async (req, res) => {
+// The actor is the till session (PIN login on this paired device), never a
+// staffId from the body — see requireTillStaff.
+app.post("/api/staff/quick-add", requireDevicePairing, async (req, res) => {
   try {
-    const requester = await requireStaffIdParam((req.body || {}).staffId, STAFF_MANAGER_ROLES);
+    const requester = await requireTillStaff(req, STAFF_MANAGER_ROLES);
     await createStaffMember(req, res, requester);
   } catch (err) {
     sendHttpError(res, err, "Failed to create staff member");
@@ -7823,9 +7874,9 @@ async function getLiveStatusByStaffId() {
 // Owner/admin only. Every staff member, active AND inactive, with live
 // clock-in/break status per row (null if not currently clocked in) —
 // never returns pin_hash.
-app.get("/api/staff/roster", async (req, res) => {
+app.get("/api/staff/roster", requireDevicePairing, async (req, res) => {
   try {
-    await requireStaffIdParam(req.query.staffId);
+    await requireTillStaff(req);
 
     const { rows } = await pool.query(
       // Machine users (the website's 'Online Ordering' account) are not people
@@ -7855,10 +7906,10 @@ app.get("/api/staff/roster", async (req, res) => {
 // Body: { staffId, active }. Owner/admin only; hierarchy-protected via the
 // SAME requireManagedTarget Back Office's staff routes use (defined below)
 // — an admin still can't touch an owner row here either, unweakened.
-app.patch("/api/staff/:id/status", async (req, res) => {
+app.patch("/api/staff/:id/status", requireDevicePairing, async (req, res) => {
   try {
-    const { staffId, active } = req.body || {};
-    const requester = await requireStaffIdParam(staffId);
+    const { active } = req.body || {};
+    const requester = await requireTillStaff(req);
     const target = await requireManagedTarget(requester, req.params.id);
 
     if (typeof active !== "boolean") {
@@ -7879,10 +7930,10 @@ app.patch("/api/staff/:id/status", async (req, res) => {
 // Body: { staffId, pin }. Owner/admin only, same hierarchy protection as
 // above. Mirrors PUT /api/backoffice/staff/:id/pin exactly (see below),
 // minus the session-cookie auth.
-app.post("/api/staff/:id/reset-pin", async (req, res) => {
+app.post("/api/staff/:id/reset-pin", requireDevicePairing, async (req, res) => {
   try {
-    const { staffId, pin } = req.body || {};
-    const requester = await requireStaffIdParam(staffId);
+    const { pin } = req.body || {};
+    const requester = await requireTillStaff(req);
     const target = await requireManagedTarget(requester, req.params.id);
 
     validatePin(pin);
@@ -7898,11 +7949,11 @@ app.post("/api/staff/:id/reset-pin", async (req, res) => {
 
 // DELETE /api/staff/:id?staffId=... — StaffManagementModal's Remove action.
 // Same smart-delete/hierarchy rules as DELETE /api/backoffice/staff/:id
-// (see smartDeleteStaff), staffId-query-param authenticated like the rest
-// of this trusted-staffId POS route family.
-app.delete("/api/staff/:id", async (req, res) => {
+// (see smartDeleteStaff), authenticated by the till session like the rest
+// of this POS route family.
+app.delete("/api/staff/:id", requireDevicePairing, async (req, res) => {
   try {
-    const requester = await requireStaffIdParam(req.query.staffId);
+    const requester = await requireTillStaff(req);
     const target = await requireManagedTarget(requester, req.params.id);
     res.json(await smartDeleteStaff(target));
   } catch (err) {
@@ -10170,6 +10221,7 @@ function surfaceColumnForRequest(req) {
   const { method, path } = req;
   if (path === "/api/auth/login") return "last_order_entry_at";
   if (path.startsWith("/api/auth/pin-code/")) return "last_order_entry_at";
+  if (path.startsWith("/api/staff/")) return "last_order_entry_at";
   if (method === "POST" && path === "/api/orders") return "last_order_entry_at";
   // Order recall + reversal — all three are driven from the Order Entry
   // screen, not the KDS. The refund route carries an :id, so it needs a
