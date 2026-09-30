@@ -218,6 +218,11 @@
     },
     {
       "table": "orders",
+      "column": "released_at",
+      "migration": "scheduled_pickup_release.sql"
+    },
+    {
+      "table": "orders",
       "column": "source",
       "migration": "online_orders.sql"
     },

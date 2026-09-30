@@ -14,6 +14,7 @@ import {
   elapsedTier,
   aggregateRushLines,
   voidedFirst,
+  startInMinutes,
 } from "./kdsBoard";
 
 const FAIL_FLASH_MS = 2500; // how long a card shows its "update failed" state
@@ -217,6 +218,10 @@ export default function KitchenDisplay({ deviceName }) {
   const initialLoadDone = useRef(false);
   // Voided tickets being acknowledged right now — guards double-taps.
   const [ackingIds, setAckingIds] = useState(() => new Set());
+  // Scheduled pickup tickets held off the live board (not the cook queue).
+  const [scheduled, setScheduled] = useState([]);
+  const [scheduledOpen, setScheduledOpen] = useState(false);
+  const [firingIds, setFiringIds] = useState(() => new Set());
 
   // Unlock Web Audio on first user interaction anywhere on the KDS.
   useEffect(() => {
@@ -316,12 +321,64 @@ export default function KitchenDisplay({ deviceName }) {
     }
   }, []);
 
+  // Held scheduled tickets for the dropdown. A failure here keeps the last
+  // list and never touches the live board.
+  const fetchScheduled = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/orders/scheduled`, { credentials: "include" });
+      if (!res.ok) return;
+      setScheduled(await res.json());
+    } catch {
+      // Live board's own error notice covers a dropped connection.
+    }
+  }, []);
+
   // Initial load + 5s polling (cleared on unmount). No websockets in v1.
+  // A scheduled ticket whose timer ran out simply appears in the next live
+  // poll (and leaves the scheduled one) — no tap needed.
   useEffect(() => {
     fetchOrders();
-    const id = setInterval(fetchOrders, POLL_MS);
+    fetchScheduled();
+    const id = setInterval(() => {
+      fetchOrders();
+      fetchScheduled();
+    }, POLL_MS);
     return () => clearInterval(id);
-  }, [fetchOrders]);
+  }, [fetchOrders, fetchScheduled]);
+
+  // Last held ticket released: close the dropdown so it doesn't reopen by
+  // itself when the next scheduled order arrives.
+  useEffect(() => {
+    if (scheduled.length === 0) setScheduledOpen(false);
+  }, [scheduled.length]);
+
+  // Fire now: release one held ticket to the live board immediately.
+  // pickup_at is untouched server-side, so the card still shows the slot.
+  const fireNow = useCallback(
+    async (order) => {
+      if (firingIds.has(order.id)) return;
+      setFiringIds((prev) => new Set(prev).add(order.id));
+      try {
+        const res = await fetch(`${API_URL}/api/orders/${order.id}/fire`, {
+          method: "POST",
+          credentials: "include",
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setScheduled((prev) => prev.filter((o) => o.id !== order.id));
+        fetchOrders();
+      } catch {
+        markFailed(order.id);
+      } finally {
+        setFiringIds((prev) => {
+          const s = new Set(prev);
+          s.delete(order.id);
+          return s;
+        });
+        fetchScheduled();
+      }
+    },
+    [firingIds, fetchOrders, fetchScheduled, markFailed]
+  );
 
   // --- Undo helpers ---
   const clearUndo = useCallback(() => {
@@ -522,6 +579,17 @@ export default function KitchenDisplay({ deviceName }) {
             <span className="kds__badge-label">orders</span>
           </div>
 
+          {/* Hidden when nothing is held. */}
+          {scheduled.length > 0 && (
+            <button
+              className={`kds__sched-chip${scheduledOpen ? " kds__sched-chip--open" : ""}`}
+              onClick={() => setScheduledOpen((v) => !v)}
+              aria-expanded={scheduledOpen}
+            >
+              Scheduled ({scheduled.length})
+            </button>
+          )}
+
           <button className="kds__past-link" onClick={() => setPastOpen(true)}>
             Completed Orders
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -530,6 +598,52 @@ export default function KitchenDisplay({ deviceName }) {
           </button>
         </nav>
       </header>
+
+      {/* Scheduled dropdown — held pickup tickets, NOT the cook queue. The
+          only action is Fire now; start/ready taps happen on the live board. */}
+      {scheduledOpen && scheduled.length > 0 && (
+        <div className="kds-sched" role="region" aria-label="Scheduled orders">
+          {scheduled.map((o) => {
+            const mins = startInMinutes(o.release_at, nowMs);
+            const pickupClock = formatPickupClock(o.pickup_at);
+            return (
+              <div
+                key={o.id}
+                className={`kds-sched__row${failedIds.has(o.id) ? " kds-sched__row--failed" : ""}`}
+              >
+                <div className="kds-sched__main">
+                  <div className="kds-sched__head">
+                    <span className="kds-sched__num">#{o.order_number}</span>
+                    {o.customer_name && <span className="kds-sched__name">{o.customer_name}</span>}
+                    {pickupClock && <span className="kds-sched__pickup">for {pickupClock}</span>}
+                  </div>
+                  <ul className="kds-sched__items">
+                    {o.items.map((it) => (
+                      <li key={it.id}>
+                        {it.quantity}× {it.name}
+                        {it.variant ? ` (${it.variant})` : ""}
+                        {it.options_snapshot ? ` — ${it.options_snapshot}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="kds-sched__side">
+                  <span className="kds-sched__countdown">
+                    {mins > 0 ? `Start in ${mins} min` : "Starting…"}
+                  </span>
+                  <button
+                    className="kds-sched__fire"
+                    onClick={() => fireNow(o)}
+                    disabled={firingIds.has(o.id)}
+                  >
+                    {firingIds.has(o.id) ? "Firing…" : "Fire now"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {error && <div className="kds__error">{error}</div>}
 

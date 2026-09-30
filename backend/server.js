@@ -11,6 +11,7 @@ const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
 const { notifyOnlineOrderPlaced, notifyOrderReady } = require("./lib/onlineSms");
 const { normalizePhone } = require("./lib/phone");
+const { RELEASED_SQL, releaseAt } = require("./lib/scheduledRelease");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -3195,10 +3196,14 @@ async function loadLiveBoard(client, statuses) {
   const liveStatuses = statuses.filter((s) => s !== "cancelled");
   const wantsVoided = statuses.includes("cancelled");
 
+  // A scheduled online ticket stays 'open' but OFF this board until
+  // SCHEDULE_LEAD_MINUTES before pickup_at, or until Fire now sets released_at
+  // (lib/scheduledRelease.js). Until then it is listed by /api/orders/scheduled.
   const { rows: idRows } = await client.query(
     `SELECT id FROM orders
       WHERE location_id = $1
-        AND ( ($2::text[] <> '{}' AND status::text = ANY($2::text[]))
+        AND ( ($2::text[] <> '{}' AND status::text = ANY($2::text[])
+               AND (status <> 'open' OR ${RELEASED_SQL}))
            OR ($3::boolean
                AND status = 'cancelled'
                AND voided_from_status IN ('preparing', 'ready')
@@ -3236,6 +3241,59 @@ app.get("/api/orders", requireDevicePairing, async (req, res) => {
     sendHttpError(res, err, "Failed to fetch orders");
   } finally {
     client.release();
+  }
+});
+
+// GET /api/orders/scheduled
+// Open tickets held off the live board for a later pickup slot, soonest first,
+// in the same price-free KDS shape plus release_at (when each goes live by
+// itself). The KDS "Scheduled" dropdown reads this; nothing here is tappable
+// except Fire now below.
+app.get("/api/orders/scheduled", requireDevicePairing, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { rows: locRows } = await client.query(
+      "SELECT id FROM locations WHERE active = true ORDER BY created_at LIMIT 1"
+    );
+    if (locRows.length === 0) throw new HttpError(500, "No active location");
+
+    const { rows: idRows } = await client.query(
+      `SELECT id FROM orders
+        WHERE location_id = $1
+          AND status = 'open'
+          AND NOT ${RELEASED_SQL}
+        ORDER BY pickup_at ASC, created_at ASC`,
+      [locRows[0].id]
+    );
+    const orders = await fetchKdsOrders(client, idRows.map((r) => r.id));
+    res.json(orders.map((o) => ({ ...o, release_at: releaseAt(o.pickup_at) })));
+  } catch (err) {
+    console.error("KDS scheduled list failed:", err.message);
+    sendHttpError(res, err, "Failed to fetch scheduled orders");
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/orders/:id/fire   (KDS — device-paired, no staff auth)
+// Releases one held scheduled ticket to the live board now. Stamps released_at
+// only; pickup_at is the guest's slot and is never changed. Idempotent.
+app.post("/api/orders/:id/fire", requireDevicePairing, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE orders
+          SET released_at = COALESCE(released_at, now())
+        WHERE id = $1 AND status = 'open' AND pickup_at IS NOT NULL
+        RETURNING id, order_number, released_at`,
+      [req.params.id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "No open scheduled order with that id" });
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("KDS fire now failed:", err.message);
+    res.status(500).json({ error: "Failed to release order" });
   }
 });
 

@@ -124,6 +124,13 @@ export function aggregateRushLines(orders) {
   );
 }
 
+// Scheduled dropdown countdown: whole minutes until a held ticket goes live
+// (release_at comes from the server). 0 once due — the next poll moves it.
+export function startInMinutes(releaseIso, nowMs) {
+  if (!releaseIso) return 0;
+  return Math.max(0, Math.ceil((new Date(releaseIso).getTime() - nowMs) / 60000));
+}
+
 // Voided tickets jump to the front of the board regardless of FIFO age — they
 // are an interrupt ("stop cooking this"), not a queue entry. Stable within
 // each group, so live tickets keep the backend's FIFO order.
