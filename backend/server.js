@@ -3364,11 +3364,11 @@ app.patch("/api/orders/:id/status", requireDevicePairing, async (req, res) => {
 
     await client.query("COMMIT");
 
-    // Online pickup SMS: preparing → "started", ready → "ready". Online orders
-    // only; in-store orders are never texted. Not awaited and never throws.
-    // UNIQUE (order_id, event) stops a resend after revert-then-forward.
-    if (rows[0].source === "online") {
-      notifyOnlineOrder(pool, status === "preparing" ? "started" : "ready", {
+    // Online pickup SMS: ready → "ready" only; preparing sends nothing. Online
+    // orders only; in-store orders are never texted. Not awaited and never
+    // throws. UNIQUE (order_id, event) stops a resend after revert-then-forward.
+    if (rows[0].source === "online" && status === "ready") {
+      notifyOnlineOrder(pool, "ready", {
         orderId: id,
         orderNumber: rows[0].order_number,
         customerPhone: rows[0].customer_phone,

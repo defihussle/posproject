@@ -172,23 +172,21 @@ console.log("Twilio timeout / network:");
   ok("network -> failed twilio_network_error", [...pool2.rows.values()][0]?.error === "twilio_network_error");
 }
 
-console.log("Started / ready (KDS forward taps):");
+console.log("Ready (KDS forward tap; preparing sends nothing):");
 {
   setEnv(CONFIGURED);
   const pool = fakePool();
   stubFetch(twilioCreated);
   await notifyOnlineOrderPlaced(pool, ORDER);
-  await notifyOnlineOrder(pool, "started", ORDER);
-  ok("started sent with started copy", new URLSearchParams(fetchCalls[1]?.init.body).get("Body") === SMS_COPY.started(42));
+  // The route makes no call on open → preparing, so none here.
   await notifyOnlineOrder(pool, "ready", ORDER);
-  ok("ready sent with ready copy", new URLSearchParams(fetchCalls[2]?.init.body).get("Body") === SMS_COPY.ready(42));
+  ok("ready sent with ready copy", new URLSearchParams(fetchCalls[1]?.init.body).get("Body") === SMS_COPY.ready(42));
   const events = [...pool.rows.values()].map((r) => `${r.event}:${r.status}`).sort();
-  ok("one row per event, all sent", events.join(",") === "placed:sent,ready:sent,started:sent", events.join(","));
+  ok("placed + ready rows only, no started", events.join(",") === "placed:sent,ready:sent", events.join(","));
 
-  // Revert-then-forward: the route calls again for the same event.
-  await notifyOnlineOrder(pool, "started", ORDER);
+  // Revert-then-forward: the route calls again for ready.
   await notifyOnlineOrder(pool, "ready", ORDER);
-  ok("second started / ready do not send", fetchCalls.length === 3 && pool.rows.size === 3);
+  ok("second ready does not send", fetchCalls.length === 2 && pool.rows.size === 2);
 }
 {
   setEnv({ ...CONFIGURED, ONLINE_SMS_ENABLED: "false" });
