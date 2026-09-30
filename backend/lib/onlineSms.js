@@ -139,6 +139,7 @@ async function notifyOnlineOrder(pool, event, { orderId, orderNumber, customerPh
         [notificationId, sid]
       );
       console.log(`[online-sms] ${event} sent order #${orderNumber}`);
+      return "sent";
     } catch (err) {
       console.error(`[online-sms] ${event} failed order #${orderNumber}`);
       await pool.query(
@@ -158,4 +159,31 @@ function notifyOnlineOrderPlaced(pool, order) {
   return notifyOnlineOrder(pool, "placed", order);
 }
 
-module.exports = { notifyOnlineOrder, notifyOnlineOrderPlaced, SMS_COPY, TWILIO_TIMEOUT_MS };
+/**
+ * "ready": after the KDS preparing → ready COMMIT. Online orders keep their
+ * P1a behaviour (always attempted). An in-store order is texted only when the
+ * cashier took an optional walk-in phone, and that phone is wiped from the
+ * order once the text is actually sent; order_notifications.to_phone is the
+ * audit copy. Never throws.
+ */
+async function notifyOrderReady(pool, { orderId, orderNumber, customerPhone, source }) {
+  const isOnline = source === "online";
+  if (!isOnline && !normalizePhone(customerPhone)) return;
+
+  const outcome = await notifyOnlineOrder(pool, "ready", { orderId, orderNumber, customerPhone });
+  if (outcome !== "sent" || isOnline) return;
+
+  try {
+    await pool.query("UPDATE orders SET customer_phone = NULL WHERE id = $1", [orderId]);
+  } catch (err) {
+    console.error(`[online-sms] ready phone wipe failed order #${orderNumber}`);
+  }
+}
+
+module.exports = {
+  notifyOnlineOrder,
+  notifyOnlineOrderPlaced,
+  notifyOrderReady,
+  SMS_COPY,
+  TWILIO_TIMEOUT_MS,
+};

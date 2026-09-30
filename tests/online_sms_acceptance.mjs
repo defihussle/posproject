@@ -8,7 +8,7 @@
 
 import sms from "../backend/lib/onlineSms.js";
 
-const { notifyOnlineOrder, notifyOnlineOrderPlaced, SMS_COPY } = sms;
+const { notifyOnlineOrder, notifyOnlineOrderPlaced, notifyOrderReady, SMS_COPY } = sms;
 
 let failures = 0;
 function ok(label, condition, detail = "") {
@@ -20,10 +20,12 @@ function ok(label, condition, detail = "") {
 function fakePool({ failAll = false } = {}) {
   const rows = new Map(); // id -> row
   const queries = [];
+  const wipedPhones = new Set(); // order ids whose customer_phone was nulled
   let nextId = 1;
   return {
     rows,
     queries,
+    wipedPhones,
     async query(sql, params) {
       queries.push({ sql, params });
       if (failAll) throw new Error("db down");
@@ -42,6 +44,10 @@ function fakePool({ failAll = false } = {}) {
       }
       if (sql.startsWith("UPDATE order_notifications SET status = 'failed'")) {
         Object.assign(rows.get(params[0]), { status: "failed", error: params[1] });
+        return { rows: [] };
+      }
+      if (sql.startsWith("UPDATE orders SET customer_phone = NULL")) {
+        wipedPhones.add(params[0]);
         return { rows: [] };
       }
       throw new Error(`unexpected SQL: ${sql}`);
@@ -201,6 +207,72 @@ console.log("Ready (KDS forward tap; preparing sends nothing):");
   stubFetch(twilioCreated);
   await notifyOnlineOrder(pool, "completed", ORDER);
   ok("unknown event -> no row, no send", pool.queries.length === 0 && fetchCalls.length === 0);
+}
+
+console.log("notifyOrderReady (route's ready hook):");
+const WALK_IN = { orderId: "order-2", orderNumber: 43, customerPhone: "+14165551234", source: "pos" };
+{
+  setEnv(CONFIGURED);
+  const pool = fakePool();
+  stubFetch(twilioCreated);
+  await notifyOrderReady(pool, WALK_IN);
+  const events = [...pool.rows.values()].map((r) => `${r.event}:${r.status}`);
+  ok("in-store + phone -> one ready row sent", events.join(",") === "ready:sent", events.join(","));
+  ok("in-store ready uses ready copy", new URLSearchParams(fetchCalls[0]?.init.body).get("Body") === SMS_COPY.ready(43));
+  ok("in-store phone nulled after send", pool.wipedPhones.has("order-2"));
+  ok("audit to_phone kept", [...pool.rows.values()][0]?.toPhone === "+14165551234");
+  ok("in-store never inserts placed", ![...pool.rows.values()].some((r) => r.event === "placed"));
+
+  // Revert-then-ready: the route calls again.
+  await notifyOrderReady(pool, WALK_IN);
+  ok("in-store second ready -> no extra row, no send", pool.rows.size === 1 && fetchCalls.length === 1);
+}
+{
+  setEnv(CONFIGURED);
+  const pool = fakePool();
+  stubFetch(twilioCreated);
+  await notifyOrderReady(pool, { ...WALK_IN, customerPhone: null });
+  ok("in-store no phone -> no row, no send", pool.queries.length === 0 && fetchCalls.length === 0);
+}
+{
+  setEnv({ ...CONFIGURED, TWILIO_FROM_NUMBER: "" });
+  const pool = fakePool();
+  stubFetch(twilioCreated);
+  await notifyOrderReady(pool, WALK_IN);
+  ok("in-store skipped -> phone NOT nulled", [...pool.rows.values()][0]?.status === "skipped" && pool.wipedPhones.size === 0);
+}
+{
+  setEnv(CONFIGURED);
+  const pool = fakePool();
+  stubFetch(() => ({ status: 400, json: async () => ({ code: 21211 }) }));
+  await notifyOrderReady(pool, WALK_IN);
+  ok("in-store failed -> phone NOT nulled", [...pool.rows.values()][0]?.status === "failed" && pool.wipedPhones.size === 0);
+}
+{
+  setEnv({ ...CONFIGURED, ONLINE_SMS_ENABLED: "false" });
+  const pool = fakePool();
+  stubFetch(twilioCreated);
+  await notifyOrderReady(pool, WALK_IN);
+  ok("in-store flag off -> no row, no send, no wipe", pool.queries.length === 0 && fetchCalls.length === 0);
+}
+{
+  setEnv(CONFIGURED);
+  const pool = fakePool();
+  stubFetch(twilioCreated);
+  await notifyOnlineOrderPlaced(pool, ORDER);
+  await notifyOrderReady(pool, { ...ORDER, source: "online" });
+  const events = [...pool.rows.values()].map((r) => `${r.event}:${r.status}`).sort();
+  ok("online placed + ready still sent", events.join(",") === "placed:sent,ready:sent", events.join(","));
+  ok("online phone NOT nulled", pool.wipedPhones.size === 0);
+  await notifyOrderReady(pool, { ...ORDER, source: "online" });
+  ok("online second ready -> no extra row", pool.rows.size === 2 && fetchCalls.length === 2);
+}
+{
+  setEnv(CONFIGURED);
+  const pool = fakePool();
+  stubFetch(twilioCreated);
+  await notifyOrderReady(pool, { ...ORDER, customerPhone: "not a phone", source: "online" });
+  ok("online bad phone -> skipped row as before", [...pool.rows.values()][0]?.error === "invalid_phone");
 }
 
 console.log("Database down:");

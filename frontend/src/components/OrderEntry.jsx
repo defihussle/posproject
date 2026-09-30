@@ -81,6 +81,18 @@ const SWIPE_REVEAL_PX = 76; // how far a partial swipe reveals the delete icon
 const SWIPE_DELETE_PX = 140; // swipe past this and release = delete immediately
 const SWIPE_MAX_PX = 220; // hard clamp so a fast/long drag can't overshoot
 
+// Optional walk-in "text when ready" phone. Same rule as backend/lib/phone.js
+// normalizePhone (10 digits, or 11 starting with 1; spaces/dashes/brackets/dots
+// ignored) so the cashier sees the error before tender. The server re-checks.
+function isUsableWalkInPhone(raw) {
+  const m = /^(\+?)(\d+)$/.exec(String(raw).replace(/[\s\-().]/g, ""));
+  if (!m) return false;
+  const [, plus, digits] = m;
+  const national =
+    digits.length === 11 && digits[0] === "1" ? digits.slice(1) : digits.length === 10 && !plus ? digits : null;
+  return national !== null && /^[2-9]\d{2}[2-9]\d{6}$/.test(national);
+}
+
 export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   const navigate = useNavigate();
   const [menu, setMenu] = useState([]);
@@ -151,6 +163,10 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
   // display, and neither is sent anywhere — the POST body is unchanged.
   const [cashTenderOpen, setCashTenderOpen] = useState(false);
   const [tendered, setTendered] = useState("");
+  // Optional walk-in phone for the "ready" text. Blank = none.
+  const [customerPhone, setCustomerPhone] = useState("");
+  const phoneTrimmed = customerPhone.trim();
+  const phoneInvalid = phoneTrimmed !== "" && !isUsableWalkInPhone(phoneTrimmed);
   // Mirrors `submitting` for guard checks that must be correct synchronously —
   // React state lags a tick, and "retry" needs to re-enter checkout immediately
   // after clearing it.
@@ -311,6 +327,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
       staffId: staff.id,
       paymentMethod: method,
       ...(discount ? { discount: { percent: discount.percent, reason: discount.reason } } : {}),
+      ...(phoneTrimmed ? { customerPhone: phoneTrimmed } : {}),
       items: cart.map((line) => ({
         itemId: line.itemId,
         variantId: line.variant ? line.variant.id : null,
@@ -326,7 +343,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
         })),
       })),
     }),
-    [cart, staff.id, discount]
+    [cart, staff.id, discount, phoneTrimmed]
   );
 
   const openCheckout = useCallback(() => {
@@ -335,6 +352,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
     setCardState(null);
     setCashTenderOpen(false);
     setTendered("");
+    setCustomerPhone("");
     setCheckoutOpen(true);
   }, []);
 
@@ -368,6 +386,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
     setConfirmation({ orderNumber, orderId });
     setCart([]);
     setDiscount(null);
+    setCustomerPhone("");
     autoCloseRef.current = setTimeout(() => {
       autoCloseRef.current = null;
       setConfirmation(null);
@@ -1190,6 +1209,31 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                   </div>
                 </div>
 
+                {/* Optional walk-in phone, asked before tender and sent with
+                    either Cash or Card. Used only to text "ready". */}
+                <div className="oe-checkout__phone" hidden={cashTenderOpen}>
+                  <label className="oe-checkout__phone-label" htmlFor="oe-customer-phone">
+                    Text when ready (optional)
+                  </label>
+                  <input
+                    id="oe-customer-phone"
+                    className={`oe-checkout__phone-input${phoneInvalid ? " oe-checkout__phone-input--invalid" : ""}`}
+                    type="tel"
+                    inputMode="tel"
+                    autoComplete="off"
+                    placeholder="416 555 1234"
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    disabled={submitting}
+                    aria-invalid={phoneInvalid}
+                  />
+                  {phoneInvalid && (
+                    <div className="oe-checkout__phone-error">
+                      Enter a 10-digit Canadian or US number, or leave it blank.
+                    </div>
+                  )}
+                </div>
+
                 {checkoutError && (
                   <div className="oe-checkout__error">{checkoutError}</div>
                 )}
@@ -1291,7 +1335,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                     <button
                       className="oe-checkout__method"
                       onClick={openCashTender}
-                      disabled={submitting}
+                      disabled={submitting || phoneInvalid}
                     >
                       <span className="oe-checkout__method-icon">💵</span>
                       <span>Cash</span>
@@ -1299,7 +1343,7 @@ export default function OrderEntry({ staff, theme, onToggleTheme, onLogout }) {
                     <button
                       className="oe-checkout__method"
                       onClick={() => handleCheckout("card")}
-                      disabled={submitting}
+                      disabled={submitting || phoneInvalid}
                     >
                       <span className="oe-checkout__method-icon">💳</span>
                       <span>Card</span>

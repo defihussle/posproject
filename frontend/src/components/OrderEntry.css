@@ -749,6 +749,52 @@
   line-height: 1.4;
 }
 
+/* Optional walk-in "text when ready" phone, above the tender buttons. */
+.oe-checkout__phone {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.oe-checkout__phone[hidden] {
+  display: none;
+}
+
+.oe-checkout__phone-label {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.oe-checkout__phone-input {
+  padding: 10px 14px;
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  color: var(--text-primary);
+  outline: none;
+}
+
+.oe-checkout__phone-input:focus {
+  border-color: var(--red);
+}
+
+.oe-checkout__phone-input--invalid {
+  border-color: var(--red);
+}
+
+.oe-checkout__phone-error {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--red);
+}
+
 .oe-checkout__methods {
   display: grid;
   grid-template-columns: 1fr 1fr;

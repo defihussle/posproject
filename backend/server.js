@@ -9,7 +9,8 @@ const { generateSecret: generateTotpSecret, generateURI: generateTotpUri, verify
 const QRCode = require("qrcode");
 const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
-const { notifyOnlineOrder, notifyOnlineOrderPlaced } = require("./lib/onlineSms");
+const { notifyOnlineOrderPlaced, notifyOrderReady } = require("./lib/onlineSms");
+const { normalizePhone } = require("./lib/phone");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -1360,8 +1361,9 @@ async function materializeOrderFromPendingCheckout(client, { pending, paymentInt
   // ---- orders ----
   const { rows: orderRows } = await client.query(
     `INSERT INTO orders (location_id, staff_id, status, subtotal, tax, tip, total,
-                          discount, discount_percent, discount_reason, discount_applied_by)
-     VALUES ($1, $2, 'open', $3, $4, $5, $6, $7, $8, $9, $10)
+                          discount, discount_percent, discount_reason, discount_applied_by,
+                          customer_phone)
+     VALUES ($1, $2, 'open', $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING id, order_number`,
     [
       pending.location_id,
@@ -1374,6 +1376,8 @@ async function materializeOrderFromPendingCheckout(client, { pending, paymentInt
       pending.discount_percent,
       pending.discount_reason,
       snapshot.discountAppliedBy || null,
+      // Walk-in "ready" text phone, already normalized at checkout (or null).
+      snapshot.customerPhone || null,
     ]
   );
   const order = orderRows[0];
@@ -2305,7 +2309,7 @@ async function priceCart(client, { staffId, items, discountPercent, discountReas
 }
 
 app.post("/api/orders", requireDevicePairing, async (req, res) => {
-  const { staffId, paymentMethod, items, discount } = req.body || {};
+  const { staffId, paymentMethod, items, discount, customerPhone: rawCustomerPhone } = req.body || {};
 
   // ---- Shape validation (cheap checks before touching the DB) ----
   if (!staffId || typeof staffId !== "string") {
@@ -2349,6 +2353,16 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
   }
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: "Order must contain at least one item" });
+  }
+
+  // Optional walk-in phone, used only for the "ready" text. Blank = none; any
+  // other value must normalize, so nothing unusable is ever stored.
+  let customerPhone = null;
+  if (rawCustomerPhone !== undefined && rawCustomerPhone !== null && rawCustomerPhone !== "") {
+    customerPhone = normalizePhone(rawCustomerPhone);
+    if (!customerPhone) {
+      return res.status(400).json({ error: "customerPhone must be a 10-digit Canadian or US number" });
+    }
   }
 
   const client = await pool.connect();
@@ -2397,6 +2411,7 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
           JSON.stringify({
             lines: pricedLines,
             discountAppliedBy: discountPercent ? staff.id : null,
+            customerPhone,
           }),
           subtotal,
           discountAmount,
@@ -2440,6 +2455,7 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
           JSON.stringify({
             lines: pricedLines,
             discountAppliedBy: discountPercent ? staff.id : null,
+            customerPhone,
           }),
           subtotal,
           discountAmount,
@@ -2469,8 +2485,9 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
       // ---- Insert order ----
       const { rows: orderRows } = await client.query(
         `INSERT INTO orders (location_id, staff_id, status, subtotal, tax, tip, total,
-                              discount, discount_percent, discount_reason, discount_applied_by)
-         VALUES ($1, $2, 'open', $3, $4, $5, $6, $7, $8, $9, $10)
+                              discount, discount_percent, discount_reason, discount_applied_by,
+                              customer_phone)
+         VALUES ($1, $2, 'open', $3, $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING id, order_number`,
         [
           location.id,
@@ -2483,6 +2500,7 @@ app.post("/api/orders", requireDevicePairing, async (req, res) => {
           discountPercent,
           discountReason,
           discountPercent ? staff.id : null,
+          customerPhone,
         ]
       );
       const order = orderRows[0];
@@ -3364,14 +3382,16 @@ app.patch("/api/orders/:id/status", requireDevicePairing, async (req, res) => {
 
     await client.query("COMMIT");
 
-    // Online pickup SMS: ready → "ready" only; preparing sends nothing. Online
-    // orders only; in-store orders are never texted. Not awaited and never
-    // throws. UNIQUE (order_id, event) stops a resend after revert-then-forward.
-    if (rows[0].source === "online" && status === "ready") {
-      notifyOnlineOrder(pool, "ready", {
+    // "ready" SMS only; preparing sends nothing. Online orders as before; an
+    // in-store order only if a walk-in phone was taken at checkout (wiped once
+    // sent). Not awaited and never throws. UNIQUE (order_id, event) stops a
+    // resend after revert-then-forward.
+    if (status === "ready") {
+      notifyOrderReady(pool, {
         orderId: id,
         orderNumber: rows[0].order_number,
         customerPhone: rows[0].customer_phone,
+        source: rows[0].source,
       });
     }
 
