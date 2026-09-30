@@ -576,10 +576,13 @@ app.post("/api/auth/login", requireDevicePairing, async (req, res) => {
     // a machine user that exists only because orders.staff_id is NOT NULL.
     // Nobody holds its PIN, so it has no business being in a set we bcrypt
     // every typed PIN against. COALESCE keeps this working on a database
-    // where the column has not been added yet.
+    // where the column has not been added yet. pin_hash IS NULL rows are
+    // staff created without a PIN (database/staff_sms_auth.sql) — nothing to
+    // compare, and bcrypt.compare throws on a NULL hash.
     const { rows } = await pool.query(
       `SELECT id, name, role, location_id, pin_hash FROM staff
-        WHERE active = true AND COALESCE(is_system, false) = false`
+        WHERE active = true AND COALESCE(is_system, false) = false
+          AND pin_hash IS NOT NULL`
     );
 
     // Compare submitted PIN against each hash
@@ -5731,7 +5734,7 @@ app.post("/api/backoffice/auth/setup-start", async (req, res) => {
 
   try {
     const { rows } = await pool.query(
-      "SELECT id, name, role, pin_hash, password_hash FROM staff WHERE active = true AND role IN ('owner','admin')"
+      "SELECT id, name, role, pin_hash, password_hash FROM staff WHERE active = true AND role IN ('owner','admin') AND pin_hash IS NOT NULL"
     );
     let matched = null;
     for (const row of rows) {
@@ -6993,9 +6996,11 @@ const STAFF_MANAGER_ROLES = ["owner", "admin", "manager"]; // used ONLY by POST 
 // any manager-or-above act on it, and assertRoleAssignable only gates
 // owner/admin, so nothing else needed changing to admit it.
 const STAFF_ROLES = ["owner", "admin", "manager", "cashier", "kitchen", "line"];
-// Columns safe to return — pin_hash is NEVER selected.
+// Columns safe to return — pin_hash is NEVER selected. has_pin is only
+// whether one exists (staff can be created without a PIN), so the UI can say
+// "create" vs "change".
 const STAFF_SAFE_COLS =
-  "id, location_id, name, title, phone, email, role, hourly_rate, hire_date, active, created_at";
+  "id, location_id, name, title, phone, email, role, hourly_rate, hire_date, active, created_at, (pin_hash IS NOT NULL) AS has_pin";
 
 function canManageTarget(requesterRole, targetRole) {
   if (targetRole === "owner") return requesterRole === "owner";
@@ -7083,9 +7088,10 @@ function validatePin(pin) {
 // PINs must be unique among ACTIVE staff (login matches the PIN against all
 // active hashes, so a duplicate would log in as whoever matches first).
 // Compares against every active hash; excludeId skips the row being updated.
+// Rows with no PIN yet (pin_hash NULL) can't collide and are skipped.
 async function assertPinAvailable(pin, excludeId = null) {
   const { rows } = await pool.query(
-    "SELECT id, pin_hash FROM staff WHERE active = true"
+    "SELECT id, pin_hash FROM staff WHERE active = true AND pin_hash IS NOT NULL"
   );
   for (const row of rows) {
     if (excludeId && row.id === excludeId) continue;
@@ -7093,6 +7099,42 @@ async function assertPinAvailable(pin, excludeId = null) {
       throw new HttpError(409, "That PIN is already in use — choose another");
     }
   }
+}
+
+// Back Office create/edit only: a missing or blank PIN means "no PIN".
+function isBlankPin(pin) {
+  return pin === undefined || pin === null || (typeof pin === "string" && pin.trim() === "");
+}
+
+// staff.phone (database/staff_sms_auth.sql): stored E.164 via normalizePhone,
+// unique among rows that have one. Returns undefined when the field was not
+// sent (leave unchanged), null for blank (clear it), else '+1XXXXXXXXXX'.
+function parseStaffPhone(raw) {
+  if (raw === undefined) return undefined;
+  if (raw === null || (typeof raw === "string" && raw.trim() === "")) return null;
+  const normalized = normalizePhone(raw);
+  if (!normalized) {
+    throw new HttpError(400, "Enter a valid 10-digit phone number");
+  }
+  return normalized;
+}
+
+async function assertPhoneAvailable(phone, excludeId = null) {
+  const { rows } = await pool.query(
+    "SELECT id FROM staff WHERE phone = $1 AND ($2::uuid IS NULL OR id <> $2::uuid)",
+    [phone, excludeId]
+  );
+  if (rows.length > 0) {
+    throw new HttpError(409, "That phone number is already on another staff member");
+  }
+}
+
+// The pre-check above can race; the unique index is the real guarantee.
+function phoneConflictError(err) {
+  if (err?.code === "23505" && err?.constraint === "staff_phone_unique") {
+    return new HttpError(409, "That phone number is already on another staff member");
+  }
+  return err;
 }
 
 // Real history = orders they placed or applied a discount on, or shifts
@@ -7205,9 +7247,14 @@ app.get("/api/backoffice/staff/live-status", async (req, res) => {
 // Both still run assertRoleAssignable, so Manager can never hand out
 // owner/admin through the quick-add route either. `requester` is resolved
 // by the caller (different auth mechanism per route) and passed in.
-async function createStaffMember(req, res, requester) {
+//
+// `backoffice` is true ONLY for the session-cookie route. Phone and the
+// optional PIN are Back-Office-only: quick-add still trusts a body staffId,
+// so it keeps requiring a PIN and never writes a phone (a phone will become
+// an SMS login/recovery identity — not something a spoofable route may set).
+async function createStaffMember(req, res, requester, { backoffice = false } = {}) {
   try {
-    const { name, role, hourly_rate, pin, email } = req.body || {};
+    const { name, role, hourly_rate, pin, email, phone } = req.body || {};
 
     if (typeof name !== "string" || !name.trim()) {
       throw new HttpError(400, "name is required");
@@ -7222,8 +7269,18 @@ async function createStaffMember(req, res, requester) {
     if (!Number.isFinite(rate) || rate <= 0) {
       throw new HttpError(400, "hourly_rate must be a positive number");
     }
-    validatePin(pin);
-    await assertPinAvailable(pin);
+    // Back Office may create a staff member with no PIN (they set their own
+    // later); quick-add always requires one.
+    const hasPin = !backoffice || !isBlankPin(pin);
+    if (hasPin) {
+      validatePin(pin);
+      await assertPinAvailable(pin);
+    }
+    let phoneToStore = null;
+    if (backoffice) {
+      phoneToStore = parseStaffPhone(phone) ?? null;
+      if (phoneToStore) await assertPhoneAvailable(phoneToStore);
+    }
 
     // Email only ever means anything for owner/admin (the only roles that
     // get Back Office login) — silently dropped for every other role even
@@ -7250,17 +7307,17 @@ async function createStaffMember(req, res, requester) {
       locationId = locRows[0].id;
     }
 
-    const pinHash = await bcrypt.hash(pin, 10);
+    const pinHash = hasPin ? await bcrypt.hash(pin, 10) : null;
     const title = role.charAt(0).toUpperCase() + role.slice(1);
     const { rows } = await pool.query(
-      `INSERT INTO staff (location_id, name, title, pin_hash, role, hourly_rate, email, active)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+      `INSERT INTO staff (location_id, name, title, pin_hash, role, hourly_rate, email, phone, active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
        RETURNING ${STAFF_SAFE_COLS}`,
-      [locationId, name.trim(), title, pinHash, role, rate, emailToStore]
+      [locationId, name.trim(), title, pinHash, role, rate, emailToStore, phoneToStore]
     );
     res.status(201).json(rows[0]);
   } catch (err) {
-    sendHttpError(res, err, "Failed to create staff member");
+    sendHttpError(res, phoneConflictError(err), "Failed to create staff member");
   }
 }
 
@@ -7269,7 +7326,7 @@ async function createStaffMember(req, res, requester) {
 app.post("/api/backoffice/staff", async (req, res) => {
   try {
     const requester = await requireBackofficeSession(req, ["owner", "admin"]);
-    await createStaffMember(req, res, requester);
+    await createStaffMember(req, res, requester, { backoffice: true });
   } catch (err) {
     sendHttpError(res, err, "Failed to create staff member");
   }
@@ -7447,7 +7504,7 @@ app.put("/api/staff/me/pin", async (req, res) => {
     validatePin(newPin);
 
     const { rows } = await pool.query("SELECT pin_hash FROM staff WHERE id = $1", [requester.id]);
-    const currentMatches = rows[0] && (await bcrypt.compare(currentPin, rows[0].pin_hash));
+    const currentMatches = rows[0]?.pin_hash && (await bcrypt.compare(currentPin, rows[0].pin_hash));
     if (!currentMatches) {
       // Generic — never reveals whether staffId itself was the problem vs.
       // a wrong PIN; requireStaffIdParam above already 403'd unknown ids.
@@ -7476,7 +7533,7 @@ async function verifyStaffPin(staffId, pin) {
     throw new HttpError(400, "PIN must be exactly 4 digits");
   }
   const { rows } = await pool.query("SELECT pin_hash FROM staff WHERE id = $1", [staffId]);
-  const matches = rows[0] && (await bcrypt.compare(pin, rows[0].pin_hash));
+  const matches = rows[0]?.pin_hash && (await bcrypt.compare(pin, rows[0].pin_hash));
   if (!matches) {
     throw new HttpError(401, "Incorrect PIN");
   }
@@ -7802,7 +7859,8 @@ async function requireManagedTarget(requester, targetId) {
 }
 
 // PUT /api/backoffice/staff/:id
-// Body: { staffId, name?, role?, hourly_rate?, active? } — partial update.
+// Body: { staffId, name?, role?, hourly_rate?, active?, email?, phone?, pin? }
+// — partial update. phone: blank clears it; pin: blank leaves it unchanged.
 // Owner/admin only (Back Office is revoked from Manager). Hierarchy
 // protection still applies to EVERY field, not just `active`.
 // Deactivation = active:false; staff rows are never hard-deleted (historical
@@ -7827,9 +7885,38 @@ app.put("/api/backoffice/staff/:id", async (req, res) => {
       }
     }
 
+    // Phone (database/staff_sms_auth.sql) — will be the number SMS codes go
+    // to, so the super-owner's is protected the same way as their email.
+    const phone = parseStaffPhone(body.phone);
+    let phoneChanged = false;
+    if (phone !== undefined) {
+      const { rows: cur } = await pool.query("SELECT phone FROM staff WHERE id = $1", [target.id]);
+      phoneChanged = (cur[0]?.phone ?? null) !== phone;
+      if (phoneChanged && isSuperOwner(target) && !isSuperOwner(requester)) {
+        throw new HttpError(403, "The primary owner account's phone can't be changed here");
+      }
+      if (phoneChanged && phone) await assertPhoneAvailable(phone, target.id);
+    }
+
+    // Optional PIN create/change in the same save. Blank = leave as is.
+    const pinGiven = !isBlankPin(body.pin);
+    if (pinGiven) {
+      validatePin(body.pin);
+      await assertPinAvailable(body.pin, target.id);
+    }
+
     const sets = [];
     const vals = [];
     let i = 1;
+
+    if (phoneChanged) {
+      sets.push(`phone = $${i++}`);
+      vals.push(phone);
+    }
+    if (pinGiven) {
+      sets.push(`pin_hash = $${i++}`);
+      vals.push(await bcrypt.hash(body.pin, 10));
+    }
 
     if (body.name !== undefined) {
       if (typeof body.name !== "string" || !body.name.trim()) {
@@ -7886,6 +7973,11 @@ app.put("/api/backoffice/staff/:id", async (req, res) => {
       }
     }
     if (sets.length === 0) {
+      // A phone resubmitted unchanged is a valid no-op, not an empty request.
+      if (phone !== undefined) {
+        const { rows } = await pool.query(`SELECT ${STAFF_SAFE_COLS} FROM staff WHERE id = $1`, [target.id]);
+        return res.json(rows[0]);
+      }
       throw new HttpError(400, "No updatable fields provided");
     }
 
@@ -7896,7 +7988,7 @@ app.put("/api/backoffice/staff/:id", async (req, res) => {
     );
     res.json(rows[0]);
   } catch (err) {
-    sendHttpError(res, err, "Failed to update staff member");
+    sendHttpError(res, phoneConflictError(err), "Failed to update staff member");
   }
 });
 

@@ -52,6 +52,12 @@ export function canManageTarget(requesterRole, targetRole) {
 }
 
 const fmtRate = (r) => (r == null ? "—" : `$${parseFloat(r).toFixed(2)}/hr`);
+// staff.phone is stored E.164 (+14165551234); shown as (416) 555-1234. Anything
+// else (legacy free text) is shown as-is.
+const formatPhone = (p) => {
+  const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(p || "");
+  return m ? `(${m[1]}) ${m[2]}-${m[3]}` : p || "";
+};
 
 const LIVE_STATUS_POLL_MS = 5000; // same cadence as Back Office Home's Live Status card
 
@@ -297,10 +303,17 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
   const [role, setRole] = useState(row.role);
   const [rate, setRate] = useState(row.hourly_rate == null ? "" : String(row.hourly_rate));
   const [email, setEmail] = useState(row.email || "");
+  const [phone, setPhone] = useState(formatPhone(row.phone));
+  // Blank = leave the PIN as it is. has_pin comes from the server (never the
+  // hash); a row from an older API without it is treated as having one.
+  const [newPin, setNewPin] = useState("");
+  const hasPin = row.has_pin !== false;
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pinPrompt, setPinPrompt] = useState(false);
   const [confirmingRole, setConfirmingRole] = useState(false);
+  const [confirmingPin, setConfirmingPin] = useState(false);
+  const [editErr, setEditErr] = useState(null);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   // The card opens read-only. Editing is deliberate — a row opened just to
   // check someone's rate used to present every field as a live input, which
@@ -322,6 +335,9 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
     setRole(row.role);
     setRate(row.hourly_rate == null ? "" : String(row.hourly_rate));
     setEmail(row.email || "");
+    setPhone(formatPhone(row.phone));
+    setNewPin("");
+    setEditErr(null);
   };
 
   const cancelEdit = () => {
@@ -329,10 +345,13 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
     setEditing(false);
   };
 
+  const phoneDirty = phone.trim() !== formatPhone(row.phone);
   const dirty =
     role !== row.role ||
     rate !== (row.hourly_rate == null ? "" : String(row.hourly_rate)) ||
-    (isBackofficeRole && email !== (row.email || ""));
+    (isBackofficeRole && email !== (row.email || "")) ||
+    phoneDirty ||
+    newPin !== "";
 
   const put = async (body) => {
     const res = await fetch(`${API_URL}/api/backoffice/staff/${row.id}`, {
@@ -353,9 +372,14 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
       const body = { hourly_rate: Number(rate) };
       if (role !== row.role) body.role = role;
       if (isBackofficeRole) body.email = email.trim() || null;
+      // Only sent when changed — the server blocks phone edits on the
+      // primary owner by anyone else, so resending it unchanged would 403.
+      if (phoneDirty) body.phone = phone.trim() || null;
+      if (newPin) body.pin = newPin;
       const data = await put(body);
       onError(null);
       onSaved(data);
+      setNewPin("");
       // Back to the read-only view — a successful save is the end of the
       // edit, and leaving the inputs open invites a second accidental one.
       setEditing(false);
@@ -366,16 +390,36 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
     } finally {
       setSaving(false);
       setConfirmingRole(false);
+      setConfirmingPin(false);
     }
   };
 
   // Role changes get their own confirmation showing the specific
-  // from/to values (per task); rate/email edits are low-stakes and save
-  // immediately, unchanged from before.
+  // from/to values (per task), and so does creating/changing a PIN — role
+  // first, then PIN, when both change in one save. Rate/email/phone edits
+  // are low-stakes and save immediately.
   const requestSave = () => {
     if (saving || !dirty) return;
+    if (newPin && !/^\d{4}$/.test(newPin)) {
+      setEditErr("PIN must be exactly 4 digits, or leave it blank");
+      return;
+    }
+    setEditErr(null);
     if (role !== row.role) {
       setConfirmingRole(true);
+      return;
+    }
+    if (newPin) {
+      setConfirmingPin(true);
+      return;
+    }
+    performSave();
+  };
+
+  const confirmRole = () => {
+    if (newPin) {
+      setConfirmingRole(false);
+      setConfirmingPin(true);
       return;
     }
     performSave();
@@ -493,6 +537,30 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
                   />
                 </label>
               )}
+              <label className="staffmgr__label">
+                Phone
+                <input
+                  className="staffmgr__input"
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="(416) 555-1234"
+                  inputMode="tel"
+                  autoComplete="off"
+                />
+              </label>
+              <label className="staffmgr__label">
+                {hasPin ? "New PIN (optional)" : "PIN (optional)"}
+                <input
+                  className="staffmgr__input staffmgr__input--pin"
+                  value={newPin}
+                  onChange={(e) => setNewPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                  placeholder={hasPin ? "Leave blank to keep" : "••••"}
+                  inputMode="numeric"
+                  autoComplete="off"
+                />
+              </label>
+              {editErr && <div className="staffmgr__error">{editErr}</div>}
               {/* Save only — the header button is the mode toggle and already
                   reads "Cancel", so a second one here was the same action
                   offered twice. */}
@@ -527,6 +595,18 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
                     </dd>
                   </div>
                 )}
+                <div className="staffmgr__fact">
+                  <dt className="staffmgr__fact-label">Phone</dt>
+                  <dd className="staffmgr__fact-value">
+                    {row.phone ? formatPhone(row.phone) : <span className="staffmgr__fact-empty">Not set</span>}
+                  </dd>
+                </div>
+                <div className="staffmgr__fact">
+                  <dt className="staffmgr__fact-label">PIN</dt>
+                  <dd className="staffmgr__fact-value">
+                    {hasPin ? "Set" : <span className="staffmgr__fact-empty">Not set</span>}
+                  </dd>
+                </div>
               </dl>
 
               {/* Destructive actions stay on the read-only view rather than
@@ -542,12 +622,14 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
                         staffId={row.id}
                         staffName={row.name}
                         me={me}
+                        hasPin={hasPin}
                         onDone={() => setPinPrompt(false)}
+                        onSet={() => onSaved({ ...row, has_pin: true })}
                         onError={onError}
                       />
                     ) : (
                       <button className="staffmgr__btn" onClick={() => setPinPrompt(true)}>
-                        Reset PIN
+                        {hasPin ? "Reset PIN" : "Set PIN"}
                       </button>
                     )}
 
@@ -589,8 +671,20 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
           message={`Change ${row.name}'s role from ${row.role} to ${role}?`}
           confirmLabel="Change Role"
           busy={saving}
-          onConfirm={performSave}
+          onConfirm={confirmRole}
           onCancel={() => setConfirmingRole(false)}
+        />
+      )}
+
+      {confirmingPin && (
+        <ConfirmDialog
+          title={hasPin ? "Change PIN?" : "Create PIN?"}
+          message={hasPin ? "Are you sure you want to change this PIN?" : "Are you sure you want to create this PIN?"}
+          confirmLabel="Yes"
+          cancelLabel="No"
+          busy={saving}
+          onConfirm={performSave}
+          onCancel={() => setConfirmingPin(false)}
         />
       )}
 
@@ -621,7 +715,7 @@ function StaffDetailModal({ row, me, onSaved, onRemoved, onError, onClose }) {
 // (and shouldn't need to) know the old one. Distinct from the self-
 // service Change PIN flow elsewhere (old + new + confirm), untouched by
 // this component.
-function InlinePinReset({ staffId, staffName, me, onDone, onError }) {
+function InlinePinReset({ staffId, staffName, me, hasPin = true, onDone, onSet, onError }) {
   const [pin, setPin] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
   const [saving, setSaving] = useState(false);
@@ -656,6 +750,7 @@ function InlinePinReset({ staffId, staffName, me, onDone, onError }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       onError(null);
+      onSet?.();
       onDone();
     } catch (err) {
       setLocalErr(err.message);
@@ -691,17 +786,31 @@ function InlinePinReset({ staffId, staffName, me, onDone, onError }) {
         </button>
       </div>
 
-      {confirming && (
-        <ConfirmDialog
-          title="Reset PIN?"
-          message={`Reset ${staffName}'s PIN? The old PIN will stop working immediately — they'll need the new one to log in.`}
-          confirmLabel="Reset PIN"
-          danger
-          busy={saving}
-          onConfirm={performSave}
-          onCancel={() => setConfirming(false)}
-        />
-      )}
+      {/* A staff member created without a PIN has no old PIN to stop
+          working, so the reset copy would be wrong — they get the create
+          wording instead. */}
+      {confirming &&
+        (hasPin ? (
+          <ConfirmDialog
+            title="Reset PIN?"
+            message={`Reset ${staffName}'s PIN? The old PIN will stop working immediately — they'll need the new one to log in.`}
+            confirmLabel="Reset PIN"
+            danger
+            busy={saving}
+            onConfirm={performSave}
+            onCancel={() => setConfirming(false)}
+          />
+        ) : (
+          <ConfirmDialog
+            title="Create PIN?"
+            message="Are you sure you want to create this PIN?"
+            confirmLabel="Yes"
+            cancelLabel="No"
+            busy={saving}
+            onConfirm={performSave}
+            onCancel={() => setConfirming(false)}
+          />
+        ))}
     </div>
   );
 }
@@ -725,8 +834,14 @@ export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/back
   const [rate, setRate] = useState("");
   const [pin, setPin] = useState("");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
+  const [confirmingPin, setConfirmingPin] = useState(false);
+  // Phone and the optional PIN are Back Office only. The POS quick-add route
+  // still trusts a body staffId, so from there the form stays as it was:
+  // PIN required, no phone field (the server ignores one anyway).
+  const backoffice = endpoint === "/api/backoffice/staff";
   // Email is only ever meaningful for owner/admin (the only roles with
   // Back Office login) — manager/cashier/kitchen never see this field at
   // all. From the POS quick-add modal (endpoint="/api/staff/quick-add"),
@@ -735,12 +850,25 @@ export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/back
   // the field is unreachable for manager, not just hidden.
   const isBackofficeRole = role === "owner" || role === "admin";
 
-  const save = async () => {
+  // Creating a PIN always gets an explicit Yes/No first; no PIN (Back Office
+  // only) saves straight away.
+  const requestSave = () => {
     if (saving) return;
-    if (!/^\d{4}$/.test(pin)) {
-      setErr("PIN must be exactly 4 digits");
+    const pinRequired = !backoffice;
+    if ((pinRequired || pin) && !/^\d{4}$/.test(pin)) {
+      setErr(pinRequired ? "PIN must be exactly 4 digits" : "PIN must be exactly 4 digits, or leave it blank");
       return;
     }
+    setErr(null);
+    if (pin) {
+      setConfirmingPin(true);
+      return;
+    }
+    save();
+  };
+
+  const save = async () => {
+    if (saving) return;
     setSaving(true);
     setErr(null);
     try {
@@ -753,7 +881,8 @@ export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/back
           name,
           role,
           hourly_rate: Number(rate),
-          pin,
+          ...(pin ? { pin } : {}),
+          ...(backoffice ? { phone: phone.trim() || null } : {}),
           ...(isBackofficeRole ? { email: email.trim() || undefined } : {}),
         }),
       });
@@ -763,6 +892,8 @@ export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/back
     } catch (e) {
       setErr(e.message || "Failed to create staff member");
       setSaving(false);
+    } finally {
+      setConfirmingPin(false);
     }
   };
 
@@ -810,8 +941,22 @@ export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/back
           inputMode="decimal"
         />
       </label>
+      {backoffice && (
+        <label className="staffmgr__label">
+          Phone
+          <input
+            className="staffmgr__input"
+            type="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="(416) 555-1234"
+            inputMode="tel"
+            autoComplete="off"
+          />
+        </label>
+      )}
       <label className="staffmgr__label">
-        PIN (4 digits)
+        {backoffice ? "PIN (4 digits, optional)" : "PIN (4 digits)"}
         <input
           className="staffmgr__input staffmgr__input--pin"
           value={pin}
@@ -824,10 +969,22 @@ export function StaffAddForm({ staff, onCreated, onCancel, endpoint = "/api/back
         <button className="staffmgr__btn" onClick={onCancel} disabled={saving}>
           Cancel
         </button>
-        <button className="staffmgr__btn staffmgr__btn--save" onClick={save} disabled={saving}>
+        <button className="staffmgr__btn staffmgr__btn--save" onClick={requestSave} disabled={saving}>
           {saving ? "Adding…" : "Add Staff"}
         </button>
       </div>
+
+      {confirmingPin && (
+        <ConfirmDialog
+          title="Create PIN?"
+          message="Are you sure you want to create this PIN?"
+          confirmLabel="Yes"
+          cancelLabel="No"
+          busy={saving}
+          onConfirm={save}
+          onCancel={() => setConfirmingPin(false)}
+        />
+      )}
     </div>
   );
 }

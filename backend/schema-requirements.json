@@ -106,6 +106,10 @@
       "migration": "schema.sql"
     },
     {
+      "table": "staff_auth_codes",
+      "migration": "staff_sms_auth.sql"
+    },
+    {
       "table": "stripe_events",
       "migration": "stripe_terminal.sql"
     }
