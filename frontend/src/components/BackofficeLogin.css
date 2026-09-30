@@ -177,3 +177,15 @@
   word-break: break-all;
   text-align: center;
 }
+
+/* Second-factor choice (P3 Slice 3): Authenticator vs SMS sit side by side in
+   weight — the secondary one is outlined rather than filled. */
+.bol__submit--secondary {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1.5px solid var(--border-color);
+}
+
+.bol__submit--secondary:hover:not(:disabled) {
+  background: var(--bg-surface-hover);
+}

@@ -5909,6 +5909,111 @@ async function sendResendEmail({ to, subject, html }) {
   }
 }
 
+// --------------- Back Office SMS codes (P3 Slice 3) ---------------
+// Owner/admin only. SMS is an ALTERNATIVE to the authenticator at the second
+// step (never stacked, and choosing it never touches totp_enabled), plus an
+// SMS path for resetting your own password. Codes go to staff.phone — never
+// a typed number — via lib/staffSms.js (STAFF_SMS_ENABLED +
+// TWILIO_STAFF_FROM_NUMBER). Same code rules and send limits as the Order
+// Entry PIN codes above (purposes bo_login / bo_reset).
+const BO_SMS_ROLES = ["owner", "admin"];
+
+function phoneHint(phone) {
+  return `(•••) •••-${String(phone).slice(-4)}`;
+}
+
+// What login-step1 / setup-complete return once the password is done and the
+// account has a phone: pick SMS or the authenticator on the next screen.
+function twoFactorChoice(staff) {
+  return {
+    stage: "2fa_choice",
+    tempToken: signTempToken({ staffId: staff.id }, "2fa_choice", "10m"),
+    phoneHint: phoneHint(staff.phone),
+    totp: staff.totp_enabled ? "verify" : "setup",
+  };
+}
+
+// New code for (staff, purpose), or null when the send limit for that phone
+// is reached — in which case the previous live code keeps working.
+async function issueBoCode(staffId, phone, purpose) {
+  const { rows } = await pool.query(
+    `SELECT count(*) FILTER (WHERE created_at > now() - $2::interval)::int AS last_gap,
+            count(*) FILTER (WHERE created_at > now() - interval '1 hour')::int AS last_hour
+       FROM staff_auth_codes WHERE to_phone = $1 AND purpose = $3`,
+    [phone, `${PIN_CODE_SEND_GAP_MS / 1000} seconds`, purpose]
+  );
+  if (rows[0].last_gap > 0 || rows[0].last_hour >= PIN_CODE_SENDS_PER_HOUR) return null;
+  const codeId = crypto.randomUUID();
+  const code = generateStaffCode();
+  await pool.query(
+    "UPDATE staff_auth_codes SET consumed_at = now() WHERE staff_id = $1 AND purpose = $2 AND consumed_at IS NULL",
+    [staffId, purpose]
+  );
+  await pool.query(
+    `INSERT INTO staff_auth_codes (id, staff_id, purpose, code_hash, to_phone, max_attempts, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, now() + $7::interval)`,
+    [codeId, staffId, purpose, hashStaffCode(SESSION_SECRET, codeId, code), phone,
+      STAFF_CODE_MAX_ATTEMPTS, `${STAFF_CODE_TTL_MS / 1000} seconds`]
+  );
+  return { codeId, code };
+}
+
+// Call AFTER replying. A code that didn't go out is retired at once.
+async function deliverBoCode(issued, phone, purpose) {
+  if (!issued) return;
+  const outcome = await sendStaffCode(phone, issued.code);
+  if (outcome === "sent") return;
+  console.warn(`[staff-sms] ${purpose} code not sent (${outcome})`);
+  await pool
+    .query("UPDATE staff_auth_codes SET consumed_at = now() WHERE id = $1", [issued.codeId])
+    .catch((err) => console.error("[staff-sms] retire failed:", err.message));
+}
+
+// Checks `code` against the newest live code; returns its id. A wrong code
+// costs an attempt (5th locks). With no live code — or no staff at all — a
+// decoy counter keyed by `decoyKey` gives the same "N attempts left" reply.
+async function checkBoCode(staff, purpose, code, decoyKey) {
+  const { rows } = staff
+    ? await pool.query(
+        `SELECT id, code_hash, attempts, max_attempts FROM staff_auth_codes
+          WHERE staff_id = $1 AND to_phone = $2 AND purpose = $3
+            AND consumed_at IS NULL AND expires_at > now()
+          ORDER BY created_at DESC LIMIT 1`,
+        [staff.id, staff.phone, purpose]
+      )
+    : { rows: [] };
+  const row = rows[0];
+  if (!row) {
+    const now = Date.now();
+    let decoy = pinCodeDecoys.get(decoyKey);
+    if (!decoy || now - decoy.firstAt > STAFF_CODE_TTL_MS) decoy = { attempts: 0, firstAt: now };
+    if (pinCodeDecoys.size > 5000) pinCodeDecoys.clear();
+    decoy.attempts = Math.min(decoy.attempts + 1, STAFF_CODE_MAX_ATTEMPTS);
+    pinCodeDecoys.set(decoyKey, decoy);
+    throw new HttpError(401, wrongCodeMessage(STAFF_CODE_MAX_ATTEMPTS - decoy.attempts));
+  }
+  if (row.attempts >= row.max_attempts) throw new HttpError(401, wrongCodeMessage(0));
+  if (!staffCodeMatches(SESSION_SECRET, row.id, code, row.code_hash)) {
+    const { rows: upd } = await pool.query(
+      `UPDATE staff_auth_codes SET attempts = attempts + 1
+        WHERE id = $1 AND attempts < max_attempts RETURNING attempts, max_attempts`,
+      [row.id]
+    );
+    throw new HttpError(401, wrongCodeMessage(upd[0] ? upd[0].max_attempts - upd[0].attempts : 0));
+  }
+  return row.id;
+}
+
+async function consumeBoCode(db, codeId) {
+  const { rows } = await db.query(
+    `UPDATE staff_auth_codes SET consumed_at = now()
+      WHERE id = $1 AND consumed_at IS NULL AND expires_at > now() AND attempts < max_attempts
+      RETURNING id`,
+    [codeId]
+  );
+  if (rows.length === 0) throw new HttpError(401, "This code has expired — request a new one");
+}
+
 // POST /api/backoffice/auth/setup-start — { pin }
 // One-time bootstrap for an owner/admin who has no email/password yet
 // (every existing owner/admin, until they do this once). Reuses their
@@ -5973,7 +6078,7 @@ app.post("/api/backoffice/auth/setup-complete", async (req, res) => {
     if (!payload) throw new HttpError(401, "Setup session expired — please start again with your PIN");
 
     const { rows } = await pool.query(
-      "SELECT id, name, role, password_hash FROM staff WHERE id = $1 AND active = true AND role IN ('owner','admin')",
+      "SELECT id, name, role, password_hash, phone, totp_enabled FROM staff WHERE id = $1 AND active = true AND role IN ('owner','admin')",
       [payload.staffId]
     );
     const staff = rows[0];
@@ -5996,6 +6101,8 @@ app.post("/api/backoffice/auth/setup-complete", async (req, res) => {
       staff.id,
     ]);
 
+    // With a phone on the row they may finish by SMS instead (P3 Slice 3).
+    if (staff.phone) return res.json(twoFactorChoice(staff));
     const setupInfo = await beginTotpSetup({ id: staff.id, email: email_ });
     res.json(setupInfo);
   } catch (err) {
@@ -6022,7 +6129,7 @@ app.post("/api/backoffice/auth/login-step1", async (req, res) => {
 
   try {
     const { rows } = await pool.query(
-      "SELECT id, name, role, email, password_hash, totp_enabled FROM staff WHERE lower(email) = $1 AND active = true",
+      "SELECT id, name, role, email, password_hash, totp_enabled, phone FROM staff WHERE lower(email) = $1 AND active = true",
       [normalizedEmail]
     );
     const staff = rows[0];
@@ -6045,6 +6152,9 @@ app.post("/api/backoffice/auth/login-step1", async (req, res) => {
     }
     clearAttempts(normalizedEmail, "bo-password");
 
+    // Owner/admin (the only roles that get this far) with a phone on file
+    // choose SMS or the authenticator next. Without one, unchanged.
+    if (staff.phone) return res.json(twoFactorChoice(staff));
     if (!staff.totp_enabled) {
       const setupInfo = await beginTotpSetup(staff);
       return res.json(setupInfo);
@@ -6239,6 +6349,130 @@ app.post("/api/backoffice/auth/reset-password", async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     sendHttpError(res, err, "Failed to reset password");
+  }
+});
+
+async function loadBoSmsStaff(staffId) {
+  const { rows } = await pool.query(
+    `SELECT id, name, role, email, phone, totp_enabled FROM staff
+      WHERE id = $1 AND active = true AND role::text = ANY($2)`,
+    [staffId, BO_SMS_ROLES]
+  );
+  return rows[0] || null;
+}
+
+// POST /api/backoffice/auth/2fa/choose — { tempToken (2fa_choice), method }
+// method "totp": the existing authenticator path (verify, or set it up if
+// never enabled). method "sms": texts a bo_login code to staff.phone. Calling
+// it again with "sms" is the resend (send limits apply; the last live code
+// keeps working if a resend is refused).
+app.post("/api/backoffice/auth/2fa/choose", async (req, res) => {
+  try {
+    const { tempToken, method } = req.body || {};
+    const payload = verifyTempToken(tempToken, "2fa_choice");
+    if (!payload) throw new HttpError(401, "Login session expired — please log in again");
+    const staff = await loadBoSmsStaff(payload.staffId);
+    if (!staff) throw new HttpError(401, "Login session expired — please log in again");
+
+    if (method === "totp") {
+      if (staff.totp_enabled) {
+        return res.json({ stage: "2fa", tempToken: signTempToken({ staffId: staff.id }, "2fa_pending", "5m") });
+      }
+      return res.json(await beginTotpSetup(staff));
+    }
+    if (method !== "sms") throw new HttpError(400, "method must be totp or sms");
+    if (!staff.phone) throw new HttpError(400, "No phone number on file — use your authenticator app");
+
+    const issued = await issueBoCode(staff.id, staff.phone, "bo_login");
+    res.json({
+      stage: "2fa_sms",
+      tempToken: signTempToken({ staffId: staff.id }, "2fa_sms", "10m"),
+      message: `We texted a code to ${phoneHint(staff.phone)}. It expires in 10 minutes.`,
+    });
+    await deliverBoCode(issued, staff.phone, "bo_login");
+  } catch (err) {
+    if (res.headersSent) return console.error("[staff-sms] bo_login error:", err.message);
+    sendHttpError(res, err, "Failed to continue login");
+  }
+});
+
+// POST /api/backoffice/auth/2fa/sms/verify — { tempToken (2fa_sms), code }
+// Same ending as login-step2 / setup-confirm: the real session cookie.
+app.post("/api/backoffice/auth/2fa/sms/verify", async (req, res) => {
+  try {
+    const { tempToken, code } = req.body || {};
+    const payload = verifyTempToken(tempToken, "2fa_sms");
+    if (!payload) throw new HttpError(401, "Login session expired — please log in again");
+    const staff = await loadBoSmsStaff(payload.staffId);
+    if (!staff || !staff.phone) throw new HttpError(401, "Login session expired — please log in again");
+
+    const codeId = await checkBoCode(staff, "bo_login", code, `bo_login:${staff.id}`);
+    await consumeBoCode(pool, codeId);
+    issueSession(req, res, staff.id);
+    res.json({ id: staff.id, name: staff.name, role: staff.role, is_super_owner: isSuperOwner(staff) });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to verify code");
+  }
+});
+
+// Owner/admin with a Back Office login and a phone — the only accounts an
+// SMS password reset can reach. Anyone else gets the generic no-op.
+async function findBoResetStaff(email) {
+  if (typeof email !== "string" || !email.trim()) return null;
+  const { rows } = await pool.query(
+    `SELECT id, phone FROM staff
+      WHERE lower(email) = $1 AND active = true AND role::text = ANY($2)
+        AND password_hash IS NOT NULL AND phone IS NOT NULL`,
+    [email.trim().toLowerCase(), BO_SMS_ROLES]
+  );
+  return rows[0] || null;
+}
+
+const BO_SMS_RESET_GENERIC = {
+  message: "If that email has a Back Office account with a phone on file, we've texted a code. It expires in 10 minutes.",
+};
+
+// POST /api/backoffice/auth/forgot-password-sms — { email }
+// SMS alternative to the emailed link, for your OWN account. Always the same
+// reply; the insert happens before it and the Twilio call after it.
+app.post("/api/backoffice/auth/forgot-password-sms", async (req, res) => {
+  try {
+    const staff = await findBoResetStaff((req.body || {}).email);
+    const issued = staff ? await issueBoCode(staff.id, staff.phone, "bo_reset") : null;
+    res.json(BO_SMS_RESET_GENERIC);
+    if (staff) await deliverBoCode(issued, staff.phone, "bo_reset");
+  } catch (err) {
+    if (res.headersSent) return console.error("[staff-sms] bo_reset error:", err.message);
+    console.error("[staff-sms] bo_reset error:", err.message);
+    res.json(BO_SMS_RESET_GENERIC);
+  }
+});
+
+// POST /api/backoffice/auth/reset-password-sms — { email, code, newPassword }
+// Same result as reset-password: new password, emailed token cleared. The
+// authenticator is untouched; the next login still needs a second factor.
+app.post("/api/backoffice/auth/reset-password-sms", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { email, code, newPassword } = req.body || {};
+    validatePasswordStrength(newPassword);
+    const staff = await findBoResetStaff(email);
+    const decoyKey = `bo_reset:${String(email || "").trim().toLowerCase()}`;
+    const codeId = await checkBoCode(staff, "bo_reset", code, decoyKey);
+
+    await client.query("BEGIN");
+    await consumeBoCode(client, codeId);
+    await client.query(
+      "UPDATE staff SET password_hash = $1, reset_token = NULL, reset_token_expiry = NULL WHERE id = $2",
+      [await bcrypt.hash(newPassword, 10), staff.id]
+    );
+    await client.query("COMMIT");
+    res.json({ success: true });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    sendHttpError(res, err, "Failed to reset password");
+  } finally {
+    client.release();
   }
 });
 
@@ -8086,10 +8320,23 @@ app.put("/api/backoffice/staff/:id", async (req, res) => {
     const phone = parseStaffPhone(body.phone);
     let phoneChanged = false;
     if (phone !== undefined) {
-      const { rows: cur } = await pool.query("SELECT phone FROM staff WHERE id = $1", [target.id]);
+      const { rows: cur } = await pool.query(
+        "SELECT phone, password_hash IS NOT NULL AS has_bo_login FROM staff WHERE id = $1",
+        [target.id]
+      );
       phoneChanged = (cur[0]?.phone ?? null) !== phone;
       if (phoneChanged && isSuperOwner(target) && !isSuperOwner(requester)) {
         throw new HttpError(403, "The primary owner account's phone can't be changed here");
+      }
+      // Once an owner/admin has a Back Office login, their phone can log them
+      // in and reset their password by SMS — so only they (or the primary
+      // owner) may change it. Otherwise another admin could point it at
+      // their own phone and take the account over.
+      if (
+        phoneChanged && cur[0]?.has_bo_login && BO_SMS_ROLES.includes(target.role) &&
+        target.id !== requester.id && !isSuperOwner(requester)
+      ) {
+        throw new HttpError(403, "Only this person or the primary owner can change a Back Office account's phone");
       }
       if (phoneChanged && phone) await assertPhoneAvailable(phone, target.id);
     }
