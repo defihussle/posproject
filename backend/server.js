@@ -11,6 +11,14 @@ const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
 const { notifyOnlineOrderPlaced, notifyOrderReady } = require("./lib/onlineSms");
 const { normalizePhone } = require("./lib/phone");
+const {
+  STAFF_CODE_TTL_MS,
+  STAFF_CODE_MAX_ATTEMPTS,
+  generateStaffCode,
+  hashStaffCode,
+  staffCodeMatches,
+  sendStaffCode,
+} = require("./lib/staffSms");
 const { RELEASED_SQL, releaseAt } = require("./lib/scheduledRelease");
 
 const app = express();
@@ -616,6 +624,194 @@ app.post("/api/auth/login", requireDevicePairing, async (req, res) => {
   } catch (err) {
     console.error("Login error:", err.message);
     return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// --------------- Order Entry PIN setup / Forgot PIN by SMS (P3 Slice 2) ---------------
+// send → verify → complete, all device-gated like PIN login, and none of them
+// takes a staffId: the only identity is the phone number the owner saved on
+// the staff row (staff.phone, E.164, unique). Codes are in staff_auth_codes
+// (hash only, 6 digits, 10 min, 5 attempts). The server picks the purpose:
+// no PIN yet → pin_setup, otherwise pin_reset.
+//
+// Anti-enumeration: /send answers identically for an unknown, inactive,
+// kitchen/line or no-phone number, and does its DB insert before replying but
+// the Twilio call after, so response time doesn't reveal a real account.
+// /verify answers "incorrect or expired, N attempts left" in the same shape
+// whether or not a code exists, using a decoy counter for numbers with none.
+
+// Roles that PIN into Order Entry. kitchen/line get no setup or reset.
+const PIN_SMS_ROLES = ["owner", "admin", "manager", "cashier"];
+const PIN_CODE_PURPOSES = ["pin_setup", "pin_reset"];
+const PIN_CODE_SEND_GAP_MS = 60 * 1000; // one send per phone per minute
+const PIN_CODE_SENDS_PER_HOUR = 5;
+const PIN_CODE_GENERIC = {
+  message: "If that number is on file, we've texted a code. It expires in 10 minutes.",
+};
+
+// Decoy attempt counters for numbers with no live code, so /verify's replies
+// look the same either way. In-memory is fine: it only shapes a message.
+const pinCodeDecoys = new Map(); // phone -> { attempts, firstAt }
+
+function readPinCodePhone(raw) {
+  const phone = normalizePhone(raw);
+  if (!phone) throw new HttpError(400, "Enter a valid 10-digit phone number");
+  return phone;
+}
+
+async function findPinSmsStaff(phone) {
+  const { rows } = await pool.query(
+    `SELECT id, pin_hash IS NOT NULL AS has_pin FROM staff
+      WHERE phone = $1 AND active = true AND COALESCE(is_system, false) = false
+        AND role::text = ANY($2)`,
+    [phone, PIN_SMS_ROLES]
+  );
+  return rows[0] || null;
+}
+
+function wrongCodeMessage(remaining) {
+  return remaining > 0
+    ? `That code is incorrect or has expired. ${remaining} attempt${remaining === 1 ? "" : "s"} left.`
+    : "Too many attempts — request a new code.";
+}
+
+// POST /api/auth/pin-code/send — { phone }
+app.post("/api/auth/pin-code/send", requireDevicePairing, async (req, res) => {
+  try {
+    const phone = readPinCodePhone((req.body || {}).phone);
+    pinCodeDecoys.delete(phone);
+    const staff = await findPinSmsStaff(phone);
+    if (!staff) return res.json(PIN_CODE_GENERIC);
+
+    // Send throttle lives in the table, so it survives restarts.
+    const { rows: recent } = await pool.query(
+      `SELECT count(*) FILTER (WHERE created_at > now() - $2::interval)::int AS last_gap,
+              count(*) FILTER (WHERE created_at > now() - interval '1 hour')::int AS last_hour
+         FROM staff_auth_codes
+        WHERE to_phone = $1 AND purpose = ANY($3)`,
+      [phone, `${PIN_CODE_SEND_GAP_MS / 1000} seconds`, PIN_CODE_PURPOSES]
+    );
+    if (recent[0].last_gap > 0 || recent[0].last_hour >= PIN_CODE_SENDS_PER_HOUR) {
+      return res.json(PIN_CODE_GENERIC);
+    }
+
+    const purpose = staff.has_pin ? "pin_reset" : "pin_setup";
+    const codeId = crypto.randomUUID();
+    const code = generateStaffCode();
+    // Only the newest code works: older live ones are retired first.
+    await pool.query(
+      `UPDATE staff_auth_codes SET consumed_at = now()
+        WHERE staff_id = $1 AND purpose = ANY($2) AND consumed_at IS NULL`,
+      [staff.id, PIN_CODE_PURPOSES]
+    );
+    await pool.query(
+      `INSERT INTO staff_auth_codes (id, staff_id, purpose, code_hash, to_phone, max_attempts, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, now() + $7::interval)`,
+      [codeId, staff.id, purpose, hashStaffCode(SESSION_SECRET, codeId, code), phone,
+        STAFF_CODE_MAX_ATTEMPTS, `${STAFF_CODE_TTL_MS / 1000} seconds`]
+    );
+    res.json(PIN_CODE_GENERIC);
+
+    // After the reply. A code that never went out (flag off, sender missing,
+    // Twilio error) is retired at once so nothing unreachable stays live.
+    const outcome = await sendStaffCode(phone, code);
+    if (outcome !== "sent") {
+      console.warn(`[staff-sms] ${purpose} code not sent (${outcome})`);
+      await pool
+        .query("UPDATE staff_auth_codes SET consumed_at = now() WHERE id = $1", [codeId])
+        .catch((err) => console.error("[staff-sms] retire failed:", err.message));
+    }
+  } catch (err) {
+    if (res.headersSent) return console.error("[staff-sms] send error:", err.message);
+    if (err instanceof HttpError) return sendHttpError(res, err, "Failed to send code");
+    console.error("[staff-sms] send error:", err.message);
+    res.json(PIN_CODE_GENERIC); // never let an error reveal which branch ran
+  }
+});
+
+// POST /api/auth/pin-code/verify — { phone, code } → { token, purpose }
+// A wrong code costs one attempt on the live row; the 5th locks it. A right
+// code is NOT consumed here — /complete consumes it when the PIN is saved.
+app.post("/api/auth/pin-code/verify", requireDevicePairing, async (req, res) => {
+  try {
+    const { code } = req.body || {};
+    const phone = readPinCodePhone((req.body || {}).phone);
+    const staff = await findPinSmsStaff(phone);
+    const { rows } = staff
+      ? await pool.query(
+          `SELECT id, purpose, code_hash, attempts, max_attempts FROM staff_auth_codes
+            WHERE staff_id = $1 AND to_phone = $2 AND purpose = ANY($3)
+              AND consumed_at IS NULL AND expires_at > now()
+            ORDER BY created_at DESC LIMIT 1`,
+          [staff.id, phone, PIN_CODE_PURPOSES]
+        )
+      : { rows: [] };
+    const row = rows[0];
+
+    if (!row) {
+      const now = Date.now();
+      let decoy = pinCodeDecoys.get(phone);
+      if (!decoy || now - decoy.firstAt > STAFF_CODE_TTL_MS) decoy = { attempts: 0, firstAt: now };
+      if (pinCodeDecoys.size > 5000) pinCodeDecoys.clear(); // bound memory; only shapes a message
+      decoy.attempts = Math.min(decoy.attempts + 1, STAFF_CODE_MAX_ATTEMPTS);
+      pinCodeDecoys.set(phone, decoy);
+      throw new HttpError(401, wrongCodeMessage(STAFF_CODE_MAX_ATTEMPTS - decoy.attempts));
+    }
+    if (row.attempts >= row.max_attempts) throw new HttpError(401, wrongCodeMessage(0));
+
+    if (!staffCodeMatches(SESSION_SECRET, row.id, code, row.code_hash)) {
+      const { rows: upd } = await pool.query(
+        `UPDATE staff_auth_codes SET attempts = attempts + 1
+          WHERE id = $1 AND attempts < max_attempts RETURNING attempts, max_attempts`,
+        [row.id]
+      );
+      const remaining = upd[0] ? upd[0].max_attempts - upd[0].attempts : 0;
+      throw new HttpError(401, wrongCodeMessage(remaining));
+    }
+
+    const token = signTempToken({ staffId: staff.id, codeId: row.id }, "pin_code_ok", "10m");
+    res.json({ token, purpose: row.purpose });
+  } catch (err) {
+    sendHttpError(res, err, "Failed to verify code");
+  }
+});
+
+// POST /api/auth/pin-code/complete — { token, pin }
+// Consumes the code and sets the PIN in one transaction. They then PIN-login
+// normally.
+app.post("/api/auth/pin-code/complete", requireDevicePairing, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { token, pin } = req.body || {};
+    const payload = verifyTempToken(token, "pin_code_ok");
+    if (!payload?.staffId || !payload?.codeId) {
+      throw new HttpError(401, "This code has expired — request a new one");
+    }
+    validatePin(pin);
+    await assertPinAvailable(pin, payload.staffId);
+
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `UPDATE staff_auth_codes c SET consumed_at = now()
+         FROM staff s
+        WHERE c.id = $1 AND c.staff_id = $2 AND s.id = c.staff_id
+          AND c.consumed_at IS NULL AND c.expires_at > now() AND c.attempts < c.max_attempts
+          AND s.active = true AND s.phone = c.to_phone AND s.role::text = ANY($3)
+        RETURNING c.id`,
+      [payload.codeId, payload.staffId, PIN_SMS_ROLES]
+    );
+    if (rows.length === 0) throw new HttpError(401, "This code has expired — request a new one");
+    await client.query("UPDATE staff SET pin_hash = $1 WHERE id = $2", [
+      await bcrypt.hash(pin, 10),
+      payload.staffId,
+    ]);
+    await client.query("COMMIT");
+    res.json({ success: true });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    sendHttpError(res, err, "Failed to set PIN");
+  } finally {
+    client.release();
   }
 });
 
@@ -9726,6 +9922,7 @@ async function resolveDeviceId(req) {
 function surfaceColumnForRequest(req) {
   const { method, path } = req;
   if (path === "/api/auth/login") return "last_order_entry_at";
+  if (path.startsWith("/api/auth/pin-code/")) return "last_order_entry_at";
   if (method === "POST" && path === "/api/orders") return "last_order_entry_at";
   // Order recall + reversal — all three are driven from the Order Entry
   // screen, not the KDS. The refund route carries an :id, so it needs a

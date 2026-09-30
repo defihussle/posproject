@@ -182,3 +182,114 @@
   color: var(--text-muted);
   text-align: center;
 }
+
+/* ---------- SMS PIN setup / Forgot PIN (PinRecovery.jsx) ---------- */
+.pinrec {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+}
+
+.pinrec__title {
+  font-family: var(--font-headline);
+  font-size: 1.4rem;
+  color: var(--text-primary);
+  text-align: center;
+  margin: 0;
+}
+
+.pinrec__hint {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  text-align: center;
+  margin: 0;
+}
+
+.pinrec__input {
+  font-family: var(--font-body);
+  font-size: 1.15rem;
+  padding: 14px 16px;
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.pinrec__input:focus {
+  outline: none;
+  border-color: var(--text-primary);
+}
+
+.pinrec__input--code {
+  font-family: var(--font-mono);
+  letter-spacing: 0.3em;
+  text-align: center;
+}
+
+.pinrec__btn {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 600;
+  padding: 14px 16px;
+  min-height: 48px;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.pinrec__btn--primary {
+  background: var(--red);
+  color: #fff;
+}
+
+.pinrec__btn--primary:hover:not(:disabled) {
+  background: var(--red-hover);
+}
+
+.pinrec__btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pinrec__link {
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 8px;
+  min-height: 40px;
+}
+
+.pinrec__link:disabled {
+  opacity: 0.5;
+  cursor: default;
+  text-decoration: none;
+}
+
+.pinrec__entry {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: -16px;
+}
+
+.pinrec__sep {
+  color: var(--text-muted);
+}
+
+.pinrec__error {
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  color: var(--red);
+  text-align: center;
+  margin: 0;
+}

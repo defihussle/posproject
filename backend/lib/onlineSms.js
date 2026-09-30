@@ -186,4 +186,6 @@ module.exports = {
   notifyOrderReady,
   SMS_COPY,
   TWILIO_TIMEOUT_MS,
+  // Reused by lib/staffSms.js with its own from-number and flag.
+  sendTwilioSms,
 };

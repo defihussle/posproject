@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import logoImg from "../assets/narcos-tacos-logo.png";
 import { API_URL } from "../config";
 import { formatDuration } from "../format";
+import PinRecovery from "./PinRecovery";
 import "./PinLogin.css";
 
 const KEYPAD_KEYS = [
@@ -23,6 +24,8 @@ export default function PinLogin({ onLogin }) {
   const [loading, setLoading] = useState(false);
   const [lockoutEnd, setLockoutEnd] = useState(null);
   const [lockoutSeconds, setLockoutSeconds] = useState(0);
+  // "setup" | "forgot" while the SMS PIN flow replaces the keypad.
+  const [recovery, setRecovery] = useState(null);
 
   const isLockedOut = lockoutEnd && Date.now() < lockoutEnd;
   const disabled = loading || isLockedOut;
@@ -127,6 +130,8 @@ export default function PinLogin({ onLogin }) {
   // Keyboard support
   useEffect(() => {
     const handler = (e) => {
+      // The recovery flow has its own inputs; the keypad must not eat digits.
+      if (recovery) return;
       if (e.key >= "0" && e.key <= "9") {
         handleDigit(e.key);
       } else if (e.key === "Backspace") {
@@ -135,7 +140,7 @@ export default function PinLogin({ onLogin }) {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleDigit, handleBackspace]);
+  }, [handleDigit, handleBackspace, recovery]);
 
   const getStatusText = () => {
     if (lockoutEnd && lockoutSeconds > 0) {
@@ -162,6 +167,14 @@ export default function PinLogin({ onLogin }) {
           <img src={logoImg} alt="NARCOS TACOS" className="brand-logo__img" />
         </div>
 
+        {recovery ? (
+          <PinRecovery
+            mode={recovery}
+            onDone={() => setRecovery(null)}
+            onCancel={() => setRecovery(null)}
+          />
+        ) : (
+        <>
         {/* PIN Dots */}
         <div className={`pin-dots${shaking ? " shake" : ""}${error ? " pin-dots--error" : ""}`}>
           {[0, 1, 2, 3].map((i) => (
@@ -222,6 +235,18 @@ export default function PinLogin({ onLogin }) {
             </svg>
           </button>
         </div>
+
+        <div className="pinrec__entry">
+          <button type="button" className="pinrec__link" onClick={() => setRecovery("setup")}>
+            Set up PIN
+          </button>
+          <span className="pinrec__sep" aria-hidden="true">·</span>
+          <button type="button" className="pinrec__link" onClick={() => setRecovery("forgot")}>
+            Forgot PIN
+          </button>
+        </div>
+        </>
+        )}
 
         {/* Footer */}
         <div className="login-footer">
